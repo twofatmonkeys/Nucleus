@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 Repo level notes for anyone, human or agent, working in this repo.
 
@@ -72,17 +72,14 @@ cleanly when none is configured, which is what happens in CI.
 
 ## Deviations from the scaffold
 
-Both are deliberate and both are recorded in `tests\Directory.Build.props`:
+One, recorded in `tests\Directory.Build.props`: the tests use **xunit.v3 2.0.0**, not the scaffold's
+xunit 2.9.3, because they were written against v3. Everything else follows the scaffold, and both
+test projects multi-target `net8.0;net10.0` like the shipping packages.
 
-- The tests use **xunit.v3 2.0.0**, not the scaffold's xunit 2.9.3. They were written against v3.
-- The test projects build **net8.0 only** and at **LangVersion 12.0**, while the shipping packages
-  multi-target `net8.0;net10.0` at `latest`. Both pins exist because of real library limitations,
-  not test defects, and both are described in `docs\code-review-findings.md`. Remove them when the
-  underlying issues are fixed.
-
-The repo also carries a `NoWarn` list in `Directory.Build.props` covering roughly 500 pre-existing
-warnings, so that CI has a green baseline to protect. That list is a backlog, not an exemption:
-shrink it as the code is cleaned up.
+`Directory.Build.props` suppresses one warning, IDE0040, and `tests\Directory.Build.props`
+suppresses xUnit1051. Both are mechanical style edits rather than defects; see
+`docs\code-review-findings.md`. Nothing else is suppressed, so a nullable warning or an analyzer
+warning in new code fails CI.
 
 ## Rules
 

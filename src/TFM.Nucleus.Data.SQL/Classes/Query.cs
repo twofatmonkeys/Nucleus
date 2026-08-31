@@ -146,7 +146,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (UseConstraints)
                 foreach (var p in whereCollection.AllParameters())
-                    if (!Constraints.Contains(p.Name))
+                    if (p is not null && !Constraints.Contains(p.Name))
                         throw new Exception($"Parameter {p.Name} is not a valid constraint for this query.");
 
             if (whereCollection.ExpressionType != WhereCollection.Type.Empty)
@@ -156,7 +156,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (UseConstraints)
                 foreach (var p in whereCollection.AllParameters())
-                    if (!Constraints.Contains(p.Name))
+                    if (p is not null && !Constraints.Contains(p.Name))
                         throw new Exception($"Parameter {p.Name} is not a valid constraint for this query.");
 
             if (whereCollection.ExpressionType != WhereCollection.Type.Empty)
@@ -434,7 +434,7 @@ namespace TFM.Nucleus.Data.SQL
         public WhereCollection(ParameterCollection parameters, bool setTypeAsOr = false)
         {
             var target = setTypeAsOr ? _orCollection : _andCollection;
-            parameters.ForEach(p => target.Add(p));
+            parameters.ForEach(p => { if (p is not null) target.Add(p); });
         }
 
         public WhereCollection(WhereCollection parameters, bool setTypeAsOr = false)

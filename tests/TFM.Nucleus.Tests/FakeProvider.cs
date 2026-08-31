@@ -1,4 +1,4 @@
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 
 namespace TFM.Nucleus.Tests
 {
@@ -193,7 +193,9 @@ namespace TFM.Nucleus.Tests
         public void Save(ICoreObject obj) { }
         public void Delete(ICoreObject obj) { }
         public Task SaveAsync(ICoreObject obj) => Task.CompletedTask;
+        public Task SaveAsync(ICoreObject obj, CancellationToken token) => Task.CompletedTask;
         public Task DeleteAsync(ICoreObject obj) => Task.CompletedTask;
+        public Task DeleteAsync(ICoreObject obj, CancellationToken token) => Task.CompletedTask;
         public void BulkSave(IEnumerable<ICoreObject?>? objects) { }
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => Task.CompletedTask;
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => Task.CompletedTask;

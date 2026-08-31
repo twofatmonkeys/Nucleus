@@ -18,23 +18,28 @@ namespace TFM.Nucleus
         internal static ConcurrentDictionary<Type, IObjectSchema> _schemaCache = [];
         internal static ConcurrentDictionary<Type, bool> _badCache = [];
 
-        private static int IsInitialized = 0; // 0 for false, 1 for true
-        private static int IsInitializing = 0; // 0 for false, 1 for true    
+        private static int _isInitialized; // 0 for false, 1 for true
+        private static readonly object _initializeLock = new();
 
 
+        /// <summary>
+        /// Returns false when the type is not a Nucleus entity type. A type that is an entity but
+        /// whose schema cannot be built is a configuration error rather than a "no", so it throws
+        /// instead of being reported the same way as an unrelated type.
+        /// </summary>
         public static bool TryGet<T>(out IObjectSchema? objectSchema) => TryGet(typeof(T), out objectSchema);
+
+        /// <inheritdoc cref="TryGet{T}(out IObjectSchema?)"/>
         public static bool TryGet(Type type, out IObjectSchema? objectSchema)
         {
-            try
-            { 
-                objectSchema = Get(type);
-                return objectSchema != null;
-            }
-            catch (Exception)
+            ArgumentNullException.ThrowIfNull(type);
+            if (type.IsAbstract || type.IsInterface || !type.IsSubclassOf(typeof(CoreObject)))
             {
                 objectSchema = null;
                 return false;
             }
+            objectSchema = Get(type);
+            return objectSchema != null;
         }
 
 
@@ -74,50 +79,43 @@ namespace TFM.Nucleus
                 catch (Exception ex)
                 {
                     _badCache[type] = true;
-                    throw new ObjectSchemaException($"Unable to create object schema for type {type.Name}. {ex.Message}", type);
+                    throw new ObjectSchemaException($"Unable to create object schema. {ex.Message}", type, ex);
                 }
             }
         }
 
         public static IEnumerable<IObjectSchema> GetAll()
         {
-            if(Interlocked.Equals(IsInitialized, 0))
-                return Initialize();
-            else
+            if (Volatile.Read(ref _isInitialized) == 1)
                 return _schemaCache.Values;
+            return Initialize();
         }
 
         public static IObjectSchema[] GetWhereImplements(Type ifaceType) =>
             _schemaCache.Where(x => ifaceType.IsAssignableFrom(x.Key)).Select(x => x.Value).ToArray();
 
+        /// <summary>
+        /// Scans the assemblies beside the entry assembly and builds a schema for every concrete
+        /// entity type found. Concurrent callers block on the first one rather than racing; a
+        /// failed run leaves the flag clear so a later call retries.
+        /// </summary>
         public static IEnumerable<IObjectSchema> Initialize()
         {
-            if(Interlocked.Equals(IsInitialized, 1))
-                return _schemaCache.Values; // Already initialized, return cached values
+            if (Volatile.Read(ref _isInitialized) == 1)
+                return _schemaCache.Values;
 
-            if (Interlocked.CompareExchange(ref IsInitializing, 1, 0) == 1)
-            { 
-                var sw = new System.Diagnostics.Stopwatch();
-                sw.Start();
-                while (Interlocked.Equals(IsInitializing, 1))
-                {
-                    Thread.Sleep(100);
-                    if(sw.ElapsedMilliseconds > 30000) // Wait for a maximum of 30 seconds
-                    {
-                        Interlocked.Exchange(ref IsInitializing, 0); // Reset initializing flag
-                        throw new Exception("Object schema initialisation is taking too long, aborting.");
-                    }
-                }
-                if (Interlocked.Equals(IsInitialized, 1))
-                    return _schemaCache.Values;
-                throw new Exception("There was an error when initializing the object schema, aborting.");
-            }
-            try
+            lock (_initializeLock)
             {
-                var assys = new List<Assembly>();
-                var types = new List<Type>();
-                var appPath = Path.GetDirectoryName(Assembly.GetEntryAssembly()!.Location) ?? "Error";
+                if (Volatile.Read(ref _isInitialized) == 1)
+                    return _schemaCache.Values;
 
+                var entryAssembly = Assembly.GetEntryAssembly()
+                    ?? throw new ObjectSchemaException("There is no entry assembly to scan for entity types.");
+                var appPath = Path.GetDirectoryName(entryAssembly.Location);
+                if (string.IsNullOrEmpty(appPath))
+                    throw new ObjectSchemaException($"Unable to determine the directory of entry assembly {entryAssembly.FullName}.");
+
+                var assys = new List<Assembly>();
                 foreach (string dll in Directory.GetFiles(appPath, "*.dll"))
                 {
                     try
@@ -125,45 +123,49 @@ namespace TFM.Nucleus
                         //Use .LoadFrom rather than .Load to ensure instances are current
                         assys.Add(Assembly.LoadFrom(dll));
                     }
-                    catch (Exception)
+                    catch (Exception ex) when (ex is BadImageFormatException or FileLoadException or FileNotFoundException)
                     {
-
+                        // Not a managed assembly, or one we cannot load in this context. Both are
+                        // expected in an output folder; anything else is a real fault and propagates.
                     }
                 }
+
                 var all = ExtractNucleusTypes(assys);
-                Interlocked.Exchange(ref IsInitialized, 1); // Set IsInitialized to true
-                Interlocked.Exchange(ref IsInitializing, 0); // Set initializing to false
+                Volatile.Write(ref _isInitialized, 1);
                 return all;
-            }
-            catch (Exception ex)
-            {
-                Interlocked.Exchange(ref IsInitialized, 0); // Set IsInitialized to false
-                Interlocked.Exchange(ref IsInitializing, 0); // Set initializing to false
-                throw new Exception($"Error loading assemblies from base directory. {ex.Message}", ex);
             }
         }
 
         private static IEnumerable<IObjectSchema> ExtractNucleusTypes(List<Assembly> assemblies)
         {
             List<IObjectSchema> list = [];
+            var seen = new HashSet<Type>();
             foreach (var assy in assemblies)
             {
+                Type?[] types;
                 try
                 {
-                    foreach (var type in assy.GetTypes())
-                        if (type.IsSubclassOf(typeof(CoreObject))&& !type.IsAbstract && !type.IsInterface)
-                            if (!list.Any(x => x.Type == type))
-                            {
-                                //if (Attribute.IsDefined(type, typeof(InitializePriority)))
-                                //    priority = ((InitializePriority)Attribute.GetCustomAttribute(type, typeof(InitializePriority))!).Priority;
-                                if(TryGet(type, out var os))
-                                    list.Add(os!);
-                            }
+                    types = assy.GetTypes();
                 }
-                catch (Exception)
+                catch (ReflectionTypeLoadException ex)
                 {
-                    throw new Exception($"Error Extracting TFM types from {assy.FullName}");
-                    //Error.WriteExceptionToFile(new Exception($"Error Extracting TFM types from {assy.FullName}",ex));
+                    // Some types in the assembly reference something unavailable. Use the ones that
+                    // did load rather than discarding the whole assembly.
+                    types = ex.Types;
+                }
+                catch (Exception ex)
+                {
+                    throw new ObjectSchemaException($"Error extracting entity types from {assy.FullName}. {ex.Message}");
+                }
+
+                foreach (var type in types)
+                {
+                    if (type is null || type.IsAbstract || type.IsInterface || !type.IsSubclassOf(typeof(CoreObject)))
+                        continue;
+                    if (!seen.Add(type))
+                        continue;
+                    if (TryGet(type, out var os))
+                        list.Add(os!);
                 }
             }
             return list;
@@ -215,9 +217,11 @@ namespace TFM.Nucleus
             Type = typeof(T);
             if (!Type.IsSubclassOf(typeof(CoreObject)))
                 throw new InvalidObjectTypeException(Type);
+            // TryAdd, not Add: a derived class may shadow a base member with "new", and reflection
+            // returns the most derived first. First one wins; adding twice would throw.
             Type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public).ToList()
-                .ForEach(f => _fieldCache.Add(f.Name, f));
-            PropertySchema<T>.GetAll(this).ForEach(p => _propertyCache.Add(p.Name, p));
+                .ForEach(f => _fieldCache.TryAdd(f.Name, f));
+            PropertySchema<T>.GetAll(this).ForEach(p => _propertyCache.TryAdd(p.Name, p));
             foreach (var p in _propertyCache.Values.Where(x => x.IsLinkedChildCollection))
                 _linkedChildObjectProperties.Add(p.ChildType ?? throw new NullReferenceException(), p);
             foreach (var p in _propertyCache.Values.Where(x =>
@@ -246,7 +250,7 @@ namespace TFM.Nucleus
             if (Attribute.IsDefined(Type, typeof(InitializePriority)))
                 Priority = ((InitializePriority)Attribute.GetCustomAttribute(Type, typeof(InitializePriority))!).Priority;
             foreach (var pi in AllProperties.Select(x => x.PropertyInfo))
-                dProperties.Add(pi.Name, pi);
+                dProperties.TryAdd(pi.Name, pi);
         }
         /// <summary>
         /// Materializes an instance from a property dictionary: the object is created without
@@ -307,51 +311,45 @@ namespace TFM.Nucleus
         public IPropertySchema[]? NucleusChildCollectionProperties => [.. _nucleusChildCollectionProperties.Values];
         public IPropertySchema[] LinkedObjectProperties => _linkedObjectProperties;
         //public IObjectSchema? ParentObjectSchema => ParentProperty?.ObjectSchema;
-        public IObjectSchema[]? LinkedObjectSchemas => [.. LinkedObjectProperties.Select(x => x.ObjectSchema)];
-        public IObjectSchema[]? LinkedChildObjectSchemas => [.. LinkedChildObjectProperties.Select(x => x.ChildSchema)];
+        // OfType filters out properties with no resolvable schema, so these never contain nulls.
+        public IObjectSchema[]? LinkedObjectSchemas =>
+            [.. LinkedObjectProperties.Select(x => x.ObjectSchema).OfType<IObjectSchema>()];
+        public IObjectSchema[]? LinkedChildObjectSchemas =>
+            [.. LinkedChildObjectProperties.Select(x => x.ChildSchema).OfType<IObjectSchema>()];
 
 
         public async Task<IDictionary> Extract(DbDataReader reader, CancellationToken token)
         {
-            try
+            var coll = new Dictionary<Guid, T>();
+            var columns = (await reader.GetColumnSchemaAsync(token)).Select(x => x.ColumnName).ToArray();
+            while (await reader.ReadAsync(token))
             {
-                var coll = new Dictionary<Guid, T>();
-                var columns = (await reader.GetColumnSchemaAsync()).Select(x => x.ColumnName).ToArray();
-                while (await reader.ReadAsync(token))
-                {
-                    var properties = new Dictionary<string, object?>();
-                    for (int i = 0; i < columns.Length; i++)
-                        if (!await reader.IsDBNullAsync(i))
-                            properties[columns[i]] = reader.GetValue(i);
-                    var newObj = _ObjectBuilder(properties);
-                    if (newObj is CoreObject coreObj)
-                        coll[coreObj.ID] = newObj;
-                    else
-                        throw new InvalidCastException($"The object created from the reader is not implemented from CoreObject.");
-                    
-                }
-                return coll;
+                var properties = new Dictionary<string, object?>();
+                for (int i = 0; i < columns.Length; i++)
+                    if (!await reader.IsDBNullAsync(i, token))
+                        properties[columns[i]] = reader.GetValue(i);
+                var newObj = _ObjectBuilder(properties);
+                if (newObj is CoreObject coreObj)
+                    coll[coreObj.ID] = newObj;
+                else
+                    throw new InvalidCastException($"The object created from the reader is not implemented from CoreObject.");
             }
-            catch (Exception)
-            {
-                throw;
-            }
+            return coll;
         }
 
 
         public Guid[] GetLinkedIDsForLogging(T obj)
         {
+            if (obj is not CoreObject coreObj)
+                throw new InvalidCastException($"{typeof(T)} is not a CoreObject, cannot get linked IDs for logging.");
             var l = new List<Guid>();
             foreach (var p in _propertyCache.Values.Where(x => x.LinkWhenLogging))
             {
-                var v = (obj as CoreObject).GetRawCurrentValue(p.Name);
-                if (v != null)
-                {
-                    if (v.GetType() == typeof(Guid))
-                        l.Add((Guid)v);
-                    else
-                        l.Add(((ICoreObject)v).ID);
-                }
+                var v = coreObj.GetRawCurrentValue(p.Name);
+                if (v is Guid guid)
+                    l.Add(guid);
+                else if (v is ICoreObject linked)
+                    l.Add(linked.ID);
             }
             return l.ToArray();
         }
@@ -446,7 +444,7 @@ namespace TFM.Nucleus
             }
             catch (Exception ex)
             {
-                throw new Exception($"Unable to build object schema for type{typeof(T)}. {ex.Message}");
+                throw new ObjectSchemaException($"Unable to build object schema. {ex.Message}", typeof(T), ex);
             }
         }
 
@@ -461,74 +459,68 @@ namespace TFM.Nucleus
                     foreach (var c in LinkedChildObjectProperties)
                     {
                         if (!c.CanRead && !c.CanWrite)
-                            throw new Exception($"The Property '{c.Name}' in the object '{FullName}' has an invalid specification, it must be Readonly.");
+                            throw new ObjectSchemaException($"The property '{c.Name}' has an invalid specification, it must be readable.", Type);
                         if (c.Type.GetGenericArguments().Length != 2)
-                            throw new Exception("Invalid Enumerable for Child Object.");
+                            throw new ObjectSchemaException($"The property '{c.Name}' is an invalid enumerable for a child object.", Type);
                     }
                 }
                 return true;
             }
+            catch (ObjectSchemaException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
-                throw new Exception($"Object Schema is invalid for {FullName}. {ex.Message}", ex);
+                throw new ObjectSchemaException($"Object schema is invalid. {ex.Message}", Type, ex);
             }
         }
 
         public override string ToString() => $"ObjectSchema({FullName ?? "null"})";
-
-        public IObjectSchema Get(dynamic _) => this.Get(_);
     }
 
     public class ObjectSchemaException : Exception
     {
-        public readonly Type? Type;
-        private readonly string _message;
+        public Type? Type { get; }
 
-        public ObjectSchemaException(string message, Type? type = null)
+        public ObjectSchemaException(string message, Type? type = null, Exception? innerException = null)
+            : base(BuildMessage(message, type), innerException)
         {
-            if (type != null)
-            {
-                Type = type;
-                _message = $"The type {type.Name} is not compatible with the object schema, {message}";
-            }
-            else
-                _message = $"Object Schema error for Null Type, {message}";
-
+            Type = type;
         }
-        public override string Message => _message;
+
+        private static string BuildMessage(string message, Type? type) =>
+            type != null
+                ? $"The type {type.Name} is not compatible with the object schema, {message}"
+                : $"Object Schema error for Null Type, {message}";
     }
 
     public class InvalidObjectTypeException : Exception
     {
-        public readonly Type? Type;
-        private readonly string _message;
+        public Type? Type { get; }
 
-        public InvalidObjectTypeException(string typeName)
-        {
-            _message = $"The type {typeName} is not compatible with the object schema, Invalid Type";
-        }
-        public InvalidObjectTypeException(Type type)
+        public InvalidObjectTypeException(string typeName, Exception? innerException = null)
+            : base($"The type {typeName} is not compatible with the object schema, Invalid Type", innerException)
+        { }
+
+        public InvalidObjectTypeException(Type type, Exception? innerException = null)
+            : base($"The type {type.Name} is not compatible with the object schema, Invalid Type", innerException)
         {
             Type = type;
-            _message = $"The type {type.Name} is not compatible with the object schema, Invalid Type";
         }
-        public override string Message => _message;
     }
 
     public class PropertyNotFoundException : Exception
     {
-        public readonly string PropertyName;
-        public readonly IObjectSchema ObjectSchema;
-        private readonly string _message;
-        
+        public string PropertyName { get; }
+        public IObjectSchema ObjectSchema { get; }
+
         public PropertyNotFoundException(string propName, IObjectSchema objectSchema)
+            : base($"The property {propName} was not found in {objectSchema}'s object schema")
         {
             PropertyName = propName;
             ObjectSchema = objectSchema;
-            _message = $"The property {propName} was not found in {objectSchema}'s object schema";
         }
-        
-        public override string Message => _message;
     }
 
 }

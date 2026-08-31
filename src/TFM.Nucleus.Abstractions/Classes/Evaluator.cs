@@ -10,7 +10,7 @@ namespace TFM.Nucleus
     public static class Evaluator
     {
         /// <summary> 
-        /// Performs evaluation & replacement of independent sub-trees 
+        /// Performs evaluation and replacement of independent sub-trees 
         /// </summary> 
         /// <param name="expression">The root of the expression tree.</param>
         /// <param name="fnCanBeEvaluated">A function that decides whether a given expression node can be part of the local function.</param>
@@ -21,7 +21,7 @@ namespace TFM.Nucleus
         }
 
         /// <summary> 
-        /// Performs evaluation & replacement of independent sub-trees 
+        /// Performs evaluation and replacement of independent sub-trees 
         /// </summary> 
         /// <param name="expression">The root of the expression tree.</param>
         /// <returns>A new tree with sub-trees evaluated and replaced.</returns> 
@@ -32,11 +32,22 @@ namespace TFM.Nucleus
 
         private static bool CanBeEvaluatedLocally(Expression expression)
         {
-            return expression.NodeType != ExpressionType.Parameter;
+            if (expression.NodeType == ExpressionType.Parameter)
+                return false;
+
+            // A ref struct (Span&lt;T&gt;, ReadOnlySpan&lt;T&gt;) cannot be boxed into an
+            // Expression.Constant nor returned through Delegate.DynamicInvoke. From C# 13 the
+            // compiler binds someArray.Contains(x) to MemoryExtensions.Contains, whose first
+            // argument is an implicit span conversion, so folding it would throw
+            // NotSupportedException. Leave those nodes in the tree for the parser to unwrap.
+            if (expression.Type.IsByRefLike)
+                return false;
+
+            return true;
         }
 
         /// <summary> 
-        /// Evaluates & replaces sub-trees when first candidate is reached (top-down) 
+        /// Evaluates and replaces sub-trees when first candidate is reached (top-down) 
         /// </summary> 
         class SubtreeEvaluator : ExpressionVisitor
         {

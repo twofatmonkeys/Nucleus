@@ -1,33 +1,56 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
-using System.Text;
-using System.Threading.Tasks;
+using System.Reflection;
 
 namespace TFM.Nucleus
 {
     public static class LinqExtensions
     {
-        public static object GetValue(this MethodCallExpression expression)
+        public static object GetValue(this MethodCallExpression expression) => Evaluate(expression);
+
+        public static object GetValue(this MemberExpression member) => Evaluate(member);
+
+        /// <summary>
+        /// Reads the value an expression node evaluates to. Constants and closure field reads,
+        /// which are the overwhelmingly common cases in a translated predicate, are read directly;
+        /// only anything else pays for compiling a lambda.
+        /// </summary>
+        private static object Evaluate(Expression expression)
         {
-            var objectMember = Expression.Convert(expression, typeof(object));
+            if (TryReadDirectly(expression, out var value))
+                return value!;
 
-            var getterLambda = Expression.Lambda<Func<object>>(objectMember);
-
-            var getter = getterLambda.Compile();
-
+            var getter = Expression.Lambda<Func<object>>(Expression.Convert(expression, typeof(object))).Compile();
             return getter();
         }
-        public static object GetValue(this MemberExpression member)
+
+        private static bool TryReadDirectly(Expression expression, out object? value)
         {
-            var objectMember = Expression.Convert(member, typeof(object));
+            switch (expression)
+            {
+                case ConstantExpression constant:
+                    value = constant.Value;
+                    return true;
 
-            var getterLambda = Expression.Lambda<Func<object>>(objectMember);
+                // A captured local becomes a field on a compiler generated closure object, which
+                // reaches us as a member access over a constant. Closures can nest, so recurse.
+                case MemberExpression member:
+                    object? instance = null;
+                    if (member.Expression is not null && !TryReadDirectly(member.Expression, out instance))
+                        break;
+                    switch (member.Member)
+                    {
+                        case FieldInfo field:
+                            value = field.GetValue(instance);
+                            return true;
+                        case PropertyInfo property when property.GetIndexParameters().Length == 0:
+                            value = property.GetValue(instance);
+                            return true;
+                    }
+                    break;
+            }
 
-            var getter = getterLambda.Compile();
-
-            return getter();
+            value = null;
+            return false;
         }
     }
 }

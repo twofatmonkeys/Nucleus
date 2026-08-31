@@ -264,7 +264,9 @@ namespace TFM.Nucleus.Data.SQL
         void IDataContext.Delete(ICoreObject obj) => ExecuteSQL(BuildDeleteQuery(obj));
 
         Task IDataContext.SaveAsync(ICoreObject obj) => ExecuteSQLAsync(BuildSaveQuery(obj), null);
+        Task IDataContext.SaveAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildSaveQuery(obj), token);
         Task IDataContext.DeleteAsync(ICoreObject obj) => ExecuteSQLAsync(BuildDeleteQuery(obj), null);
+        Task IDataContext.DeleteAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildDeleteQuery(obj), token);
 
         private Query BuildSaveQuery(ICoreObject obj)
         {

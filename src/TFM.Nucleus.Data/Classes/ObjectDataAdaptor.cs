@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -96,6 +96,17 @@ namespace TFM.Nucleus.Data
         Expression IQueryable.Expression => QueryExpression;
 
         IQueryProvider IQueryable.Provider => Provider;
+
+        /// <summary>
+        /// Filters the set, translated to a provider query like any other Queryable.Where. Present
+        /// as an instance method so that .Where(...) is unambiguous on .NET 10, where this type
+        /// matches both Queryable.Where and the new AsyncEnumerable.Where.
+        /// </summary>
+        public IQueryable<T> Where(Expression<Func<T, bool>> predicate)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            return Queryable.Where(this, predicate);
+        }
 
         public IQueryable CreateQuery(Expression expression) => CreateQuery<T>(expression);
 

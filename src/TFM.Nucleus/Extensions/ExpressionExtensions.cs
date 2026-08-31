@@ -1,4 +1,5 @@
-﻿using System.Linq.Expressions;
+using System.Linq.Expressions;
+using System.Reflection;
 
 
 namespace TFM.Nucleus
@@ -25,94 +26,75 @@ namespace TFM.Nucleus
                     Expression.Invoke(expr2, param)), param);
         }
 
+        /// <summary>
+        /// Rewrites a predicate over <typeparamref name="TInput"/> as the same predicate over
+        /// <typeparamref name="TOutput"/>, rebinding members and methods declared on the input type
+        /// to the identically named members of the output type.
+        /// </summary>
+        /// <exception cref="ArgumentException">
+        /// <typeparamref name="TOutput"/> has no matching member for one used by the predicate.
+        /// </exception>
         public static Expression<Func<TOutput, bool>> ChangeTypeOfT<TInput, TOutput>(this Expression<Func<TInput, bool>> expression)
         {
+            ArgumentNullException.ThrowIfNull(expression);
 
-            var parms = new List<ParameterExpression>();
-            foreach (var p in expression.Parameters)
-            {
-                if (p.Type == typeof(TInput))
-                {
-                    var newParm = Expression.Parameter(typeof(TOutput), p.Name);
-                    parms.Add(newParm);
-                }
-                else
-                    parms.Add(p);
-            }
-            return Expression.Lambda<Func<TOutput, bool>>(expression.Body.ConvertMembers<TInput, TOutput>(parms), parms);
+            var parameter = Expression.Parameter(typeof(TOutput), expression.Parameters[0].Name);
+            var rewriter = new TypeRebinder(typeof(TInput), typeof(TOutput), expression.Parameters[0], parameter);
+            var body = rewriter.Visit(expression.Body);
+            return Expression.Lambda<Func<TOutput, bool>>(body, parameter);
         }
-        private static Expression ConvertMembers<TInput, TOutput>(this Expression expression, IReadOnlyCollection<ParameterExpression> parms)
+
+        /// <summary>
+        /// Replaces the source parameter and rebinds anything declared on the source type onto the
+        /// target type. Implemented as an ExpressionVisitor so that every node type is handled:
+        /// the previous hand written switch covered six of them and returned the rest untouched,
+        /// which left them referencing the old parameter and failing at compile time with
+        /// "variable of type X referenced from scope".
+        /// </summary>
+        private sealed class TypeRebinder(Type sourceType, Type targetType, ParameterExpression source, ParameterExpression target)
+            : ExpressionVisitor
         {
-            if (expression.NodeType == ExpressionType.OrElse ||
-                expression.NodeType == ExpressionType.AndAlso ||
-                expression.NodeType == ExpressionType.Equal ||
-                expression.NodeType == ExpressionType.NotEqual)
-            {
-                var exp = (BinaryExpression)expression;
-                var left = exp.Left.ConvertMembers<TInput, TOutput>(parms);
-                var right = exp.Right.ConvertMembers<TInput, TOutput>(parms);
-                return Expression.MakeBinary(exp.NodeType, left, right);
-            }
-            else if (expression.NodeType == ExpressionType.Call)
-            {
+            protected override Expression VisitParameter(ParameterExpression node) =>
+                node == source || node.Type == sourceType ? target : node;
 
-                var exp = (MethodCallExpression)expression;
-                //Convert Any Member arguments of type
-                var hasNewArgs = false;
-                var newArgs = new List<Expression>();
-                foreach (var a in exp.Arguments)
-                {
-                    if (a.NodeType == ExpressionType.MemberAccess)
-                    {
-                        var arg = (MemberExpression)a;
-                        if (arg.Member.DeclaringType == typeof(TInput))
-                        {
-                            newArgs.Add(a.ConvertMembers<TInput, TOutput>(parms));
-                            hasNewArgs = true;
-                        }
-                        else
-                            newArgs.Add(a);
-                    }
-                    else
-                        newArgs.Add(a);
-                }
-                //recreate expression with new args
-                if (hasNewArgs)
-                {
-                    expression = Expression.Call(null, exp.Method, newArgs);
-                }
-                //return if static
-                if (exp.Object == null)
-                    return expression;
-                //Convert member type if not static
-                var member = ((MemberExpression)exp.Object).Member;
-                if (member.DeclaringType == typeof(TInput))
-                {
-                    //var parm = Expression.Parameter(typeof(TOutput), parms.Single(x => x.Type == typeof(TOutput)).Name);
-                    var obj = Expression.Property(parms.Single(x => x.Type == typeof(TOutput)), typeof(TOutput), member.Name);
-                    //var mem = Expression.MakeMemberAccess(obj, typeof(TOutput).GetProperty(member.Name));
-                    var m = Expression.Call(obj, exp.Method, exp.Arguments);
-                    return m;
-                }
-                return expression;
-            }
-            else if (expression.NodeType == ExpressionType.MemberAccess)
+            protected override Expression VisitMember(MemberExpression node)
             {
-                var me = ((MemberExpression)expression);
-                if (me.Member.DeclaringType == typeof(TInput))
-                {
-                    //var parm = Expression.Parameter(typeof(TOutput), parms.Single(x => x.Type == typeof(TOutput)).Name);
-                    var memAcc = Expression.Property(parms.Single(x => x.Type == typeof(TOutput)), typeof(TOutput), me.Member.Name);
-                    return memAcc;
-                }
-                return expression;
-            }
-            else
-            {
-                return expression;
+                var instance = Visit(node.Expression);
+                if (!IsSourceMember(node.Member))
+                    return node.Update(instance);
+
+                var member = targetType.GetMember(node.Member.Name,
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy).FirstOrDefault()
+                    ?? throw new ArgumentException(
+                        $"Type {targetType.Name} has no member named '{node.Member.Name}' to rebind from {sourceType.Name}.");
+
+                return Expression.MakeMemberAccess(instance, member);
             }
 
+            protected override Expression VisitMethodCall(MethodCallExpression node)
+            {
+                var instance = Visit(node.Object);
+                var arguments = node.Arguments.Select(Visit).ToArray()!;
+
+                if (node.Method.DeclaringType is null || !IsSourceType(node.Method.DeclaringType))
+                    return node.Update(instance, arguments!);
+
+                // An instance method declared on the source type: find its counterpart.
+                var parameterTypes = node.Method.GetParameters().Select(p => p.ParameterType).ToArray();
+                var method = targetType.GetMethod(node.Method.Name,
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy,
+                    binder: null, parameterTypes, modifiers: null)
+                    ?? throw new ArgumentException(
+                        $"Type {targetType.Name} has no method '{node.Method.Name}' to rebind from {sourceType.Name}.");
+
+                return Expression.Call(instance, method, arguments!);
+            }
+
+            private bool IsSourceMember(MemberInfo member) =>
+                member.DeclaringType is not null && IsSourceType(member.DeclaringType);
+
+            private bool IsSourceType(Type type) =>
+                type == sourceType || type.IsAssignableFrom(sourceType);
         }
-
     }
 }

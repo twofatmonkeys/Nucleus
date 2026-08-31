@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
 
 
@@ -22,8 +23,9 @@ namespace TFM.Nucleus
         public static IServiceCollection AddNucleus(this IServiceCollection services, Action<NucleusOptions> configure)
         {
             services.Configure(configure);
-            services.AddSingleton<IObjectSchemaProvider, ObjectSchemaProvider>();
-            services.AddSingleton<INucleusServiceProvider, NucleusServiceProvider>();
+            // TryAdd, so that calling AddNucleus twice does not register the services twice.
+            services.TryAddSingleton<IObjectSchemaProvider, ObjectSchemaProvider>();
+            services.TryAddSingleton<INucleusServiceProvider, NucleusServiceProvider>();
             return services;
         }
 
@@ -33,9 +35,16 @@ namespace TFM.Nucleus
         /// </summary>
         public static IServiceCollection AddNucleusLogging(this IServiceCollection services)
         {
-            services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(sp =>
-                new NucleusLoggerProvider(
-                    sp.GetService<Microsoft.Extensions.Options.IOptions<NucleusOptions>>()?.Value));
+            // TryAddEnumerable keyed on the implementation type: ILoggerProvider is a collection
+            // service, so a plain Add would register a second provider on a repeat call and
+            // persist every log line twice.
+            // The factory is typed to the implementation, not to ILoggerProvider: TryAddEnumerable
+            // dedupes on the implementation type and rejects a descriptor whose implementation type
+            // is indistinguishable from the service type.
+            services.TryAddEnumerable(
+                ServiceDescriptor.Singleton<Microsoft.Extensions.Logging.ILoggerProvider, NucleusLoggerProvider>(sp =>
+                    new NucleusLoggerProvider(
+                        sp.GetService<Microsoft.Extensions.Options.IOptions<NucleusOptions>>()?.Value)));
             return services;
         }
     }

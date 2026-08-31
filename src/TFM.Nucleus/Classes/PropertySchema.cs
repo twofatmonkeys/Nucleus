@@ -150,30 +150,45 @@ namespace TFM.Nucleus
         IDatabaseColumnAttribute? IPropertySchema.DatabaseColumnAttribute => DBColumnAttribute;
 
 
-        public TPropertyType? GetValue(T? obj) => (TPropertyType?)Getter?.Invoke(obj, null);//   obj.GetValue<TPropertyType>(Name);
+        // Compiled accessors. Property reads and writes happen on every materialisation and every
+        // save, and MethodInfo.Invoke costs an argument array plus a reflection dispatch each time.
+        // Null when the accessor does not exist or could not be bound, in which case the reflection
+        // path is used instead.
+        private readonly Func<T?, TPropertyType?>? _getInvoker;
+        private readonly Action<T?, TPropertyType?>? _setInvoker;
+
+        public TPropertyType? GetValue(T? obj)
+        {
+            if (_getInvoker is not null)
+                return _getInvoker(obj);
+            return (TPropertyType?)Getter?.Invoke(obj, null);
+        }
 
         object? IPropertySchema.GetDBValue(ICoreObject? obj) => GetDBValue((T?)obj);
         object? IPropertySchema.GetDBValue(ICoreObject? obj, object? rawValue) => GetDBValue((T?)obj, rawValue);
         protected internal object? GetDBValue(T? obj) => GetDBValue(obj, obj?.GetRawCurrentValue(Name));
         protected internal object? GetDBValue(T? obj, object? rawValue)
         {
-            if(obj == null)
+            if (obj == null || !IsDBColumn)
                 return DBNull.Value;
 
-            if (obj != null && IsDBColumn)
-            {
-                if (IsOverridden)
-                    return ServerFunction.Get(DBColumnAttribute!.SetValueOverride);
-                else if (rawValue == null)
-                    return DBNull.Value;
-                else if (DBWriteType == rawValue.GetType())
-                    return rawValue;
-                else if (Type.IsAssignableTo(typeof(ICoreObject)) && rawValue is ICoreObject)
-                    return ((CoreObject)rawValue).ID;
-                else
-                    throw new InvalidObjectTypeException(rawValue.GetType());
-            }
-            return DBNull.Value;
+            if (IsOverridden)
+                return ServerFunction.Get(DBColumnAttribute!.SetValueOverride);
+            if (rawValue == null)
+                return DBNull.Value;
+
+            // A linked entity is persisted as its ID.
+            if (rawValue is ICoreObject linked)
+                return linked.ID;
+
+            // A Nullable<T> value boxes as its underlying type, so compare against that rather
+            // than the declared property type: for an int? property DBWriteType is Nullable<Int32>
+            // while the boxed value is an Int32, and an exact type comparison would reject it.
+            var target = Nullable.GetUnderlyingType(DBWriteType) ?? DBWriteType;
+            if (target.IsInstanceOfType(rawValue))
+                return rawValue;
+
+            throw new InvalidObjectTypeException(rawValue.GetType());
         }
 
         Type IPropertySchema.DBWriteType => DBWriteType;
@@ -207,13 +222,50 @@ namespace TFM.Nucleus
         string? IPropertySchema.ParentIDPropertyName => ParentIDPropertyName;
         Type IPropertySchema.Type => Type;
         IObjectSchema? IPropertySchema.ChildSchema => ChildSchema;
-        IObjectSchema? IPropertySchema.ObjectSchema => Type is ICoreObject ? ObjectSchema.Get(Type) : null;
-#pragma warning disable CS8602 // Dereference of a possibly null reference.
-        object? IPropertySchema.Create(object? thisObj) => PropertyCreator((T?)thisObj);
-#pragma warning restore CS8602 // Dereference of a possibly null reference.
+        // Type is a System.Type instance, so it never *implements* ICoreObject; the question is
+        // whether the type it describes does.
+        IObjectSchema? IPropertySchema.ObjectSchema =>
+            Type.IsAssignableTo(typeof(ICoreObject)) && !Type.IsAbstract && !Type.IsInterface
+                ? ObjectSchema.Get(Type)
+                : null;
+
+        object? IPropertySchema.Create(object? thisObj) =>
+            PropertyCreator is not null
+                ? PropertyCreator((T?)thisObj)
+                : throw new PropertySchemaException(
+                    "Create is only supported for [LinkedChildCollection] properties.", Name, Type);
+
         void IPropertySchema.SetValue(object? thisObj, object? value) => SetValue((T?)thisObj, (TPropertyType?)value);
         //public void SetValue(T thisObj, TPropertyType value) => thisObj.SetValue(value,Name);
-        public void SetValue(T? obj, TPropertyType? value) => Setter?.Invoke(obj, [value]);
+        public void SetValue(T? obj, TPropertyType? value)
+        {
+            if (_setInvoker is not null)
+            {
+                _setInvoker(obj, value);
+                return;
+            }
+            if (Setter is null)
+                throw new PropertySchemaException("The property has no setter and cannot be written.", Name, Type);
+            Setter.Invoke(obj, [value]);
+        }
+
+        /// <summary>
+        /// Binds a delegate to an accessor, returning null if the runtime will not bind it (an
+        /// open generic or an unusual signature), so the caller falls back to reflection.
+        /// </summary>
+        private static TDelegate? TryBind<TDelegate>(MethodInfo? method) where TDelegate : Delegate
+        {
+            if (method is null)
+                return null;
+            try
+            {
+                return (TDelegate)Delegate.CreateDelegate(typeof(TDelegate), method);
+            }
+            catch (Exception ex) when (ex is ArgumentException or MethodAccessException or MissingMethodException)
+            {
+                return null;
+            }
+        }
 
         internal static PropertySchema<T, TPropertyType> Create(PropertyInfo pInfo, IObjectSchema objSchema)
         {
@@ -266,8 +318,10 @@ namespace TFM.Nucleus
 
             CanRead = pInfo.CanRead;
             CanWrite = pInfo.CanWrite;
-            Getter = pInfo.GetGetMethod();
-            Setter = pInfo.GetSetMethod();
+            // nonPublic: true as the fallback. Entity properties commonly have a protected or
+            // private setter, and resolving only the public one turns every write into a no-op.
+            Getter = pInfo.GetGetMethod() ?? pInfo.GetGetMethod(nonPublic: true);
+            Setter = pInfo.GetSetMethod() ?? pInfo.GetSetMethod(nonPublic: true);
 
 
             //_Getter = (Func<T, string, TPropertyType>)Delegate.CreateDelegate(Expression.GetDelegateType(new Type[] { typeof(T), typeof(string), typeof(TPropertyType) }), null,
@@ -277,16 +331,19 @@ namespace TFM.Nucleus
             //if (Setter != null)
             //    NewSetter = Delegate.CreateDelegate(Expression.GetDelegateType(new Type[] { typeof(T), Type, typeof(void) }), null, Setter);
 
+            _getInvoker = TryBind<Func<T?, TPropertyType?>>(Getter);
+            _setInvoker = TryBind<Action<T?, TPropertyType?>>(Setter);
+
             BackingField = TryGetBackingField();
 
             if (LinkWhenLogging && !Type.IsAssignableTo(typeof(ICoreObject)))
-                throw new Exception($"Invalid attributes on property({Name}), property cannot be linked when logging unless it implements ICoreObject.");
+                throw new PropertySchemaException("[LinkWhenLogging] requires a property whose type implements ICoreObject.", Name, Type);
             if (IsLinkedObject && IsParentObject)
-                throw new Exception($"Invalid attributes on property({Name}), property cannot be both a ParentObject AND a LinkedObject.");
+                throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedObject].", Name, Type);
             if (IsLinkedObject && IsLinkedChildCollection)
-                throw new Exception($"Invalid attributes on property({Name}), property cannot be both a LinkedObject AND a LinkedChildCollection.");
+                throw new PropertySchemaException("A property cannot be both [LinkedObject] and [LinkedChildCollection].", Name, Type);
             if (IsLinkedChildCollection && IsParentObject)
-                throw new Exception($"Invalid attributes on property({Name}), property cannot be both a ParentObject AND a LinkedChildCollection.");
+                throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedChildCollection].", Name, Type);
         }
         //public void SetDelegateValue<TDeclaring,Tthis>(TDeclaring obj, Tthis value)
         //{
@@ -296,19 +353,21 @@ namespace TFM.Nucleus
         //}
 
 
+        /// <summary>
+        /// Finds the field behind the property, either a hand written <c>_name</c> field or the
+        /// compiler generated <c>&lt;Name&gt;k__BackingField</c>. FirstOrDefault, not
+        /// SingleOrDefault: a shadowed member legitimately yields more than one match and the most
+        /// derived one wins, where SingleOrDefault threw and the caller swallowed it as "none".
+        /// </summary>
         private FieldInfo? TryGetBackingField()
         {
-            try
-            {
-                return PropertyInfo.DeclaringType?.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public | BindingFlags.FlattenHierarchy).SingleOrDefault(x => x.Name == $"_{Name}" && x.FieldType.Equals(Type)) ??
-                    PropertyInfo.DeclaringType?.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public | BindingFlags.FlattenHierarchy).SingleOrDefault(x => x.Name.Contains($"<{Name}>") && x.FieldType == Type);
-
-            }
-            catch (Exception)
-            {
+            var fields = PropertyInfo.DeclaringType?.GetFields(BindingFlags.NonPublic | BindingFlags.Instance
+                | BindingFlags.Public | BindingFlags.FlattenHierarchy);
+            if (fields is null)
                 return null;
-            }
 
+            return fields.FirstOrDefault(x => x.Name == $"_{Name}" && x.FieldType == Type)
+                ?? fields.FirstOrDefault(x => x.Name.Contains($"<{Name}>") && x.FieldType == Type);
         }
 
         public override string ToString() => $"PropertySchema({Name ?? "null"},Type({Type?.FullName ?? "null"}))";
@@ -318,22 +377,27 @@ namespace TFM.Nucleus
 
     public class PropertySchemaException : Exception
     {
-        public readonly Type? Type;
-        public readonly string? PropertyName;
-        private readonly string _message;
+        public Type? Type { get; }
+        public string? PropertyName { get; }
 
-        public PropertySchemaException(string message, string? propertyName = null, Type? type = null)
+        public PropertySchemaException(string message, string? propertyName = null, Type? type = null,
+            Exception? innerException = null)
+            : base(BuildMessage(message, propertyName, type), innerException)
         {
             PropertyName = propertyName;
-            if (type != null)
-            {
-                Type = type;
-                _message = $"The type {type.Name} is not compatible with the object schema, {message}";
-            }
-            else
-                _message = $"Object Schema error for Null Type, {message}";
-
+            Type = type;
         }
-        public override string Message => _message;
+
+        private static string BuildMessage(string message, string? propertyName, Type? type)
+        {
+            var subject = (propertyName, type) switch
+            {
+                (not null, not null) => $"Property '{propertyName}' of type {type.Name}",
+                (not null, null) => $"Property '{propertyName}'",
+                (null, not null) => $"Type {type.Name}",
+                _ => "Property schema",
+            };
+            return $"{subject}: {message}";
+        }
     }
 }

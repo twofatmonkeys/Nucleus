@@ -36,6 +36,9 @@ namespace TFM.Nucleus
 
         public bool Check();
         public IPropertySchema GetProperty(string propertyName);
+
+        /// <summary>Returns null instead of throwing when the property is not part of the schema.</summary>
+        public IPropertySchema? TryGetProperty(string propertyName);
         public Guid[] GetLinkedIDsForLogging(object obj);
         //public IPropertySchema? ParentProperty { get; }
         //public Guid GetParentID(object childObj);

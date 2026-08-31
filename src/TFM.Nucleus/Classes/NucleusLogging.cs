@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using TFM.Nucleus.Data;
 
@@ -34,7 +34,8 @@ namespace TFM.Nucleus
     /// An ILoggerProvider that persists host application log entries into the Nucleus-managed
     /// NucleusLogEntry table. Entries buffer in memory and flush in batches on a timer so logging
     /// never blocks the caller. Guards against re-entrancy: TFM.Nucleus.* categories are never
-    /// persisted, and entries logged while the runtime is uninitialized are dropped.
+    /// persisted. Entries logged before the runtime is initialised stay buffered until it is, up
+    /// to <see cref="MaxBufferedEntries"/>, after which the oldest are dropped.
     /// </summary>
     public sealed class NucleusLoggerProvider : ILoggerProvider
     {
@@ -45,6 +46,9 @@ namespace TFM.Nucleus
         private readonly ConcurrentQueue<NucleusLogEntry> _buffer = new();
         private readonly Timer _flushTimer;
         private int _flushing;
+        // ConcurrentQueue.Count walks the segments, so it is not something to call on every log
+        // call. Track the depth alongside the queue instead.
+        private int _bufferedCount;
 
         public NucleusLoggerProvider(NucleusOptions? options = null)
         {
@@ -60,34 +64,52 @@ namespace TFM.Nucleus
 
         private void Enqueue(NucleusLogEntry entry)
         {
-            if (_buffer.Count >= MaxBufferedEntries)
+            if (Volatile.Read(ref _bufferedCount) >= MaxBufferedEntries)
                 return; // shed load rather than grow unbounded
             _buffer.Enqueue(entry);
+            Interlocked.Increment(ref _bufferedCount);
         }
 
-        /// <summary>Persists buffered entries; failures are swallowed (logging must never throw).</summary>
+        /// <summary>
+        /// Persists buffered entries. Failures are swallowed, because logging must never throw into
+        /// the application, but the batch is returned to the buffer so a transient database fault
+        /// costs a retry rather than the entries themselves.
+        /// </summary>
         public void Flush()
         {
             if (_buffer.IsEmpty || !NucleusRuntime.IsInitialized)
                 return;
             if (Interlocked.CompareExchange(ref _flushing, 1, 0) == 1)
                 return;
+
+            var batch = new List<ICoreObject?>();
             try
             {
-                var batch = new List<ICoreObject?>();
                 while (_buffer.TryDequeue(out var entry))
+                {
+                    Interlocked.Decrement(ref _bufferedCount);
                     batch.Add(entry);
+                }
                 if (batch.Count > 0)
                     NucleusRuntime.Current.BulkSave(batch);
             }
             catch (Exception)
             {
-                // Never propagate logging failures into the application.
+                // Put the batch back so the next flush retries it, rather than discarding entries
+                // that were only unlucky in their timing.
+                Requeue(batch);
             }
             finally
             {
                 Interlocked.Exchange(ref _flushing, 0);
             }
+        }
+
+        private void Requeue(List<ICoreObject?> batch)
+        {
+            foreach (var entry in batch)
+                if (entry is NucleusLogEntry logEntry)
+                    Enqueue(logEntry);
         }
 
         public void Dispose()

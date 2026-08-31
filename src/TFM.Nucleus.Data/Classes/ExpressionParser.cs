@@ -222,11 +222,33 @@ namespace TFM.Nucleus.Data
             }
             else
             {
-                // Static/extension Enumerable.Contains(collection, member) -> IN clause
-                var listValue = GetExpressionValue(expression.Arguments[0]);
+                // Static/extension Enumerable.Contains(collection, member) -> IN clause.
+                // From C# 13 an array receiver binds to MemoryExtensions.Contains instead, whose
+                // first argument is an implicit conversion to ReadOnlySpan<T>; unwrap it so both
+                // spellings translate to the same IN clause.
+                var listValue = GetExpressionValue(UnwrapSpanConversion(expression.Arguments[0]));
                 var memberName = GetMemberName(expression.Arguments[1]);
                 return BuildCollectionParameter(memberName, listValue);
             }
+        }
+
+        /// <summary>
+        /// Returns the operand behind an implicit Span/ReadOnlySpan conversion, or the expression
+        /// itself when it is not one. A ref struct cannot be evaluated into a constant, but the
+        /// array or list it was converted from can.
+        /// </summary>
+        private static Expression UnwrapSpanConversion(Expression expression)
+        {
+            if (expression is UnaryExpression { NodeType: ExpressionType.Convert } convert
+                && convert.Type.IsByRefLike)
+                return UnwrapSpanConversion(convert.Operand);
+
+            if (expression is MethodCallExpression { Method.Name: "op_Implicit" } call
+                && call.Type.IsByRefLike
+                && call.Arguments.Count == 1)
+                return UnwrapSpanConversion(call.Arguments[0]);
+
+            return expression;
         }
 
         private static Parameter? BuildCollectionParameter(string memberName, object? listValue)

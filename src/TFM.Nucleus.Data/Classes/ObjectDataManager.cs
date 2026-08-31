@@ -507,8 +507,11 @@ namespace TFM.Nucleus.Data
                 var childCollectionProp = schema.NucleusChildCollectionProperties.FirstOrDefault(p => 
                     p.ChildType == childQuery.DataTableSchema?.ObjectSchema.Type
                 );
-                var prop = schema.GetObjectSchema(childQuery.DataTableSchema?.ObjectSchema.Type 
-                    ?? throw new NullReferenceException("Child query DataTableSchema or ObjectSchema is null"));
+                // No matching collection property on the parent means this child query does not
+                // belong to this graph; skip it rather than dereferencing null further down.
+                if (childCollectionProp is null) continue;
+                var prop = schema.GetObjectSchema(childQuery.DataTableSchema?.ObjectSchema.Type
+                    ?? throw new InvalidOperationException("Child query DataTableSchema or ObjectSchema is null"));
                 if (prop is null) continue;
 
                 var map = new Dictionary<Guid, List<ICoreObject>>();
@@ -520,8 +523,8 @@ namespace TFM.Nucleus.Data
 
                     for (int i = 0; i < row.ColumnNames.Length; i++)
                     {
-                        if (row.ColumnNames[i] == prop.ParentObjectProperty!.Name)
-                            parentId = (Guid)row.Values[i];
+                        if (row.ColumnNames[i] == prop.ParentObjectProperty!.Name && row.Values[i] is Guid rowParentId)
+                            parentId = rowParentId;
                         childObj.BindValue(row.ColumnNames[i], row.Values[i]);
                     }
 

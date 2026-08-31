@@ -185,13 +185,19 @@ namespace TFM.Nucleus
 
         private void ChildCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => NotifyParent();
 
-        /// <summary>Raises PropertyChanged on the parent for the property exposing this collection.</summary>
+        /// <summary>
+        /// Raises PropertyChanged on the parent for the property exposing this collection, and on
+        /// this collection for anything subscribed through INotifyPropertyChanged. The collection
+        /// exposes that interface, so failing to raise it left every such subscriber silent.
+        /// </summary>
         private void NotifyParent()
         {
             if (_parent == null)
                 return;
             var collectionProperty = CastParent.ObjectSchema.TryGetChildCollectionProperty(typeof(TChild));
-            CastParent.ChildPropertyChanged(this, new PropertyChangedEventArgs(collectionProperty?.Name));
+            var args = new PropertyChangedEventArgs(collectionProperty?.Name);
+            CastParent.ChildPropertyChanged(this, args);
+            PropertyChanged?.Invoke(this, args);
         }
 
         public bool Remove(TChild item)
@@ -208,8 +214,11 @@ namespace TFM.Nucleus
         }
 
         public IQuery? GetInsertUpdateQuery()
-        { 
-            return _parent.DataProvider.CreateInsertAndUpdateQuery(this);
+        {
+            var provider = _parent.DataProvider
+                ?? throw new InvalidOperationException(
+                    $"{typeof(TParent).Name} has no data provider, so a child collection query cannot be built.");
+            return provider.CreateInsertAndUpdateQuery(this);
         }
 
         public Type ChildType => typeof(TChild);

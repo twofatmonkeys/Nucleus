@@ -1,5 +1,4 @@
 ﻿using TFM.Nucleus.Data;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 using System.Collections.Concurrent;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.ComponentModel;
@@ -52,7 +51,13 @@ namespace TFM.Nucleus
 
 
         IObjectSchema ICoreObject.ObjectSchema => ObjectSchema;
-        protected internal IObjectSchema ObjectSchema => Nucleus.ObjectSchema.Get(GetType());
+
+        // Cached per instance. The schema is read on every SetValue, ToString and CommitChanges,
+        // and resolving it means a dictionary lookup keyed on GetType() each time. The field is
+        // left null rather than initialised, so an object materialised without a constructor still
+        // resolves it on first use.
+        private IObjectSchema? _objectSchema;
+        protected internal IObjectSchema ObjectSchema => _objectSchema ??= Nucleus.ObjectSchema.Get(GetType());
 
         Dictionary<string, object?> ICoreObject.ChangedProperties => ChangedProperties;
         protected internal Dictionary<string, object?> ChangedProperties => IsNew ? _properties : _newProperties;
@@ -73,7 +78,11 @@ namespace TFM.Nucleus
                     _properties[newProp.Key] = newProp.Value;
                 _newProperties.Clear();
             }
-            _properties["Timestamp"] = DateTimeOffset.Now;
+            // Timestamp is server assigned (SYSDATETIMEOFFSET) and written back through
+            // OnOutputParameterReceived. Only fall back to the local clock if the server did not
+            // supply one, rather than overwriting the value it did supply.
+            if (!_properties.ContainsKey(nameof(Timestamp)))
+                _properties[nameof(Timestamp)] = DateTimeOffset.Now;
             _isNew = false;
             if(ObjectSchema.HasNucleusChildCollections)
                 foreach(var coll in NucleusChildCollections)
@@ -95,13 +104,28 @@ namespace TFM.Nucleus
             {
                 if (IsNew)
                 {
+                    if (_properties.TryGetValue(property, out var current) && Equals(current, value))
+                        return;
                     _properties[property] = value;
                 }
                 else
                 {
-                    if (_newProperties.TryGetValue(property, out var existing) && Equals(existing, value))
+                    // Already staged with this value: nothing to do.
+                    if (_newProperties.TryGetValue(property, out var pending) && Equals(pending, value))
                         return;
-                    _newProperties[property] = value;
+
+                    if (_properties.TryGetValue(property, out var committed) && Equals(committed, value))
+                    {
+                        // Assigned back to the stored value, so the property is no longer dirty.
+                        // Staging it anyway wrote a needless column on save and logged
+                        // "updated X from A to A".
+                        if (!_newProperties.Remove(property))
+                            return;
+                    }
+                    else
+                    {
+                        _newProperties[property] = value;
+                    }
                 }
                 _isValidated = false;
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
@@ -197,10 +221,16 @@ namespace TFM.Nucleus
                 var sb = new StringBuilder();
                 foreach (var prop in ChangedProperties)
                 {
-                    if (!ObjectSchema.GetProperty(prop.Key).SuppressLogging)
+                    // A key with no matching property is not a failure worth aborting the audit
+                    // entry for: it happens when a column still exists in the database but the
+                    // property has been removed from the class.
+                    var schema = ObjectSchema.TryGetProperty(prop.Key);
+                    if (schema is null)
+                        continue;
+                    if (!schema.SuppressLogging)
                     {
                         sb.Append(", ");
-                        if (ObjectSchema.GetProperty(prop.Key).AbbreviatedLogging)
+                        if (schema.AbbreviatedLogging)
                         {
                             if (prop.Value == null)
                                 sb.Append($"cleared value from {prop.Key}");
@@ -243,10 +273,6 @@ namespace TFM.Nucleus
         }
 
 
-        private static void Init<T>(out T assignTo, T value)
-        {
-            assignTo = value;
-        }
         #region ICoreObject 
 
         T? ICoreObject.GetPropertyValue<T>(string propertyName) where T : default => GetValue<T>(propertyName);
@@ -340,36 +366,7 @@ namespace TFM.Nucleus
 
 
 
-        [JsonIgnore]
-        [SuppressCopying]
-        private IDataContext? data_Context
-        {
-            get
-            {
-                if (_dataContext != null)
-                {
-                    try
-                    {
-                        _dataContext.ToString();
-                        return _dataContext;
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        _dataContext = null;
-                        return null;
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new Exception($"Error obtaining the object's data context. {ex.Message}", ex);
-                    }
-                }
-                return null;
-            }
-            set { _dataContext = value; }
-        }
-        [JsonIgnore]
-        [SuppressCopying]
-        private IDataContext? _dataContext;
+
 
 
 
@@ -393,9 +390,12 @@ namespace TFM.Nucleus
         protected internal virtual int CacheRefreshInterval => 120; //Cache refresh interval in seconds
         protected internal virtual int CacheLifetime => 900; //Cache lifetime interval in seconds
 
+        /// <summary>True when <paramref name="t"/> is a concrete Nucleus entity type.</summary>
         public static bool IsDerivedClass(Type t)
         {
-            return t.IsSubclassOf(typeof(ICoreObject));
+            ArgumentNullException.ThrowIfNull(t);
+            // IsSubclassOf never matches an interface, so the original test was always false.
+            return typeof(ICoreObject).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface;
         }
         public static bool IsDerivedClass<T>()
         {
@@ -453,7 +453,6 @@ namespace TFM.Nucleus
         public CoreObject()
         {
             _properties[nameof(ID)] = Guid.NewGuid();
-            Changes = [];
         }
 
 
@@ -472,8 +471,7 @@ namespace TFM.Nucleus
 
 
 
-        [SuppressCopying]
-        private static ConcurrentDictionary<Type, Guid> _CurrentCache = new ConcurrentDictionary<Type, Guid>();
+
 
 
 
@@ -540,14 +538,16 @@ namespace TFM.Nucleus
             ArgumentNullException.ThrowIfNull(dataContext);
             Validate();
             EnsureSaveable();
-            await dataContext.SaveAsync(this);
+            await dataContext.SaveAsync(this, token);
             CommitChanges(false);
         }
 
         private void EnsureSaveable()
         {
             if (!_isValidated)
-                throw new InvalidOperationException($"{this} is in an invalid state and cannot be saved. _Validate() method must be called from all overidden Validate() methods.");
+                throw new InvalidOperationException(
+                    $"{this} has not been validated and cannot be saved. An override of Validate() must call " +
+                    $"base.Validate() so that the object is marked valid.");
             if (IsReadOnly)
                 throw new ReadOnlyException($"{this} is locked as read only.");
         }
@@ -619,470 +619,52 @@ namespace TFM.Nucleus
 
         #endregion
 
-        private static Dictionary<string, object?>[] CreateDictionaryFromDT<T>(DataTable dt)
-        {
-            return CreateDictionaryFromDT(dt, typeof(T));
-        }
-        private static Dictionary<string, object?>[] CreateDictionaryFromDT(DataTable dt, Type type)
-        {
-            //todo - can be optimised further using multiple threads
-            var rowCount = dt.Rows.Count;
-            var values = new Dictionary<string, object?>[rowCount];
-            try
-            {
-                var properties = Nucleus.ObjectSchema.Get(type).AllDBColumns.Where(x => x.CanWrite).ToArray();
-                int i = 0;
-                foreach (DataRow dr in dt.Rows)
-                {
-                    var dict = new Dictionary<string, object?>();
-                    foreach (var prop in properties)
-                    {
-                        object? o = dr[prop.Name];
-                        dict.Add(prop.Name, o.Equals(DBNull.Value) ? null : o);
-                    }
-                    values[i] = dict;
-                    i++;
-                }
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Unable to convert the " + type.Name + " data structure into a Dictionary collection.", ex);
-            }
-            return values;
-
-        }
-
-
-
-
-
-
-
-
-        private static List<T> BuildObjectCollection<T>(Dictionary<string, object>[] sqlData) where T : CoreObject, new()
-        {
-            try
-            {
-                Type[] methodArgs = { typeof(Dictionary<string, object>[]) };
-
-                DynamicMethod Extract = new DynamicMethod("Extract", typeof(List<T>), methodArgs, true);
-                ILGenerator il = Extract.GetILGenerator();
-
-                LocalBuilder loc_objlist = il.DeclareLocal(typeof(List<T>));
-                LocalBuilder loc_newobject = il.DeclareLocal(typeof(T));
-                LocalBuilder loc_index = il.DeclareLocal(typeof(int));
-                LocalBuilder loc_dictionary = il.DeclareLocal(typeof(Dictionary<string, object>));
-                LocalBuilder loc_placeholder = il.DeclareLocal(typeof(object));
-                MethodInfo mth_OnAfterLoad = typeof(T).GetMethod("OnAfterLoadFromDB", BindingFlags.NonPublic | BindingFlags.Instance)!;
-
-                Label enterloop = il.DefineLabel();
-                Label loopagain = il.DefineLabel();
-
-                //create a new list to store and return
-                il.Emit(OpCodes.Newobj, typeof(List<T>).GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_objlist);
-
-                //create index value 0 and store
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //begin loop
-                il.Emit(OpCodes.Br, enterloop);
-                il.MarkLabel(loopagain);
-
-                //create new TFM object
-                il.Emit(OpCodes.Newobj, typeof(T).GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_newobject);
-
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Callvirt, typeof(T).GetProperty("IsLoading")!.GetSetMethod()!);
-
-
-                //set the properties
-                //load the currently indexed dictionary item from the list and store local
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldelem_Ref);
-                il.Emit(OpCodes.Stloc, loc_dictionary);
-                var setters = new Dictionary<string, MethodInfo>();
-                foreach (KeyValuePair<string, object> k in sqlData[0])
-                {
-                    var setter = ObjectSchema<T>.Get().dProperties.GetValueOrDefault(k.Key)!.GetSetMethod() ?? 
-                        ObjectSchema<T>.Get().dProperties.GetValueOrDefault(k.Key)!.GetSetMethod(true) ??
-                        throw new NullReferenceException();
-                    setters.Add(k.Key, setter!);
-                }
-                //// loop through all the properties to add to the object load the named object from the Dictionary to the stack
-                for (int index = 0; index < sqlData[0].Count; ++index)
-                {
-                    KeyValuePair<string, object> kvp = sqlData[0].ElementAt(index);
-                    var propType = ObjectSchema<T>.Get().dProperties.GetValueOrDefault(kvp.Key)!.PropertyType;
-                    Label skipsetproperty = il.DefineLabel();
-                    il.Emit(OpCodes.Ldloc, loc_dictionary);
-                    il.Emit(OpCodes.Ldstr, kvp.Key);
-                    il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, object>).GetMethod("get_Item")!);
-                    if (typeof(TFMInitializeWithString).IsAssignableFrom(propType))
-                    {
-                        //create new object
-                        var typeConst = propType.GetConstructor(new Type[3] { typeof(string), typeof(bool), typeof(bool) });
-                        il.Emit(OpCodes.Ldc_I4_1);
-                        il.Emit(OpCodes.Ldc_I4_0);
-                        il.Emit(OpCodes.Newobj, typeConst!);
-                    }
-
-
-
-                    il.Emit(OpCodes.Dup);
-                    il.Emit(OpCodes.Stloc, loc_placeholder);
-                    il.Emit(OpCodes.Brfalse_S, skipsetproperty);
-                    //set the property if its not null or empty
-                    il.Emit(OpCodes.Ldloc, loc_newobject);
-                    il.Emit(OpCodes.Ldloc, loc_placeholder);
-                    il.Emit(OpCodes.Unbox_Any, propType);
-                    il.Emit(OpCodes.Callvirt, setters.ElementAt(index).Value);
-                    il.MarkLabel(skipsetproperty);
-                }
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Callvirt, typeof(T).GetProperty("IsLoading").GetSetMethod());
-
-                //call OnAfterLoadFromDB()
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Call, mth_OnAfterLoad);
-
-                //load list onto the stack, clear changes and add the created object
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Dup);
-                il.Emit(OpCodes.Ldfld, typeof(T).BaseType.GetField("Changes"));
-                il.Emit(OpCodes.Callvirt, typeof(ChangeCollection).GetMethod("Clear"));
-                il.Emit(OpCodes.Callvirt, typeof(List<T>).GetMethod("Add"));
-
-                //add 1 to the index
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Add);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //entry point for first loop
-                il.MarkLabel(enterloop);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldlen);
-                // if there are still items in the list loop again    
-                il.Emit(OpCodes.Blt, loopagain);
-
-                //load list onto stack and return
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ret);
-
-                //Invoke and return
-                object[] prms = { sqlData };
-                return (List<T>)Extract.Invoke(null, prms);
-
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Unable to convert the " + typeof(T).Name + " Dictionary structure into an object collection.", ex);
-            }
-
-        }
-        private static List<object> BuildObjectCollection(Dictionary<string, object>[] sqlData, Type type)
-        {
-            try
-            {
-                Type[] methodArgs = { typeof(Dictionary<string, object>[]) };
-                var objectSchema = Nucleus.ObjectSchema.Get(type);
-
-                DynamicMethod Extract = new DynamicMethod("Extract", typeof(List<object>), methodArgs, true);
-                ILGenerator il = Extract.GetILGenerator();
-
-                LocalBuilder loc_objlist = il.DeclareLocal(typeof(List<object>));
-                LocalBuilder loc_newobject = il.DeclareLocal(type);
-                LocalBuilder loc_index = il.DeclareLocal(typeof(int));
-                LocalBuilder loc_dictionary = il.DeclareLocal(typeof(Dictionary<string, object>));
-                LocalBuilder loc_placeholder = il.DeclareLocal(typeof(object));
-                MethodInfo mth_OnAfterLoad = type.GetMethod("OnAfterLoadFromDB", BindingFlags.NonPublic | BindingFlags.Instance);
-
-                Label enterloop = il.DefineLabel();
-                Label loopagain = il.DefineLabel();
-
-                //create a new list to store and return
-                il.Emit(OpCodes.Newobj, typeof(List<object>).GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_objlist);
-
-                //create index value 0 and store
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //begin loop
-                il.Emit(OpCodes.Br, enterloop);
-                il.MarkLabel(loopagain);
-
-                //create new TFM object
-                il.Emit(OpCodes.Newobj, type.GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_newobject);
-
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Callvirt, type.GetProperty("IsLoading").GetSetMethod());
-
-
-                //set the properties
-                //load the currently indexed dictionary item from the list and store local
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldelem_Ref);
-                il.Emit(OpCodes.Stloc, loc_dictionary);
-                var setters = new Dictionary<string, MethodInfo>();
-                foreach (KeyValuePair<string, object> k in sqlData[0])
-                {
-                    setters.Add(k.Key, objectSchema.GetProperty(k.Key).Setter ?? throw new Exception("Setter is null"));
-                }
-                //// loop through all the properties to add to the object load the named object from the Dictionary to the stack
-                for (int index = 0; index < sqlData[0].Count; ++index)
-                {
-                    KeyValuePair<string, object> kvp = sqlData[0].ElementAt(index);
-                    var propType = objectSchema.GetProperty(kvp.Key).Type;
-                    Label skipsetproperty = il.DefineLabel();
-                    il.Emit(OpCodes.Ldloc, loc_dictionary);
-                    il.Emit(OpCodes.Ldstr, kvp.Key);
-                    il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, object>).GetMethod("get_Item"));
-                    if (typeof(TFMInitializeWithString).IsAssignableFrom(propType))
-                    {
-                        //create new object
-                        var typeConst = propType.GetConstructor(new Type[3] { typeof(string), typeof(bool), typeof(bool) });
-                        il.Emit(OpCodes.Ldc_I4_1);
-                        il.Emit(OpCodes.Ldc_I4_0);
-                        il.Emit(OpCodes.Newobj, typeConst);
-                    }
-
-
-
-                    il.Emit(OpCodes.Dup);
-                    il.Emit(OpCodes.Stloc, loc_placeholder);
-                    il.Emit(OpCodes.Brfalse_S, skipsetproperty);
-                    //set the property if its not null or empty
-                    il.Emit(OpCodes.Ldloc, loc_newobject);
-                    il.Emit(OpCodes.Ldloc, loc_placeholder);
-                    il.Emit(OpCodes.Unbox_Any, propType);
-                    il.Emit(OpCodes.Callvirt, setters.ElementAt(index).Value);
-                    il.MarkLabel(skipsetproperty);
-                }
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Callvirt, type.GetProperty("IsLoading").GetSetMethod());
-
-                //call OnAfterLoadFromDB()
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Call, mth_OnAfterLoad);
-
-                //load list onto the stack, clear changes and add the created object
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Dup);
-                il.Emit(OpCodes.Ldfld, type.BaseType.GetField("Changes"));
-                il.Emit(OpCodes.Callvirt, typeof(ChangeCollection).GetMethod("Clear"));
-                il.Emit(OpCodes.Callvirt, typeof(List<object>).GetMethod("Add"));
-
-                //add 1 to the index
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Add);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //entry point for first loop
-                il.MarkLabel(enterloop);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldlen);
-                // if there are still items in the list loop again    
-                il.Emit(OpCodes.Blt, loopagain);
-
-                //load list onto stack and return
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ret);
-
-                //Invoke and return
-                object[] prms = { sqlData };
-                return (List<object>)Extract.Invoke(null, prms);
-
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Unable to convert the " + type.Name + " Dictionary structure into an object collection.", ex);
-            }
-
-        }
-
-        private static List<object> ExtractCollection(Dictionary<string, object>[] val, Type type)
-        {
-            try
-            {
-                Type[] methodArgs = { typeof(Dictionary<string, object>[]) };
-                var objectSchema = Nucleus.ObjectSchema.Get(type);
-
-                DynamicMethod Extract = new DynamicMethod("Extract", typeof(List<object>), methodArgs, true);
-                ILGenerator il = Extract.GetILGenerator();
-
-                LocalBuilder loc_objlist = il.DeclareLocal(typeof(List<>).MakeGenericType(type));
-                LocalBuilder loc_newobject = il.DeclareLocal(type);
-                LocalBuilder loc_index = il.DeclareLocal(typeof(int));
-                LocalBuilder loc_dictionary = il.DeclareLocal(typeof(Dictionary<string, object>));
-                LocalBuilder loc_placeholder = il.DeclareLocal(typeof(object));
-                MethodInfo mth_OnAfterLoad = type.GetMethod("OnAfterLoadFromDB", BindingFlags.NonPublic | BindingFlags.Instance);
-
-                Label enterloop = il.DefineLabel();
-                Label loopagain = il.DefineLabel();
-
-                //create a new list to store and return
-                il.Emit(OpCodes.Newobj, typeof(List<object>).GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_objlist);
-
-                //create index value 0 and store
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //begin loop
-                il.Emit(OpCodes.Br, enterloop);
-                il.MarkLabel(loopagain);
-
-                //create new TFM object
-                il.Emit(OpCodes.Newobj, type.GetConstructors()[0]);
-                il.Emit(OpCodes.Stloc, loc_newobject);
-
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Callvirt, type.GetProperty("IsLoading").GetSetMethod());
-
-
-                //set the properties
-                //load the currently indexed dictionary item from the list and store local
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldelem_Ref);
-                il.Emit(OpCodes.Stloc, loc_dictionary);
-                var setters = new Dictionary<string, MethodInfo>();
-                foreach (KeyValuePair<string, object> k in val[0])
-                {
-                    setters.Add(k.Key, objectSchema.GetProperty(k.Key).Setter ?? throw new Exception("Setter is null"));
-                }
-                //// loop through all the properties to add to the object load the named object from the Dictionary to the stack
-                for (int index = 0; index < val[0].Count; ++index)
-                {
-                    KeyValuePair<string, object> kvp = val[0].ElementAt(index);
-                    var propType = objectSchema.GetProperty(kvp.Key).Type;
-                    Label skipsetproperty = il.DefineLabel();
-                    il.Emit(OpCodes.Ldloc, loc_dictionary);
-                    il.Emit(OpCodes.Ldstr, kvp.Key);
-                    il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, object>).GetMethod("get_Item"));
-                    if (typeof(TFMInitializeWithString).IsAssignableFrom(propType))
-                    {
-                        //create new object
-                        var typeConst = propType.GetConstructor(new Type[3] { typeof(string), typeof(bool), typeof(bool) });
-                        il.Emit(OpCodes.Ldc_I4_1);
-                        il.Emit(OpCodes.Ldc_I4_0);
-                        il.Emit(OpCodes.Newobj, typeConst);
-                    }
-
-
-
-                    il.Emit(OpCodes.Dup);
-                    il.Emit(OpCodes.Stloc, loc_placeholder);
-                    il.Emit(OpCodes.Brfalse_S, skipsetproperty);
-                    //set the property if its not null or empty
-                    il.Emit(OpCodes.Ldloc, loc_newobject);
-                    il.Emit(OpCodes.Ldloc, loc_placeholder);
-                    il.Emit(OpCodes.Unbox_Any, propType);
-                    il.Emit(OpCodes.Callvirt, setters.ElementAt(index).Value);
-                    il.MarkLabel(skipsetproperty);
-                }
-                //set loading flag
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Callvirt, type.GetProperty("IsLoading").GetSetMethod());
-
-                //call OnAfterLoadFromDB()
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Call, mth_OnAfterLoad);
-
-                //load list onto the stack, clear changes and add the created object
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ldloc, loc_newobject);
-                il.Emit(OpCodes.Dup);
-                il.Emit(OpCodes.Ldfld, type.BaseType.GetField("Changes"));
-                il.Emit(OpCodes.Callvirt, typeof(ChangeCollection).GetMethod("Clear"));
-                il.Emit(OpCodes.Callvirt, typeof(List<object>).GetMethod("Add"));
-
-                //add 1 to the index
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldc_I4_1);
-                il.Emit(OpCodes.Add);
-                il.Emit(OpCodes.Stloc, loc_index);
-
-                //entry point for first loop
-                il.MarkLabel(enterloop);
-                il.Emit(OpCodes.Ldloc, loc_index);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldlen);
-                // if there are still items in the list loop again    
-                il.Emit(OpCodes.Blt, loopagain);
-
-                //load list onto stack and return
-                il.Emit(OpCodes.Ldloc, loc_objlist);
-                il.Emit(OpCodes.Ret);
-
-                //Invoke and return
-                object[] prms = { val };
-                return (List<object>)Extract.Invoke(null, prms);
-
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Unable to convert the " + type.Name + " Dictionary structure into an object collection.", ex);
-            }
-
-        }
-
-        protected bool TryRetrievePropertyFromDB<T>(out T? output, [CallerMemberName] string? property = null)
-        {
-            if (ID != Guid.Empty && !IsNew)
-            {
-                try
-                {
-                    throw new NotImplementedException();
-                }
-                catch (Exception) { }
-            }
-            output = default;
-            return false;
-        }
         [JsonIgnore]
         public bool HasChanges => HasChangedProperties;
         [JsonIgnore]
         protected internal bool IsLoading = false;
 
+        /// <summary>Clears the recorded change summary on this object and its loaded children.</summary>
         public void ClearChanges()
         {
             if (ObjectSchema.HasLinkedChildObjects)
                 foreach (var childCollection in ObjectSchema.LinkedChildObjectProperties!)
-                    foreach (var childObj in (IEnumerable<ICoreObject>)childCollection.GetValue(this)!)
-                        (childObj as ITFMHasChanges)?.ClearChanges();
+                {
+                    // The collection property may not have been materialised yet.
+                    if (childCollection.GetValue(this) is not IEnumerable<ICoreObject> children)
+                        continue;
+                    foreach (var childObj in children)
+                        // CoreObject does not implement ITFMHasChanges, so casting to it always
+                        // yielded null and the child was silently skipped.
+                        (childObj as CoreObject)?.ClearChanges();
+                }
 
-            Changes.Clear();
+            _changes?.Clear();
         }
 
+        private ChangeCollection? _changes;
 
+        /// <summary>
+        /// Legacy change summary collection, retained for compatibility. The v2 change tracking
+        /// keeps committed and pending property dictionaries instead, so nothing populates this and
+        /// it stays empty unless a derived type adds to it. Use <see cref="HasChanges"/> to ask
+        /// whether an object is dirty, and ChangedProperties for what changed.
+        /// </summary>
+        /// <remarks>
+        /// Created on demand rather than in the constructor: an object materialised from the
+        /// database is built without running one, which previously left this null and made every
+        /// call on it throw.
+        /// </remarks>
         [JsonIgnore]
-        public ChangeCollection Changes;
+        public ChangeCollection Changes => _changes ??= [];
+
+        /// <summary>
+        /// True when the object has uncommitted property changes. Reports the same state as
+        /// <see cref="HasChanges"/>; both previously read from different tracking systems and
+        /// could disagree.
+        /// </summary>
         [JsonIgnore]
-        public virtual bool DataChanged { get { return Changes.HasChanges; } }
+        public virtual bool DataChanged => HasChangedProperties;
 
 
 
@@ -1090,57 +672,6 @@ namespace TFM.Nucleus
 
 
 
-
-
-        protected void UpdateProperty<T>(T value, [CallerMemberName] string property = null)
-        {
-            var prop = ObjectSchema.AllProperties.SingleOrDefault(x => x.Name == property);
-            var implementsHasChanges = typeof(ITFMHasChanges).IsAssignableFrom(typeof(T));
-            if (!IsLoading)
-            {
-                object oldvalue = null;
-                if (value != null)
-                    if (typeof(T) != typeof(byte[]))
-                        oldvalue = prop.BackingField != null ?
-                            prop.BackingField.GetValue(this) :
-                            (!prop.RetrieveOnDemand && prop.CanRead) ?
-                            prop.GetValue(this) : null;
-                prop.BackingField?.SetValue(this, value);
-
-                if (oldvalue == null && value == null)
-                { }
-                else if (oldvalue != null && value != null)
-                {
-                    if ((oldvalue == null && value != null) || (oldvalue != null && value == null) || (!oldvalue.Equals(value)))
-                    {
-                        Changes.Add(property, oldvalue, value, prop.SuppressLogging, prop.AbbreviatedLogging);
-                        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
-                    }
-                }
-                else if (typeof(T) == typeof(byte[]))
-                {
-                    Changes.Add(property, oldvalue, value, prop.SuppressLogging, prop.AbbreviatedLogging);
-                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
-                }
-                else if (value != null)
-                {
-                    if ((oldvalue == null && value != null))
-                    {
-                        Changes.Add(property, oldvalue, value, prop.SuppressLogging, prop.AbbreviatedLogging);
-                        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
-                    }
-                }
-            }
-            else
-            {
-                prop.BackingField?.SetValue(this, value);
-                if (implementsHasChanges)
-                {
-                    var e = new PropertyChangedEventArgs(property);
-                    ((ITFMHasChanges)value).PropertyChanged += Base_PropertyChanged;
-                }
-            }
-        }
 
         internal void ChildPropertyChanged(object sender, PropertyChangedEventArgs e)
         {
@@ -1148,31 +679,32 @@ namespace TFM.Nucleus
                 PropertyChanged?.Invoke(sender, e);
         }
 
-        private void Base_PropertyChanged(object sender, PropertyChangedEventArgs e)
-        {
-            Changes.Add(((ITFMHasChanges)sender).MemberName, null, sender, true, false);
-        }
-
     }
 
     [TypeConverter(typeof(NucleusTypeConverter))]
     public abstract class CoreObject<T> :  CoreObject, ICoreObject<T> where T : CoreObject<T>
     {
+        /// <summary>
+        /// Materialises entities from a <see cref="DataSet"/>. The rows come from the database, so
+        /// the objects are bound as already persisted: binding through BindValue (rather than
+        /// SetRawCurrentValue) clears IsNew once the ID arrives, without which every object
+        /// returned here would be INSERTed again on save instead of updated.
+        /// </summary>
         public static IEnumerable<T> BindDataSet(DataSet dataSet)
         {
+            ArgumentNullException.ThrowIfNull(dataSet);
             if (dataSet.RowCount == 0)
                 return [];
-            var objList = new List<T>();
+            var objList = new List<T>(dataSet.RowCount);
             for (int i = 0; i < dataSet.RowCount; i++)
             {
-                T obj = Activator.CreateInstance<T>();
-                var coreObj = obj as CoreObject;
+                // Construct normally: the constructor initialises the property dictionaries, and
+                // BindValue then overwrites the seeded ID with the one from the row.
+                var obj = Activator.CreateInstance<T>();
                 var row = dataSet[i];
                 for (int ii = 0; ii < dataSet.ColumnCount; ii++)
-                {
-                    coreObj?.SetRawCurrentValue(dataSet.ColumnNames[ii], row[ii] ?? null);
-                }
-                (obj as CoreObject)!.IsLoading = false;
+                    obj.BindValue(dataSet.ColumnNames[ii], row[ii]);
+                obj.OnAfterLoadFromDB();
                 objList.Add(obj);
             }
             return objList;
@@ -1181,8 +713,6 @@ namespace TFM.Nucleus
 
     public abstract class CoreChildObject<TParent> : CoreObject, ICoreObject, ICoreChildObject<TParent> where TParent : ICoreObject<TParent>
     {
-        private TParent? _parent;
-        
         [ParentObject]
         [DatabaseColumn]
         public TParent Parent { get => GetValue<TParent>() ?? throw new InvalidOperationException("Parent object is not bound."); }
@@ -1190,12 +720,10 @@ namespace TFM.Nucleus
         void ICoreChildObject<TParent>.BindParent(TParent parent) => BindParent(parent);
         protected internal void BindParent(TParent parent)
         {
-            if(parent == null)
-                throw new ArgumentNullException(nameof(parent));
-            if (GetRawCurrentValue(nameof(Parent)) is TParent currentParent)
+            ArgumentNullException.ThrowIfNull(parent);
+            if (GetRawCurrentValue(nameof(Parent)) is TParent)
                 throw new CoreObjectException(CoreObjectExceptionType.ParentObjectAlreadyBound);
-            else
-                SetValue(parent, property : nameof(Parent));
+            SetValue(parent, property: nameof(Parent));
         }
     }
 

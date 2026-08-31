@@ -29,23 +29,38 @@ namespace TFM.Nucleus
     { }
 
     /// <summary>
-    /// Attribute that establishes the loading/initializing sequence of TFM classes at program load in Descending order.
+    /// Establishes the initialisation order of entity types at program load, descending.
     /// </summary>
+    [AttributeUsage(AttributeTargets.Class, Inherited = false)]
     public class InitializePriority : Attribute
     {
         public int Priority = 0;
         public InitializePriority() : this(0) { }
         public InitializePriority(int priority) { Priority = priority; }
     }
+
+    /// <summary>Reserved for per-property lazy loading, which is not yet implemented.</summary>
+    [AttributeUsage(AttributeTargets.Property, Inherited = false)]
     public class RetrieveOnDemand : Attribute
     { }
+
+    /// <summary>Includes the linked entity's ID in the audit entry for this property.</summary>
+    [AttributeUsage(AttributeTargets.Property, Inherited = false)]
     public class LinkWhenLogging : Attribute
     { }
+
+    /// <summary>Records that the property changed without recording the values.</summary>
+    [AttributeUsage(AttributeTargets.Property, Inherited = false)]
     public class AbbreviatedLogging : Attribute
     { }
+
+    /// <summary>
+    /// Omits the type or property from audit logging. Deliberately inherited: a base type that
+    /// opts out of logging is making a decision about its data, and a derived type should have to
+    /// opt back in explicitly rather than start logging it by default.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Property, Inherited = true)]
     public class SuppressLogging : Attribute
-    { }
-    public class SuppressCopying : Attribute
     { }
 
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]

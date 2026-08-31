@@ -33,7 +33,9 @@ namespace TFM.Nucleus.Data
         public void Delete(ICoreObject obj);
 
         public Task SaveAsync(ICoreObject obj);
+        public Task SaveAsync(ICoreObject obj, CancellationToken token);
         public Task DeleteAsync(ICoreObject obj);
+        public Task DeleteAsync(ICoreObject obj, CancellationToken token);
 
         public void BulkSave(IEnumerable<ICoreObject?>? objects);
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects);

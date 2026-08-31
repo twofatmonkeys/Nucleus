@@ -53,7 +53,10 @@ namespace TFM.Nucleus.Data.SQL
                     if (childTableSchema != null)
                     {
                         var childQuery = new SelectQuery(childTableSchema);
-                        AddChildQuery(childQuery, childObjSchema.ParentObjectProperty.Name);
+                        var parentProperty = childObjSchema.ParentObjectProperty
+                            ?? throw new InvalidQueryException(
+                                $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
+                        AddChildQuery(childQuery, parentProperty.Name);
                     }
                 }
             }
@@ -111,7 +114,7 @@ namespace TFM.Nucleus.Data.SQL
             if (ParentQuery != null)
                 throw new InvalidQueryException("Paging is not supported on child queries.");
             var columnList = string.Join(" ,", Columns.Select(c => $"[{c}]"));
-            var orderBy = OrderBy.IsEmpty ? "ORDER BY [ID]" : OrderBy.BuildOrderByStatement().ToString();
+            var orderBy = OrderBy.IsEmpty ? "ORDER BY [ID]" : OrderBy.BuildOrderByStatement()?.ToString() ?? "ORDER BY [ID]";
             var sb = new StringBuilder(
                 $"SELECT {columnList} FROM (SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
                 $"FROM {TableName}{(WithNoLock ? "" : " WITH(NOLOCK)")}");

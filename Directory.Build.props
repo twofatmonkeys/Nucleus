@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
 
   <!--
     Repo-wide MSBuild defaults. Applies to every project in the repo: src, tests, samples and
@@ -16,20 +16,12 @@
          a new analyzer arriving with an SDK bump cannot block someone mid-change. -->
     <TreatWarningsAsErrors Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</TreatWarningsAsErrors>
     <!--
-      Suppressions carried over from the pre-scaffold code, so that CI has a green baseline to
-      protect. Each one is a real cleanup task, not a permanent exemption; see
-      docs\code-review-findings.md and remove the code from this list as the source is fixed.
-
-        IDE0040        - accessibility modifiers, ~450 hits, almost all explicit "public" on
-                         interface members that the shared .editorconfig asks to be left implicit.
-        CS1570         - malformed XML in doc comments (Evaluator and friends use bare angle
-                         brackets).
-        CS0414, CS0169 - field assigned but never used, and field never used.
-        CS86xx, CS8600 - nullable reference analysis, ~80 hits concentrated in the reflection and
-                         IL emit code in CoreObject, ObjectSchema and ObjectDataManager. Nullable
-                         is enabled repo wide but this code predates it.
+      One suppression remains from the pre-scaffold code. IDE0040 fires roughly 450 times, almost
+      all of it explicit "public" on interface members that the shared .editorconfig asks to be left
+      implicit. It is a mechanical edit across most files in the repo and is deliberately kept
+      separate from the behavioural fixes; see docs\code-review-findings.md.
     -->
-    <NoWarn>$(NoWarn);IDE0040;CS1570;CS0414;CS0169;CS8600;CS8601;CS8602;CS8603;CS8604;CS8605;CS8622;CS8625</NoWarn>
+    <NoWarn>$(NoWarn);IDE0040</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup Label="Versioning">
