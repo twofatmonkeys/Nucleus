@@ -19,6 +19,9 @@ real documentation in a fifth unversioned folder (`Nucleus.v2`). They were alway
 lockstep on a single version, so they are now one repo. The old folders are superseded; do not
 edit them, and do not reintroduce the conditional package-or-project reference pattern they used.
 
+This is the v2 line. The 1.x code, in its original flat pre-monorepo layout, is preserved on the
+`archive/v1` branch and is not maintained.
+
 Built on the TFM NuGet package scaffold. The layout, the MSBuild property split, the version
 schema and the workflows are the shared TFM standard and are documented in `docs/`.
 

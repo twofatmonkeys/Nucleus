@@ -37,10 +37,12 @@
       the highest existing v$(VersionMajor).YY.DDD.* git tag plus one, which makes the tag history
       the source of truth and keeps master free of version bump commits.
 
-      History note: the packages published before the monorepo restructure are stamped 1.26.194.0.
-      Any CI release from 2026 day 243 onward sorts above that, so VersionMajor stays 1.
+      History note: the 1.x packages were built from the pre-monorepo layout, the last of them
+      stamped 1.26.194.0, and that code is preserved on the archive/v1 branch. v2 is a breaking
+      release: the entity base is generic (CoreObject<T>), deletion is opt-in through [Deletable],
+      and the registration surface changed, so it takes a new major rather than continuing 1.x.
     -->
-    <VersionMajor>1</VersionMajor>
+    <VersionMajor>2</VersionMajor>
     <!-- Local and pull request builds get a 0.0.0 placeholder so a dev build can never be mistaken
          for a released one. The condition lets the CI override win. -->
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajor).0.0.0</VersionPrefix>
