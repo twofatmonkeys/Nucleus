@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything shared lives in ..\Directory.Build.props and ..\..\Directory.Build.props. A package
+    csproj should only carry what is genuinely specific to this package: its identity, its
+    description, its tags and its dependencies.
+  -->
+
+  <PropertyGroup>
+    <PackageId>TFM.Nucleus.Data.SQL</PackageId>
+    <Title>TFM.Nucleus.Data.SQL</Title>
+    <RootNamespace>TFM.Nucleus.Data.SQL</RootNamespace>
+    <Description>SQL Server provider for the Nucleus ORM: query rendering, connection and transaction context trees, the bulk engine, automatic schema create, compare and migrate, SqlDependency change notifications and AddNucleusSQLDataProvider registration.</Description>
+    <PackageTags>tfm;nucleus;orm;sql-server;sqlclient;provider</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft.Data.SqlClient carries its own multi-targeting; one version serves both TFMs. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.1" />
+
+    <!-- Package references are pinned per target framework so each consumer gets the assemblies
+         built for their runtime rather than a lowest common denominator set. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+    <ProjectReference Include="..\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep the list to real test projects: every entry here is a hole in the assembly boundary. -->
+    <InternalsVisibleTo Include="TFM.Nucleus.Tests" />
+  </ItemGroup>
+
+</Project>

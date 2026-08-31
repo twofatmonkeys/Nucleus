@@ -1,0 +1,97 @@
+using System;
+using System.Threading;
+
+namespace TFM.Nucleus.Data
+{
+    /// <summary>
+    /// A provider-neutral query term: a column name, a value, an operator and the variable name
+    /// used when the value is bound as a command parameter. Contains no SQL — providers render
+    /// terms into their own dialect (see the SQL provider's ParameterExtensions).
+    /// </summary>
+    public class Parameter : IQueryParameter
+    {
+        #region IQueryParameter Implementation
+        IQueryParameterCollection IQueryParameter.CreateCollection() =>
+            CreateCollection().AsQueryParameters();
+        public IQueryOutputParameter castAsOutputParameter() => throw new InvalidCastException("Cannot cast a Parameter to an Output Parameter");
+        #endregion
+
+        public string? Name { get => _name; }
+        private readonly string? _name;
+
+        public readonly bool IsOutputParameter = false;
+
+        public object? Value
+        {
+            get
+            {
+                if (_value != null && _value is IDatabaseStringValue stringValue)
+                    return stringValue.DatabaseStringValue;
+                else
+                    return _value;
+            }
+        }
+        private readonly object? _value;
+
+        public IDataColumnSchema? ColumnSchema => columnSchema;
+        public IDataColumnSchema? columnSchema;
+
+        public string? Variable => _variable;
+        private readonly string? _variable;
+
+        public Operator Operator { get; set; }
+
+        /// <summary>
+        /// True when the value is bound as a command parameter; false when the term has no
+        /// bindable value (null comparisons) or the value is a server-evaluated function.
+        /// </summary>
+        public bool UsesVariable =>
+            _value != null && _value is not IServerFunction;
+
+        /// <summary>False for null equality/inequality terms, which render as IS [NOT] NULL.</summary>
+        public bool NeedsOperator =>
+            !(Value == null && (Operator == Operator.Equals || Operator == Operator.NotEquals));
+
+        public Parameter()
+        { }
+        public Parameter(IDataColumnSchema colSchema, object? value)
+        {
+            columnSchema = colSchema;
+            _name = colSchema.ColumnName;
+            _value = colSchema.GetClrValue(value);
+            _variable = NextVariableName();
+            Operator = Operator.Equals;
+        }
+        public Parameter(string name, object? value) : this(name, value, true, Operator.Equals)
+        {
+        }
+        protected internal Parameter(bool isOutputParameter, string name, object? value) : this(name, value, true, Operator.Equals)
+        {
+            IsOutputParameter = isOutputParameter;
+        }
+        public Parameter(string name, object? value, bool random) : this(name, value, random, Operator.Equals)
+        {
+        }
+        public Parameter(string name, object? value, Operator oprtr) : this(name, value, true, oprtr)
+        {
+        }
+        public Parameter(string name, object? value, bool random, Operator oprtr)
+        {
+            _name = name;
+            _value = value;
+            _variable = random ? NextVariableName() : name;
+            Operator = oprtr;
+        }
+
+        public ParameterCollection CreateCollection()
+        {
+            return [this];
+        }
+
+        // Process-wide counter guarantees variable-name uniqueness within any batched command.
+        private static int _variableCounter;
+        private static string NextVariableName() => $"p{(uint)Interlocked.Increment(ref _variableCounter)}";
+
+        public override string ToString() => $"{Name} {Operator} {Value ?? "null"}";
+    }
+}

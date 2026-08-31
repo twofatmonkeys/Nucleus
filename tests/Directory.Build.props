@@ -1,0 +1,46 @@
+<Project>
+
+  <!-- Chain up to the repo root props. Note it does NOT chain through src\Directory.Build.props,
+       so no packaging property reaches a test project. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)..'))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- Test code is not a public API surface, so the doc file and its warnings are pure noise. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Tests are pinned to net8.0 for now. On net10.0 the new System.Linq.AsyncEnumerable in the
+         BCL makes Where/Select on ObjectDataAdaptor ambiguous (it implements both IQueryable and
+         IAsyncEnumerable), so the test sources fail to compile. The real fix belongs in the
+         library (see docs\code-review-findings.md); when that lands, delete this override so the
+         tests inherit net8.0;net10.0 from the root props. -->
+    <TargetFrameworks>net8.0</TargetFrameworks>
+    <!-- The tests compile at C# 12, the language version they were written and last built against.
+         From C# 13 the compiler resolves someArray.Contains(x) to the span based
+         MemoryExtensions.Contains rather than Enumerable.Contains, and Evaluator cannot invoke a
+         method with a ref struct parameter through an expression tree, so
+         ExpressionParserTests.ArrayContains fails. That is a real library limitation for consumers
+         on C# 13 or later, not a test defect: see docs\code-review-findings.md. Remove this pin
+         once ExpressionParser handles the MemoryExtensions overload. -->
+    <LangVersion>12.0</LangVersion>
+    <!-- xUnit1051 asks every call taking a CancellationToken to pass
+         TestContext.Current.CancellationToken. Worth doing, but it is a test-wide edit rather than
+         part of the scaffold move; suppressed here so CI has a green baseline. See
+         docs\code-review-findings.md. -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <!-- Deviation from the TFM.NuGetScaffold: this repo's tests are written against xunit.v3, not
+       xunit 2.x. Recorded in AGENTS.md. The harness lives here rather than in each test csproj,
+       so a test csproj carries only its ProjectReferences (and, for the integration tests, its
+       own configuration packages). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit.v3" Version="2.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

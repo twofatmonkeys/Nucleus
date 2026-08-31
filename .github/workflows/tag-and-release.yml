@@ -1,0 +1,263 @@
+name: Tag Version & Release
+
+# =================================================================================================
+# NOTHING IN THIS FILE IS EDITED PER REPO. Copy it as it is.
+#
+# Every setting it needs is read from Directory.Build.props at run time:
+#
+#   VersionMajor        the major component of the version. See docs/versioning.md.
+#   PublishToNuGetOrg   'true' also pushes to nuget.org. Anything else publishes to GitHub
+#                       Packages only, which is the default for internal packages.
+#   TargetFrameworks    determines which .NET runtimes get installed for the test run.
+#
+# Keeping this file identical in every package repo means it can be updated by copying, and any
+# drift between repos shows up as a diff rather than hiding in an env block.
+# =================================================================================================
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push the release branch and create the GitHub release
+  packages: write   # push to GitHub Packages
+  id-token: write   # NuGet trusted publishing, used only when PublishToNuGetOrg is true
+
+# Two pushes landing seconds apart would otherwise compute the same revision number, and the second
+# release would collide on the tag. Serialising the runs makes the revision counter safe.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, Pack & Release
+    runs-on: ubuntu-latest
+    env:
+      NUGET_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      ARTIFACTS: ${{ github.workspace }}/artifacts
+      # nuget.config resolves the GitHub Packages credential from these two variables, which is why
+      # this workflow does not pass source-url to actions/setup-dotnet. That input rewrites
+      # nuget.config on the runner and would drop the package source mapping with it.
+      GITHUB_USER: ${{ github.repository_owner }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Version numbers use the business clock, not the runner's UTC clock, so the day of year in a
+      # version matches the day the release was actually cut.
+      TZ: Australia/Sydney
+
+    steps:
+      # Every action pinned below declares "using: node24". GitHub hosted runners have defaulted to
+      # Node 24 since 16 June 2026 and Node 20 was removed from them on 23 September 2026, so an
+      # action still on node20 fails outright rather than warning. When bumping an action, check its
+      # action.yml still says node24 before pinning the new major: actions/upload-artifact v5, for
+      # instance, was still node20 and only v6 moved across.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history and tags: the revision component of the version is derived from the
+          # existing release tags, so a shallow clone would restart the counter at 1 every run.
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # Repo settings come from Directory.Build.props, evaluated directly. MSBuild will evaluate a
+      # .props file as a project, which gives one unambiguous source for values that are repo wide
+      # by design, with no need to pick a "primary" project or worry about evaluation order.
+      # -getProperty evaluates rather than builds, so this works before restore.
+      - name: Read repo settings
+        id: settings
+        run: |
+          set -euo pipefail
+
+          MAJOR=$(dotnet msbuild Directory.Build.props -getProperty:VersionMajor | tr -d '[:space:]')
+          if ! echo "${MAJOR}" | grep -qE '^[0-9]+$'; then
+            echo "::error::VersionMajor is missing or not numeric in Directory.Build.props (got '${MAJOR}')."
+            exit 1
+          fi
+
+          # Anything absent or not exactly "true" means GitHub Packages only. An undefined property
+          # evaluates to an empty string, so a repo that predates this setting simply does not push
+          # to the public feed, which is the safe direction to fail in.
+          PUBLISH=$(dotnet msbuild Directory.Build.props -getProperty:PublishToNuGetOrg \
+            | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+          echo "VersionMajor:      ${MAJOR}"
+          echo "PublishToNuGetOrg: ${PUBLISH:-(not set, GitHub Packages only)}"
+          {
+            echo "version-major=${MAJOR}"
+            echo "publish-nuget-org=${PUBLISH}"
+          } >> "$GITHUB_OUTPUT"
+
+      # A multi targeted test project needs every target framework's runtime present, not just the
+      # SDK's own. The union across src and tests is what matters, not any single project's list:
+      # the test projects are the ones that actually have to run, and a repo may ship one package
+      # targeting fewer frameworks than another.
+      - name: Resolve target framework runtimes
+        id: tfms
+        run: |
+          set -euo pipefail
+
+          PROJECTS=$(find src tests -name '*.csproj' 2>/dev/null | sort)
+          if [ -z "${PROJECTS}" ]; then
+            echo "::error::No .csproj found under src/ or tests/. This workflow expects the layout the scaffold defines."
+            exit 1
+          fi
+
+          FRAMEWORKS=""
+          for project in ${PROJECTS}; do
+            TFMS=$(dotnet msbuild "${project}" -getProperty:TargetFrameworks | tr -d '[:space:]')
+            if [ -z "${TFMS}" ]; then
+              TFMS=$(dotnet msbuild "${project}" -getProperty:TargetFramework | tr -d '[:space:]')
+            fi
+            echo "${project}: ${TFMS}"
+            FRAMEWORKS="${FRAMEWORKS};${TFMS}"
+          done
+
+          # Only netX.Y maps to an installable runtime. A netstandard or net4xx target is skipped
+          # rather than turned into a nonsense version.
+          RUNTIMES=$(echo "${FRAMEWORKS}" | tr ';' '\n' \
+            | sed -n 's|^net\([0-9][0-9]*\.[0-9][0-9]*\)$|\1.x|p' | sort -u -V)
+          echo "Runtimes to install: ${RUNTIMES:-(none)}"
+          {
+            echo "runtimes<<TFMEOF"
+            echo "${RUNTIMES}"
+            echo "TFMEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install target framework runtimes
+        if: steps.tfms.outputs.runtimes != ''
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ steps.tfms.outputs.runtimes }}
+
+      # Version schema: MAJOR.YY.DDD.N
+      #   MAJOR  from <VersionMajor> in Directory.Build.props
+      #   YY     two digit year, Australia/Sydney
+      #   DDD    day of year, no leading zeros
+      #   N      one more than the highest existing tag for that day
+      # Nothing is committed back to master: the tag history is the record of what shipped.
+      - name: Compute version
+        id: version
+        run: |
+          set -euo pipefail
+          MAJOR="${{ steps.settings.outputs.version-major }}"
+
+          YY=$(date +%y)
+          DDD=$(date +%-j)
+          PREFIX="v${MAJOR}.${YY}.${DDD}."
+          LAST=$(git tag --list "${PREFIX}*" | sed "s|^${PREFIX}||" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+          REV=$(( ${LAST:-0} + 1 ))
+          VERSION="${MAJOR}.${YY}.${DDD}.${REV}"
+
+          echo "Version: ${VERSION} (highest revision already tagged today: ${LAST:-none})"
+          {
+            echo "version=${VERSION}"
+            echo "tag=v${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore
+
+      # VersionPrefix is passed to build, test and pack alike. Passing it only to pack would stamp
+      # the package with one version and the assembly inside it with another.
+      - name: Build
+        run: >
+          dotnet build --configuration Release --no-restore
+          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: >
+          dotnet test --configuration Release --no-build
+          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:ContinuousIntegrationBuild=true
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory "${{ github.workspace }}/test-results"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/test-results
+          if-no-files-found: ignore
+
+      # No project argument: pack the whole solution so every project with IsPackable true produces
+      # a package. Test projects opt out via tests/Directory.Build.props.
+      - name: Pack
+        run: >
+          dotnet pack --configuration Release --no-build
+          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:ContinuousIntegrationBuild=true
+          --output "${ARTIFACTS}"
+
+      - name: List packages
+        run: ls -1 "${ARTIFACTS}"
+
+      # --skip-duplicate: an already published version is skipped on the 409 rather than failing the
+      # run. With a computed version that should never happen, but a re-run of an old workflow would.
+      - name: Publish to GitHub Packages
+        run: >
+          dotnet nuget push "${ARTIFACTS}/*.nupkg"
+          --source "${NUGET_URL}"
+          --api-key ${{ secrets.GITHUB_TOKEN }}
+          --skip-duplicate
+
+      # Trusted publishing: nuget.org exchanges the job's OIDC token for a short lived API key, so
+      # there is no long lived nuget.org secret in the repo.
+      - name: NuGet.org login
+        if: steps.settings.outputs.publish-nuget-org == 'true'
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          # Our nuget.org profile name is the same as the GitHub org name, so derive it rather than
+          # requiring a secret in every repo. A nuget.org username is not confidential anyway: it is
+          # printed under Owners on every package page. The secret is kept only as an override, for
+          # the case where a repo sits under a different GitHub owner than the publishing account.
+          user: ${{ secrets.NUGET_USER || github.repository_owner }}
+
+      - name: Publish to NuGet.org
+        if: steps.settings.outputs.publish-nuget-org == 'true'
+        run: >
+          dotnet nuget push "${ARTIFACTS}/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
+
+      # release/vX.Y.Z.N rather than vX.Y.Z.N: the GitHub release below creates a tag of that name,
+      # and a branch and a tag sharing a name make every later "git checkout vX.Y.Z.N" ambiguous.
+      # Pushing the ref directly is idempotent, unlike "git checkout -b".
+      - name: Create release branch
+        run: |
+          BRANCH="release/${{ steps.version.outputs.tag }}"
+          if git ls-remote --exit-code --heads origin "${BRANCH}" > /dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists. Skipping."
+          else
+            git push origin "HEAD:refs/heads/${BRANCH}"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Packages published from \`${GITHUB_SHA:0:7}\`:"
+            echo
+            for package in "${ARTIFACTS}"/*.nupkg; do
+              echo "- \`$(basename "${package}" .nupkg)\`"
+            done
+          } > release-notes.md
+
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --target "${GITHUB_SHA}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md \
+            --generate-notes \
+            "${ARTIFACTS}"/*.nupkg

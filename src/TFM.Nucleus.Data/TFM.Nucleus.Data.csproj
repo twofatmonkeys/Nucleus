@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything shared lives in ..\Directory.Build.props and ..\..\Directory.Build.props. A package
+    csproj should only carry what is genuinely specific to this package: its identity, its
+    description, its tags and its dependencies.
+  -->
+
+  <PropertyGroup>
+    <PackageId>TFM.Nucleus.Data</PackageId>
+    <Title>TFM.Nucleus.Data</Title>
+    <RootNamespace>TFM.Nucleus.Data</RootNamespace>
+    <Description>Provider-neutral data layer for the Nucleus ORM: ObjectDataManager save, load and delete orchestration, a LINQ provider with async operators, expression parsing, multi-provider routing, the layered cache and AddNucleusData registration. Contains no SQL.</Description>
+    <PackageTags>tfm;nucleus;orm;data;linq;provider</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Package references are pinned per target framework so each consumer gets the assemblies
+         built for their runtime rather than a lowest common denominator set. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

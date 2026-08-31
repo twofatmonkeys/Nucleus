@@ -1,0 +1,32 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path=".gitattributes" />
+    <File Path=".gitignore" />
+    <File Path=".github/workflows/build.yml" />
+    <File Path=".github/workflows/tag-and-release.yml" />
+    <File Path="AGENTS.md" />
+    <File Path="CLAUDE.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="global.json" />
+    <File Path="LICENSE.txt" />
+    <File Path="nuget.config" />
+    <File Path="README.md" />
+    <File Path="src/Directory.Build.props" />
+    <File Path="tests/Directory.Build.props" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs/code-review-findings.md" />
+    <File Path="docs/conventions.md" />
+    <File Path="docs/publishing.md" />
+    <File Path="docs/versioning.md" />
+  </Folder>
+  <Project Path="src/TFM.Nucleus.Abstractions/TFM.Nucleus.Abstractions.csproj" />
+  <Project Path="src/TFM.Nucleus/TFM.Nucleus.csproj" />
+  <Project Path="src/TFM.Nucleus.Data/TFM.Nucleus.Data.csproj" />
+  <Project Path="src/TFM.Nucleus.Data.SQL/TFM.Nucleus.Data.SQL.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/TFM.Nucleus.Tests/TFM.Nucleus.Tests.csproj" />
+    <Project Path="tests/TFM.Nucleus.IntegrationTests/TFM.Nucleus.IntegrationTests.csproj" />
+  </Folder>
+</Solution>

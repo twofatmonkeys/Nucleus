@@ -1,0 +1,107 @@
+name: Build & Test
+
+# Pull request gate. Nothing to configure: it builds and tests whatever solution is in the repo.
+# Deliberately does not pack or publish, so a pull request can never consume a version number.
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches-ignore:
+      - master
+      - 'release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    env:
+      # nuget.config resolves the GitHub Packages credential from these two variables. Read access
+      # is enough here because nothing is published.
+      GITHUB_USER: ${{ github.repository_owner }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # Action majors are pinned to the ones that declare "using: node24". See the same note in
+      # tag-and-release.yml before bumping any of them.
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # Identical to the step of the same name in tag-and-release.yml. The union across src and
+      # tests is what matters: the test projects are the ones that actually have to run, and a repo
+      # may ship one package targeting fewer frameworks than another.
+      - name: Resolve target framework runtimes
+        id: tfms
+        run: |
+          set -euo pipefail
+
+          PROJECTS=$(find src tests -name '*.csproj' 2>/dev/null | sort)
+          if [ -z "${PROJECTS}" ]; then
+            echo "::error::No .csproj found under src/ or tests/. This workflow expects the layout the scaffold defines."
+            exit 1
+          fi
+
+          FRAMEWORKS=""
+          for project in ${PROJECTS}; do
+            TFMS=$(dotnet msbuild "${project}" -getProperty:TargetFrameworks | tr -d '[:space:]')
+            if [ -z "${TFMS}" ]; then
+              TFMS=$(dotnet msbuild "${project}" -getProperty:TargetFramework | tr -d '[:space:]')
+            fi
+            echo "${project}: ${TFMS}"
+            FRAMEWORKS="${FRAMEWORKS};${TFMS}"
+          done
+
+          # Only netX.Y maps to an installable runtime. A netstandard or net4xx target is skipped
+          # rather than turned into a nonsense version.
+          RUNTIMES=$(echo "${FRAMEWORKS}" | tr ';' '\n' \
+            | sed -n 's|^net\([0-9][0-9]*\.[0-9][0-9]*\)$|\1.x|p' | sort -u -V)
+          echo "Runtimes to install: ${RUNTIMES:-(none)}"
+          {
+            echo "runtimes<<TFMEOF"
+            echo "${RUNTIMES}"
+            echo "TFMEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install target framework runtimes
+        if: steps.tfms.outputs.runtimes != ''
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ steps.tfms.outputs.runtimes }}
+
+      - name: Restore
+        run: dotnet restore
+
+      # ContinuousIntegrationBuild also flips TreatWarningsAsErrors on, so a warning fails the pull
+      # request rather than accumulating on master.
+      - name: Build
+        run: dotnet build --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: >
+          dotnet test --configuration Release --no-build
+          -p:ContinuousIntegrationBuild=true
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory "${{ github.workspace }}/test-results"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/test-results
+          if-no-files-found: ignore

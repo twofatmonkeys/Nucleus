@@ -1,0 +1,102 @@
+<Project>
+
+  <!--
+    Repo-wide MSBuild defaults. Applies to every project in the repo: src, tests, samples and
+    benchmarks alike. Packaging-only concerns live in src\Directory.Build.props so that test and
+    sample projects never inherit them.
+  -->
+
+  <PropertyGroup Label="Frameworks">
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Warnings fail the build in CI only. A local build still shows them but stays runnable, so
+         a new analyzer arriving with an SDK bump cannot block someone mid-change. -->
+    <TreatWarningsAsErrors Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</TreatWarningsAsErrors>
+    <!--
+      Suppressions carried over from the pre-scaffold code, so that CI has a green baseline to
+      protect. Each one is a real cleanup task, not a permanent exemption; see
+      docs\code-review-findings.md and remove the code from this list as the source is fixed.
+
+        IDE0040        - accessibility modifiers, ~450 hits, almost all explicit "public" on
+                         interface members that the shared .editorconfig asks to be left implicit.
+        CS1570         - malformed XML in doc comments (Evaluator and friends use bare angle
+                         brackets).
+        CS0414, CS0169 - field assigned but never used, and field never used.
+        CS86xx, CS8600 - nullable reference analysis, ~80 hits concentrated in the reflection and
+                         IL emit code in CoreObject, ObjectSchema and ObjectDataManager. Nullable
+                         is enabled repo wide but this code predates it.
+    -->
+    <NoWarn>$(NoWarn);IDE0040;CS1570;CS0414;CS0169;CS8600;CS8601;CS8602;CS8603;CS8604;CS8605;CS8622;CS8625</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Versioning">
+    <!--
+      Version schema: MAJOR.YY.DDD.N
+        MAJOR - the only part a human edits, and only for a breaking release.
+        YY    - two digit year, Australia/Sydney.
+        DDD   - day of year, 1 to 366, no leading zeros.
+        N     - revision within that day, starting at 1.
+
+      .github\workflows\tag-and-release.yml computes the whole version on every push to master and
+      passes it in as -p:VersionPrefix, so no file in the repo is edited per release. N comes from
+      the highest existing v$(VersionMajor).YY.DDD.* git tag plus one, which makes the tag history
+      the source of truth and keeps master free of version bump commits.
+
+      History note: the packages published before the monorepo restructure are stamped 1.26.194.0.
+      Any CI release from 2026 day 243 onward sorts above that, so VersionMajor stays 1.
+    -->
+    <VersionMajor>1</VersionMajor>
+    <!-- Local and pull request builds get a 0.0.0 placeholder so a dev build can never be mistaken
+         for a released one. The condition lets the CI override win. -->
+    <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajor).0.0.0</VersionPrefix>
+    <AssemblyVersion>$(VersionPrefix)</AssemblyVersion>
+    <FileVersion>$(VersionPrefix)</FileVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Ownership">
+    <Authors>Two Fat Monkeys</Authors>
+    <Company>Two Fat Monkeys</Company>
+    <Product>TFM</Product>
+    <Copyright>Copyright © Two Fat Monkeys</Copyright>
+    <NeutralLanguage>en-AU</NeutralLanguage>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Repository">
+    <!-- PackageProjectUrl deliberately follows RepositoryUrl so there is one URL to update,
+         not two. -->
+    <RepositoryUrl>https://github.com/twofatmonkeys/Nucleus</RepositoryUrl>
+    <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- SourceLink. The .NET SDK includes the GitHub provider, so these three properties are all
+         that is needed for "go to definition" to land on the real source for a consumer. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Output">
+    <!-- Every pack in the repo lands here, local and CI alike, so the publish step can push
+         artifacts\*.nupkg by wildcard without knowing how many packages the repo ships. -->
+    <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\</PackageOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Publishing">
+    <!--
+      Read by .github\workflows\tag-and-release.yml. Every release publishes to GitHub Packages;
+      this decides whether it also pushes to nuget.org.
+
+      Turning it on is not sufficient on its own. nuget.org will only accept the push if a trusted
+      publishing policy naming this repository and this workflow already exists, so the real gate is
+      on nuget.org and this is the local switch. Leave it false for internal packages: a package on
+      nuget.org is public and effectively permanent. See docs\publishing.md.
+
+      It lives here rather than in the workflow so that the workflow files stay byte identical in
+      every package repo. Anything absent or not exactly "true" means no nuget.org push.
+    -->
+    <PublishToNuGetOrg>false</PublishToNuGetOrg>
+  </PropertyGroup>
+
+</Project>

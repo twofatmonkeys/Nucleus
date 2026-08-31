@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The test harness packages and the IsPackable/IsTestProject settings come from
+       ..\Directory.Build.props, so this project needs nothing but its ProjectReferences. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus\TFM.Nucleus.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
+  </ItemGroup>
+
+</Project>

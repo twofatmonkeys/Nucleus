@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything shared lives in ..\Directory.Build.props and ..\..\Directory.Build.props. A package
+    csproj should only carry what is genuinely specific to this package: its identity, its
+    description, its tags and its dependencies.
+
+    This is the contract layer of the Nucleus family. Every other Nucleus package and every
+    consuming application references it, so anything added here is forced on all of them. It
+    contains no SQL and no provider code by design; the ProviderSeamTests in the unit test project
+    enforce that.
+  -->
+
+  <PropertyGroup>
+    <PackageId>TFM.Nucleus.Abstractions</PackageId>
+    <Title>TFM.Nucleus.Abstractions</Title>
+    <RootNamespace>TFM.Nucleus.Abstractions</RootNamespace>
+    <Description>Contracts and the neutral query model for the Nucleus ORM: ICoreObject, IDataProvider and IDataContext, schema interfaces, the DataSet row buffer, NucleusCollection and NucleusChildCollection, PagedResult, change subscriptions and NucleusOptions. No SQL and no provider code.</Description>
+    <PackageTags>tfm;nucleus;orm;abstractions;data-access</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Package references are pinned per target framework so each consumer gets the assemblies
+         built for their runtime rather than a lowest common denominator set. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep the list to real test projects: every entry here is a hole in the assembly boundary. -->
+    <InternalsVisibleTo Include="TFM.Nucleus.Tests" />
+  </ItemGroup>
+
+</Project>
