@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
-    public interface IGuidIdentifer
+    public interface IGuidIdentifier
     {
         public Guid ID { get; }
     }

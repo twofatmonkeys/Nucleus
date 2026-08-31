@@ -26,5 +26,17 @@ namespace TFM.Nucleus
             services.AddSingleton<INucleusServiceProvider, NucleusServiceProvider>();
             return services;
         }
+
+        /// <summary>
+        /// Opt-in: persists host application log entries (at or above NucleusOptions.LogEntityMinimumLevel)
+        /// into the Nucleus-managed NucleusLogEntry table via the logging pipeline.
+        /// </summary>
+        public static IServiceCollection AddNucleusLogging(this IServiceCollection services)
+        {
+            services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(sp =>
+                new NucleusLoggerProvider(
+                    sp.GetService<Microsoft.Extensions.Options.IOptions<NucleusOptions>>()?.Value));
+            return services;
+        }
     }
 }

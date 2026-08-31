@@ -6,11 +6,11 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
-    public abstract class TFMInitialiseWithString
+    public abstract class TFMInitializeWithString
     {
-        public TFMInitialiseWithString()
+        public TFMInitializeWithString()
         { }
-        public TFMInitialiseWithString(string value, bool lazyLoad, bool hasChanges)
+        public TFMInitializeWithString(string value, bool lazyLoad, bool hasChanges)
         {
 
         }

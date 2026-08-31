@@ -8,7 +8,10 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
-    public class NucleusTypeConverter : TypeConverter
+    // Internal until rebound to the v2 load pipeline: ConvertFrom resolves a nonexistent static
+    // "Load" method and misuses the descriptor context as the entity type. Rewire in Phase 4
+    // (statics -> ObjectDataManager forwarders) or delete if unconsumed.
+    internal class NucleusTypeConverter : TypeConverter
     {
         public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
         {

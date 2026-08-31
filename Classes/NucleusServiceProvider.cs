@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using TFM.Nucleus.Data;
 
 namespace TFM.Nucleus
 {

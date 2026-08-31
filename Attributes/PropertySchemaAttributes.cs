@@ -29,7 +29,7 @@ namespace TFM.Nucleus
     { }
 
     /// <summary>
-    /// Attribute that establishes the loading/initialising sequence of TFM classes at program load in Descending order.
+    /// Attribute that establishes the loading/initializing sequence of TFM classes at program load in Descending order.
     /// </summary>
     public class InitializePriority : Attribute
     {
@@ -45,7 +45,7 @@ namespace TFM.Nucleus
     { }
     public class SuppressLogging : Attribute
     { }
-    public class SupressCopying : Attribute
+    public class SuppressCopying : Attribute
     { }
 
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]

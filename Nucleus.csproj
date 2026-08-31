@@ -9,8 +9,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 	  <AssemblyName>TFM.Nucleus</AssemblyName>
-	  <AssemblyVersion>1.25.313.0</AssemblyVersion>
-	  <FileVersion>1.25.313.0</FileVersion>
+	  <AssemblyVersion>1.26.194.0</AssemblyVersion>
+	  <FileVersion>1.26.194.0</FileVersion>
 	  <VersionPrefix>$(AssemblyVersion)</VersionPrefix>
 	  <PackageReadmeFile>README.md</PackageReadmeFile>
 	  <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
@@ -21,7 +21,6 @@
 	  <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 	  <GeneratePackageOnBuild Condition="Exists('$(USERPROFILE)\source\nuget\')">true</GeneratePackageOnBuild>
 	  <PackageOutputPath Condition="Exists('$(USERPROFILE)\source\nuget\')">$(USERPROFILE)\source\nuget\</PackageOutputPath>
-	  <UserSecretsId>d60b152d-3ef3-4e77-8de1-14598cb8496a</UserSecretsId>
   </PropertyGroup>
 	<ItemGroup>
 		<None Include="Images\icon.png" Pack="true" PackagePath="\" />
@@ -29,11 +28,8 @@
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>
-		<PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.3.0" />
-		<PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="6.0.1" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.2" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="9.0.2" />
-		<PackageReference Include="System.Text.Json" Version="9.0.1" />
 		<None Update="README.md">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
@@ -43,7 +39,10 @@
 		<PackageReference Include="TFM.Nucleus.Abstractions" Version="1.25.*" />
 	</ItemGroup>
 	<ItemGroup>
-	  <Folder Include="Configuration\" />
+	  <ProjectReference Include="..\Nucleus Abstractions\Nucleus Abstractions.csproj" />
+	</ItemGroup>
+	<ItemGroup>
+		<InternalsVisibleTo Include="TFM.Nucleus.Tests" />
 	</ItemGroup>
 
 

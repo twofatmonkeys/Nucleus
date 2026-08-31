@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using TFM.Nucleus.Data;
+using TFM.Nucleus.Abstractions.Interfaces;
 
 namespace TFM.Nucleus
 {
@@ -113,6 +114,8 @@ namespace TFM.Nucleus
         public readonly bool SuppressLogging;
         public readonly bool AbbreviatedLogging;
         public readonly bool LinkWhenLogging;
+        public bool SkipOnDbRead => _skipOnDbRead;
+        private readonly bool _skipOnDbRead = false;
 
 
         public readonly bool IsLinkedObject;
@@ -231,7 +234,11 @@ namespace TFM.Nucleus
             SuppressLogging = Attribute.IsDefined(PropertyInfo, typeof(SuppressLogging));
             AbbreviatedLogging = Attribute.IsDefined(PropertyInfo, typeof(AbbreviatedLogging));
             LinkWhenLogging = Attribute.IsDefined(PropertyInfo, typeof(LinkWhenLogging));
-            if (IsLinkedChildCollection)
+            var childInterface = Type.GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INucleusChildCollection<,>));
+            if (childInterface is not null)
+                ChildType = childInterface.GetGenericArguments()[0];
+            else if (IsLinkedChildCollection)
             {
                 ChildType = pInfo.PropertyType.GetGenericArguments()[0];
                 var meth = new DynamicMethod(string.Empty, typeof(TPropertyType), new Type[] { typeof(T) });
@@ -252,7 +259,11 @@ namespace TFM.Nucleus
             }
             IsParentObject = Attribute.IsDefined(PropertyInfo, typeof(ParentObject));
             if (IsParentObject)
+            {
                 ParentIDPropertyName = ((ParentObject?)pInfo.GetCustomAttribute(typeof(ParentObject)))?.ParentIDProperty ?? $"{pInfo.Name}ID";
+                _skipOnDbRead = true;
+            }
+
             CanRead = pInfo.CanRead;
             CanWrite = pInfo.CanWrite;
             Getter = pInfo.GetGetMethod();
