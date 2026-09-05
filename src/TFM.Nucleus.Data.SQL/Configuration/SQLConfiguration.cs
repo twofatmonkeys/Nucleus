@@ -620,6 +620,89 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        // Reads the key columns of every Nucleus-named nonclustered index (NCI_* and UQ_*). Only
+        // those prefixes are returned so the schema compare and sync never see, drop or recreate
+        // an index a DBA added by hand. [_] is a literal underscore inside LIKE.
+        private const string ColumnIndexQuery = @"
+                SELECT t.name AS TableName, i.name AS IndexName, c.name AS ColumnName, i.is_unique, ic.is_descending_key, i.has_filter
+                FROM sys.indexes i
+                JOIN sys.tables t ON t.object_id = i.object_id
+                JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                WHERE i.type = 2 AND i.is_primary_key = 0 AND ic.is_included_column = 0
+                  AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')";
+
+        private static SqlColumnIndex ReadColumnIndex(DbDataReader reader) => new()
+        {
+            TableName = reader.GetString(0),
+            IndexName = reader.GetString(1),
+            ColumnName = reader.GetString(2),
+            IsUnique = reader.GetBoolean(3),
+            IsDescending = reader.GetBoolean(4),
+            HasFilter = reader.GetBoolean(5),
+        };
+
+        protected internal List<SqlColumnIndex> GetColumnIndexes(SqlDataContext? context = null)
+        {
+            try
+            {
+                List<SqlColumnIndex> idxs = [];
+                if (context == null)
+                {
+                    using var connection = BuildNewSQLConnection(false);
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText = ColumnIndexQuery;
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                        idxs.Add(ReadColumnIndex(reader));
+                }
+                else
+                {
+                    var sqlQry = new SelectQuery(ColumnIndexQuery);
+                    using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult()
+                        ?? throw new Exception("Sql Datareader was null");
+                    while (reader.Read())
+                        idxs.Add(ReadColumnIndex(reader));
+                }
+                return idxs;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error retrieving column indexes from database '{Database}'. Error: {ex.Message}", ex);
+            }
+        }
+        protected internal async Task<List<SqlColumnIndex>> GetColumnIndexesAsync(SqlDataContext? context = null, CancellationToken? cancellationToken = null)
+        {
+            try
+            {
+                List<SqlColumnIndex> idxs = [];
+                if (context == null)
+                {
+                    using var connection = BuildNewSQLConnection(false);
+                    await connection.OpenAsync(cancellationToken ?? CancellationToken.None);
+                    using var command = connection.CreateCommand();
+                    command.CommandText = ColumnIndexQuery;
+                    using var reader = await command.ExecuteReaderAsync(cancellationToken ?? CancellationToken.None);
+                    while (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))
+                        idxs.Add(ReadColumnIndex(reader));
+                }
+                else
+                {
+                    var sqlQry = new SelectQuery(ColumnIndexQuery);
+                    using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None)
+                        ?? throw new Exception("Sql Datareader was null");
+                    while (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))
+                        idxs.Add(ReadColumnIndex(reader));
+                }
+                return idxs;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error retrieving column indexes from database '{Database}'. Error: {ex.Message}", ex);
+            }
+        }
+
         private static SqlColumnSchema.ESqlDataType ParseSqlDataType(string? dataTypeStr)
         {
             if(dataTypeStr != null && Enum.TryParse<SqlColumnSchema.ESqlDataType>(dataTypeStr, true, out var dataType))

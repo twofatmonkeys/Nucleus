@@ -114,14 +114,18 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `DataType` | `NotSpecified` | One of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
 | `DataLength` | inferred | Column length. `-1` maps to `max`. |
 | `DecimalPlaces` | none | Scale for decimal columns. |
-| `PrimaryKey` | `false` | Marks the primary key. `ID` already is one. |
-| `Unique` | `false` | Adds a unique constraint. |
-| `NonClusteredIndex` | `false` | Adds a non-clustered index on the column. |
+| `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
+| `Unique` | `false` | Adds a filtered unique nonclustered index on the column. NULLs are not constrained. See below. |
+| `NonClusteredIndex` | `false` | Adds a non-clustered index on the column. Neither this nor `Unique` is allowed on a `max` length or FILESTREAM column. |
 | `IndexSortDESC` | `false` | Sorts that index descending. |
 | `FullTextIndex` | `false` | Includes the column in the table's full-text index, which enables `CONTAINS` predicates. |
 | `Filestream` | `false` | Stores a `byte[]` column as FILESTREAM. |
 | `SetValueOverride` | `NULL` | Has the server compute the value on write, for example a server timestamp, instead of sending the client value. |
 | `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
+
+`Unique` creates a filtered unique nonclustered index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `NonClusteredIndex` as well does not add a second index, and `IndexSortDESC` applies to whichever index is created. Because the index is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
+
+On initialise the provider compares the `NCI_*` and `UQ_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
 
 ### Class-level behaviour
 

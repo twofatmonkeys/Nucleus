@@ -23,3 +23,12 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
 }
+
+namespace TFM.Nucleus.IntegrationTests
+{
+    public class IntUniqueItem : CoreObject<IntUniqueItem>
+    {
+        [DatabaseColumn(Unique = true)]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+    }
+}

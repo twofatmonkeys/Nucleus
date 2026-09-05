@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -114,6 +115,86 @@ namespace TFM.Nucleus.Data.SQL
         private static string SoftDeleteColumnSql(SqlTableSchema tableSchema) =>
             $"[IsDeleted] [bit] NOT NULL CONSTRAINT [DF_{tableSchema.TableName}_IsDeleted] DEFAULT(0),[DeletedAt] [datetimeoffset](7) NULL, ";
 
+        // Every column-level index Nucleus creates carries one of these prefixes. The schema
+        // compare and sync only look at, drop or create indexes with these prefixes, so indexes a
+        // DBA adds by hand are never touched.
+        private const string NonClusteredIndexPrefix = "NCI_";
+        private const string UniqueIndexPrefix = "UQ_";
+
+        internal static string ColumnIndexName(SqlTableSchema table, SqlColumnSchema col) =>
+            $"{(col.Unique ? UniqueIndexPrefix : NonClusteredIndexPrefix)}{table.TableName}_{col.ColumnName}";
+
+        /// <summary>
+        /// The CREATE INDEX statement for a column carrying NonClusteredIndex or Unique. Unique
+        /// wins when both are set and produces one filtered unique index. NULLs are excluded by
+        /// the filter because every Nucleus column is created NULL and an unfiltered unique index
+        /// would allow only a single NULL row per table.
+        /// </summary>
+        internal static string ColumnIndexSql(SqlTableSchema table, SqlColumnSchema col)
+        {
+            if (!col.HasColumnIndex)
+                throw new ArgumentException($"Column '{col.ColumnName}' does not carry a column index.", nameof(col));
+            var name = ColumnIndexName(table, col);
+            if (col.Unique)
+                return $"CREATE UNIQUE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
+                       $"([{col.ColumnName}] {col.IndexSortOrder}) WHERE [{col.ColumnName}] IS NOT NULL " +
+                       "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, " +
+                       "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+            return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
+                   $"([{col.ColumnName}] {col.IndexSortOrder}) " +
+                   "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
+                   "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+        }
+
+        /// <summary>
+        /// Compares the column indexes a table needs against the Nucleus-named indexes the
+        /// database has. Returns the index names to drop and the columns whose index must be
+        /// created. The schema check and the schema sync both use this so they cannot disagree.
+        /// </summary>
+        internal static (List<string> drop, List<SqlColumnSchema> create) DiffColumnIndexes(
+            SqlTableSchema table, IEnumerable<SqlColumnIndex> dbIndexes)
+        {
+            var existing = dbIndexes
+                .Where(x => x.TableName!.Equals(table.TableName, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(x => x.IndexName!, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var required = table.Columns.Where(c => c.HasColumnIndex).ToList();
+            List<string> drop = [];
+            List<SqlColumnSchema> create = [];
+
+            foreach (var group in existing)
+            {
+                var col = required.FirstOrDefault(c => ColumnIndexName(table, c).Equals(group.Key, StringComparison.OrdinalIgnoreCase));
+                // A Nucleus index always has exactly one key column. Anything else with our prefix
+                // is stale and gets rebuilt.
+                if (col == null || group.Count() != 1 || !ColumnIndexMatches(col, group.First()))
+                    drop.Add(group.Key);
+            }
+            foreach (var col in required)
+            {
+                var name = ColumnIndexName(table, col);
+                if (!existing.Any(g => g.Key.Equals(name, StringComparison.OrdinalIgnoreCase)) ||
+                    drop.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    create.Add(col);
+            }
+            return (drop, create);
+        }
+
+        private static bool ColumnIndexMatches(SqlColumnSchema col, SqlColumnIndex existing) =>
+            existing.ColumnName!.Equals(col.ColumnName, StringComparison.OrdinalIgnoreCase) &&
+            existing.IsUnique == col.Unique &&
+            existing.HasFilter == col.Unique &&
+            existing.IsDescending == col.IndexSortDescending;
+
+        // SQL Server error 1505: CREATE UNIQUE INDEX terminated because a duplicate key was found.
+        private static bool IsDuplicateKeyError(Exception ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+                if (e is SqlException sql && sql.Number == 1505)
+                    return true;
+            return false;
+        }
+
         /// <summary>Compares the expected schema to the database without modifying anything.</summary>
         internal EDataSchemaStatus CheckSchema() => CheckDatabaseSchema();
         internal Task<EDataSchemaStatus> CheckSchemaAsync(CancellationToken? cancellationToken = null) =>
@@ -140,7 +221,8 @@ namespace TFM.Nucleus.Data.SQL
                 var dbTables = await SqlDataProvider.SqlConfig.GetDatabaseTableNamesAsync(cancellationToken);
                 var dbColumns = await SqlDataProvider.SqlConfig.GetDatabaseColumnsAsync(cancellationToken: cancellationToken);
                 var dtIndexes = await SqlDataProvider.SqlConfig.GetFullTextIndexesAsync(cancellationToken: cancellationToken);
-                return CheckDatabaseSchema(dbTables, dbColumns, dtIndexes);
+                var dbIndexes = await SqlDataProvider.SqlConfig.GetColumnIndexesAsync(cancellationToken: cancellationToken);
+                return CheckDatabaseSchema(dbTables, dbColumns, dtIndexes, dbIndexes);
             }
             catch (Exception ex)
             {
@@ -149,13 +231,15 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
         private EDataSchemaStatus CheckDatabaseSchema(string[]? dbTables = null, SqlColumn[]? dbColumns = null,
-            List<(string tableName, string ftCatalogName, string UniqueIdxName, string columnName)>? dtIndexes = null)
+            List<(string tableName, string ftCatalogName, string UniqueIdxName, string columnName)>? dtIndexes = null,
+            List<SqlColumnIndex>? dbIndexes = null)
         {
             try
             {
                 dbTables ??= SqlDataProvider.SqlConfig.GetDatabaseTableNames();
                 dbColumns ??= SqlDataProvider.SqlConfig.GetDatabaseColumns();
                 dtIndexes ??= SqlDataProvider.SqlConfig.GetFullTextIndexes();
+                dbIndexes ??= SqlDataProvider.SqlConfig.GetColumnIndexes();
                 var sqlSchemas = GetSqlTableSchemas();
                 var softDeleteColumnsCurrent = true;
                 foreach (var table in sqlSchemas)
@@ -235,6 +319,17 @@ namespace TFM.Nucleus.Data.SQL
                             indexesMatch = false;
                         }
                     }
+                    //check column indexes (NonClusteredIndex / Unique)
+                    foreach (var table in sqlSchemas)
+                    {
+                        var (drop, create) = DiffColumnIndexes(table, dbIndexes);
+                        if (drop.Count > 0 || create.Count > 0)
+                        {
+                            _logger?.LogWarning("Column index schema is not current for table: {tablename}. Missing or changed: {missing}. Unexpected: {unexpected}",
+                                table.TableName, string.Join(", ", create.Select(c => ColumnIndexName(table, c))), string.Join(", ", drop));
+                            indexesMatch = false;
+                        }
+                    }
                     if (!indexesMatch)
                         return EDataSchemaStatus.NotCurrent;
                 }
@@ -271,6 +366,7 @@ namespace TFM.Nucleus.Data.SQL
                         }
                     }
                     ctx.Dispose();
+                    UpdateTableColumnIndexes(sqlSchema);
                     UpdateTableFullTextIndexes(sqlSchema);
                     return EDataSchemaStatus.Ok;
                 }
@@ -310,6 +406,7 @@ namespace TFM.Nucleus.Data.SQL
                         }
                     }
                     await ctx.DisposeAsync();
+                    await UpdateTableColumnIndexesAsync(sqlSchema, cancellationToken);
                     await UpdateTableFullTextIndexesAsync(sqlSchema, cancellationToken);
                     return EDataSchemaStatus.Ok;
                 }
@@ -378,17 +475,18 @@ namespace TFM.Nucleus.Data.SQL
 
         private void CreateTable(SqlDataContext context, SqlTableSchema tableSchema)
         {
+            var idColumn = tableSchema.IdentityColumn.ColumnName;
             //Create table
             var qry = $"CREATE TABLE [dbo].[{tableSchema.TableName}](" +
-                "[ID][uniqueidentifier] ROWGUIDCOL NOT NULL," +
+                $"[{idColumn}][uniqueidentifier] ROWGUIDCOL NOT NULL," +
                 "[ClusterID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL, ";
             foreach (var col in tableSchema.Columns)
-                if (col.ColumnName != "ID")
+                if (col.ColumnName != idColumn)
                     qry += $"[{col.ColumnName}] {col.SqlDataConstructor}";
             if (IsSoftDeletable(tableSchema))
                 qry += SoftDeleteColumnSql(tableSchema);
             //add default primary key constraint
-            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [ID] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
+            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
                 "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
             if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
                 qry += "TEXTIMAGE_ON [PRIMARY] ";
@@ -397,40 +495,30 @@ namespace TFM.Nucleus.Data.SQL
             context.ExecuteSQL(qry);
 
             //add id generation default constraint
-            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_ID]  DEFAULT(newid()) FOR[ID]";
+            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_{idColumn}]  DEFAULT(newid()) FOR[{idColumn}]";
             context.ExecuteSQL(qry);
             //create indexes
             qry = $"CREATE UNIQUE CLUSTERED INDEX [CIX_{tableSchema.TableName}_ClusterID] ON [dbo].[{tableSchema.TableName}](" +
                 "[ClusterID] DESC)WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
                 "IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
             context.ExecuteSQL(qry);
-            foreach (var col in tableSchema.Columns)
-            {
-                if (col.NonClusteredIndex)
-                {
-                    qry = $"CREATE NONCLUSTERED INDEX [NCI_{tableSchema.TableName}_{col.ColumnName}] ON [dbo].[{tableSchema.TableName}]" +
-                                $"([{col.ColumnName}] {col.IndexSortOrder}) " +
-                                "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                                "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
-                    context.ExecuteSQL(qry);
-                }
-
-            }
-
+            foreach (var col in tableSchema.Columns.Where(c => c.HasColumnIndex))
+                context.ExecuteSQL(ColumnIndexSql(tableSchema, col));
         }
         private async Task CreateTableAsync(SqlDataContext context, SqlTableSchema tableSchema, CancellationToken? cancellationToken = null)
         {
+            var idColumn = tableSchema.IdentityColumn.ColumnName;
             //Create table
             var qry = $"CREATE TABLE [dbo].[{tableSchema.TableName}](" +
-                "[ID][uniqueidentifier] ROWGUIDCOL NOT NULL," +
+                $"[{idColumn}][uniqueidentifier] ROWGUIDCOL NOT NULL," +
                 "[ClusterID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL, ";
             foreach (var col in tableSchema.Columns)
-                if (col.ColumnName != "ID")
+                if (col.ColumnName != idColumn)
                     qry += $"[{col.ColumnName}] {col.SqlDataConstructor}";
             if (IsSoftDeletable(tableSchema))
                 qry += SoftDeleteColumnSql(tableSchema);
             //add default primary key constraint
-            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [ID] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
+            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
                 "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
             if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
                 qry += "TEXTIMAGE_ON [PRIMARY] ";
@@ -439,25 +527,15 @@ namespace TFM.Nucleus.Data.SQL
             await context.ExecuteSQLAsync(qry);
 
             //add id generation default constraint
-            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_ID]  DEFAULT(newid()) FOR[ID]";
+            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_{idColumn}]  DEFAULT(newid()) FOR[{idColumn}]";
             await context.ExecuteSQLAsync(qry);
             //create indexes
             qry = $"CREATE UNIQUE CLUSTERED INDEX [CIX_{tableSchema.TableName}_ClusterID] ON [dbo].[{tableSchema.TableName}](" +
                 "[ClusterID] DESC)WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
                 "IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
             await context.ExecuteSQLAsync(qry);
-            foreach (var col in tableSchema.Columns)
-            {
-                if (col.NonClusteredIndex)
-                {
-                    qry = $"CREATE NONCLUSTERED INDEX [NCI_{tableSchema.TableName}_{col.ColumnName}] ON [dbo].[{tableSchema.TableName}]" +
-                                $"([{col.ColumnName}] {col.IndexSortOrder}) " +
-                                "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                                "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
-                    await context.ExecuteSQLAsync(qry);
-                }
-
-            }
+            foreach (var col in tableSchema.Columns.Where(c => c.HasColumnIndex))
+                await context.ExecuteSQLAsync(ColumnIndexSql(tableSchema, col));
         }
 
         private void RenameTable(SqlDataContext context, SqlTableSchema tableSchema, string tempTableName)
@@ -683,6 +761,73 @@ EXEC sp_executesql @sql;";
         }
 
 
+        /// <summary>
+        /// Brings the NonClusteredIndex / Unique indexes of every table in line with the entity
+        /// model: drops Nucleus-named indexes that are no longer required or whose definition
+        /// changed, then creates the missing ones. Runs after the table rebuilds, so a table that
+        /// was just recreated already matches and is left alone.
+        /// </summary>
+        private void UpdateTableColumnIndexes(IEnumerable<SqlTableSchema> sqlSchema)
+        {
+            var dbIndexes = SqlDataProvider.SqlConfig.GetColumnIndexes(null);
+            foreach (var table in sqlSchema)
+            {
+                var (drop, create) = DiffColumnIndexes(table, dbIndexes);
+                foreach (var indexName in drop)
+                {
+                    _logger?.LogInformation("Dropping column index {index} on table {tablename}.", indexName, table.TableName);
+                    SqlDataProvider.SqlConfig.ExecuteQuery($"DROP INDEX [{indexName}] ON [dbo].[{table.TableName}]", null);
+                }
+                foreach (var col in create)
+                {
+                    _logger?.LogInformation("Creating column index {index} on table {tablename}.", ColumnIndexName(table, col), table.TableName);
+                    try
+                    {
+                        SqlDataProvider.SqlConfig.ExecuteQuery(ColumnIndexSql(table, col), null);
+                    }
+                    catch (Exception ex) when (IsDuplicateKeyError(ex))
+                    {
+                        throw DuplicateKeyFailure(table, col, ex);
+                    }
+                }
+            }
+        }
+        private async Task UpdateTableColumnIndexesAsync(IEnumerable<SqlTableSchema> sqlSchema, CancellationToken? cancellationToken = null)
+        {
+            var dbIndexes = await SqlDataProvider.SqlConfig.GetColumnIndexesAsync(null, cancellationToken);
+            foreach (var table in sqlSchema)
+            {
+                var (drop, create) = DiffColumnIndexes(table, dbIndexes);
+                foreach (var indexName in drop)
+                {
+                    _logger?.LogInformation("Dropping column index {index} on table {tablename}.", indexName, table.TableName);
+                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync($"DROP INDEX [{indexName}] ON [dbo].[{table.TableName}]", null, cancellationToken);
+                }
+                foreach (var col in create)
+                {
+                    _logger?.LogInformation("Creating column index {index} on table {tablename}.", ColumnIndexName(table, col), table.TableName);
+                    try
+                    {
+                        await SqlDataProvider.SqlConfig.ExecuteQueryAsync(ColumnIndexSql(table, col), null, cancellationToken);
+                    }
+                    catch (Exception ex) when (IsDuplicateKeyError(ex))
+                    {
+                        throw DuplicateKeyFailure(table, col, ex);
+                    }
+                }
+            }
+        }
+
+        // Existing rows violate a newly required unique index. The data is never touched; the
+        // caller must resolve the duplicates by hand and initialise again.
+        private InvalidOperationException DuplicateKeyFailure(SqlTableSchema table, SqlColumnSchema col, Exception inner)
+        {
+            var message = $"Cannot create unique index on [{table.TableName}].[{col.ColumnName}]: the column already contains duplicate values. " +
+                          "Remove or change the duplicate rows and initialise the schema again. No data was modified.";
+            _logger?.LogError(inner, "{message}", message);
+            return new InvalidOperationException(message, inner);
+        }
+
         #region IDataSchema
         IEnumerable<IDataTableSchema> IDataSchema.GetTables() => GetSqlTableSchemas();
         IDataTableSchema? IDataSchema.GetTableSchema<T>() => GetTableSchema<T>();
@@ -747,6 +892,20 @@ EXEC sp_executesql @sql;";
             foreach (var propertySchema in objectSchema.AllDBColumns)
                 SqlColumns[propertySchema.Name] = (new SqlColumnSchema(propertySchema, this));
 
+            // The entity model is built around the Guid ID column CoreObject provides: newid()
+            // default, ROWGUIDCOL, Get by ID and the cache index all assume it. The PrimaryKey
+            // flag is therefore reserved for ID, and a type that marks anything else, or nothing,
+            // fails here at schema build rather than at the first update or delete.
+            var pkColumns = SqlColumns.Values.Where(c => c.PrimaryKey).ToList();
+            if (pkColumns.Count != 1)
+                throw new InvalidOperationException(
+                    $"Type '{objectSchema.FullName}' must have exactly one [DatabaseColumn(PrimaryKey = true)] property, found {pkColumns.Count}" +
+                    (pkColumns.Count == 0 ? "." : $": {string.Join(", ", pkColumns.Select(c => c.PropertySchema.Name))}.") +
+                    " The primary key is the ID column CoreObject provides.");
+            if (!pkColumns[0].ColumnName.Equals("ID", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Type '{objectSchema.FullName}' marks '{pkColumns[0].PropertySchema.Name}' as PrimaryKey. " +
+                    "The primary key is reserved for the ID column CoreObject provides.");
         }
         public SqlColumnSchema? FindByPropertyName(string propertyName)
         { 
@@ -802,6 +961,17 @@ EXEC sp_executesql @sql;";
         public bool IsNullable = true;
     }
 
+    /// <summary>One key column of a Nucleus-named nonclustered index as read from sys.indexes.</summary>
+    public class SqlColumnIndex
+    {
+        public string? TableName;
+        public string? IndexName;
+        public string? ColumnName;
+        public bool IsUnique;
+        public bool IsDescending;
+        public bool HasFilter;
+    }
+
     public class SqlColumnSchema : IDataColumnSchema
     {
         public SqlTableSchema ParentTable => _parentTable ?? throw new InvalidOperationException("Parent table not set");
@@ -827,7 +997,10 @@ EXEC sp_executesql @sql;";
         public bool FullTextIndex = false;
         public bool Unique = false;
         public bool NonClusteredIndex = false;
+        public readonly bool IndexSortDescending = false;
         public string? IndexSortOrder = null;
+        /// <summary>True when the column gets a nonclustered index of its own (plain or unique).</summary>
+        public bool HasColumnIndex => NonClusteredIndex || Unique;
 
         #region IDataColumnSchema
         string IDataColumnSchema.ColumnName => ColumnName;
@@ -855,8 +1028,17 @@ EXEC sp_executesql @sql;";
             NonClusteredIndex = attr.NonClusteredIndex;
             _clrType = GetClrType(propertySchema);
             RequiresCast = WillRequireCast(propertySchema);
-            if (NonClusteredIndex)
-                IndexSortOrder = attr.IndexSortDESC ? "DESC" : "ASC";
+            IndexSortDescending = attr.IndexSortDESC;
+            if (HasColumnIndex)
+            {
+                // SQL Server cannot key an index on a max-length or FILESTREAM column. Fail at
+                // schema build with a readable message instead of a raw SQL error inside Update.
+                if (DataLength == -1 || Filestream)
+                    throw new InvalidOperationException(
+                        $"Property '{propertySchema.Name}' on '{parentTable.ObjectSchema.FullName}' cannot carry NonClusteredIndex or Unique: " +
+                        "a max-length or FILESTREAM column cannot be an index key.");
+                IndexSortOrder = IndexSortDescending ? "DESC" : "ASC";
+            }
 
             //    propertySchema.Name,
             //    propertySchema.DatabaseColumnAttribute?.DataType.ToString() ?? "NotSpecified",
@@ -1172,16 +1354,6 @@ EXEC sp_executesql @sql;";
             Table,
             UniqueIdentifier,
             Xml
-        }
-
-        public enum eIndexType
-        {
-            None,
-            PrimaryKey,
-            Unique,
-            NonClustered_ASC,
-            NonClustered_DESC,
-            FullText
         }
 
     }
