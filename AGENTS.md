@@ -13,6 +13,7 @@ release together.
 | `TFM.Nucleus` | `src\TFM.Nucleus` | Entity core: `CoreObject`, schema reflection, change tracking. |
 | `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
+| `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
 
 Until August 2026 these lived in four separate repositories, with the shared tests and the only
 real documentation in a fifth unversioned folder (`Nucleus.v2`). They were always released in
@@ -27,9 +28,21 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`. Direction is enforced by
-project references, and the "no SQL in the neutral layers" rule is enforced by
-`ProviderSeamTests`, which scans the compiled string literals of the neutral assemblies.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery` sits beside
+`Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
+the neutral layers" rule is enforced by `ProviderSeamTests`, which scans the compiled string
+literals of the neutral assemblies.
+
+`TFM.Nucleus.Bindery` is the first package here that serves another library: `NucleusBinderyStore`
+implements TFM.Bindery's `IBinderyStore` and its three optional capabilities over four
+`CoreObject` entities (`BinderyDocument`, `BinderyPageVersion`, `BinderyBlockTemplate`,
+`BinderyChangeToken`). The entity and table names are the ones the first consumer site used
+before the package existed, so its rows carry over; the store never references `Data.SQL`, and
+publish, unpublish and delete run on one `ContextOptions.Transactional` context so the change
+token moves with the content. Storage failures are rethrown as `BinderyException` with the
+original attached, per Bindery's contract. Tests run the framework-neutral
+`BinderyStoreContract.Cases` from `TFM.Bindery.Testing` against the integration database
+(`tests\TFM.Nucleus.IntegrationTests\Bindery`).
 
 `Abstractions` holds every interface the other layers speak: `ICoreObject`, `IDataProvider`,
 `IDataContext`, `IObjectSchema`, `IQuery` and the neutral query tokens, plus `NucleusOptions`, the
@@ -92,8 +105,10 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The four packages
-  share one version by design.
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The five packages
+  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version
+  (two identical per-TFM lines in its csproj); a Bindery release that changes the page contract
+  means a bump here.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package

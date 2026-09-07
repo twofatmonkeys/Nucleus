@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Four packages ship from it, all on one version.
+This repository holds the whole family. Five packages ship from it, all on one version.
 
 ## Packages
 
@@ -12,8 +12,9 @@ This repository holds the whole family. Four packages ship from it, all on one v
 | `TFM.Nucleus` | The core: `CoreObject` entity base classes, attribute-driven schema reflection (`ObjectSchema` and `PropertySchema` with IL-emitted materialisers), change tracking, the static convenience API, `NucleusLoggerProvider`, and DI registration. |
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. Contains no SQL, proven by a tripwire test. |
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: query rendering, connection and transaction context trees, the bulk engine, schema create, compare and migrate, and SqlDependency change notifications. |
+| `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery store works over any provider.
 
 ## Install
 
@@ -89,6 +90,29 @@ var list    = adaptor.Where(c => c.Name == "Acme").ToList();
 var page    = await adaptor.ToPagedResultAsync(skip: 20, take: 10);   // rows plus total, one round trip
 await order.DeleteAsync();                                            // [Deletable] types only
 ```
+
+## Bindery
+
+`TFM.Nucleus.Bindery` is the page store for the TFM.Bindery CMS. It ships four entities
+(`BinderyDocument`, holding a page's draft and published JSON in one row; `BinderyPageVersion`,
+the snapshots the editor's history panel restores from; `BinderyBlockTemplate`; and
+`BinderyChangeToken`, one row bumped on every publish so replicas converge) and
+`NucleusBinderyStore`, which implements `IBinderyStore`, `IBinderyVersionStore`,
+`IBinderyPageLookup` and `IBinderyChangeTokenSource`.
+
+```csharp
+builder.Services.AddNucleus();
+builder.Services.AddNucleusData();
+builder.Services.AddNucleusSQLDataProvider();
+builder.Services.AddBindery<NucleusBinderyStore>(bindery => bindery.Options.AuthorizationPolicy = "Editors");
+```
+
+The tables are created and migrated at `InitializeDataProviderAsync` like every other entity, so
+`NucleusOptions.ReadOnlySchema` must be false on the first run (`AddNucleus()` sets it so). Publish,
+unpublish and delete each run inside one transactional context together with the change token, so
+a reader never sees a half-published page. Storage failures surface as Bindery's own
+`BinderyException` with the original attached. The store passes `BinderyStoreContract.Cases` from
+`TFM.Bindery.Testing` against the integration test database.
 
 ## Entity base classes
 
