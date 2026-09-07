@@ -4,7 +4,7 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as four packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as six packages that version and
 release together.
 
 | Package | Source | Role |
@@ -14,6 +14,7 @@ release together.
 | `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
 | `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
+| `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
 
 Until August 2026 these lived in four separate repositories, with the shared tests and the only
 real documentation in a fifth unversioned folder (`Nucleus.v2`). They were always released in
@@ -28,8 +29,8 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery` sits beside
-`Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery` and
+`S3Library` sit beside `Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
 the neutral layers" rule is enforced by `ProviderSeamTests`, which scans the compiled string
 literals of the neutral assemblies.
 
@@ -43,6 +44,27 @@ token moves with the content. Storage failures are rethrown as `BinderyException
 original attached, per Bindery's contract. Tests run the framework-neutral
 `BinderyStoreContract.Cases` from `TFM.Bindery.Testing` against the integration database
 (`tests\TFM.Nucleus.IntegrationTests\Bindery`).
+
+`TFM.Nucleus.S3Library` is the second: `NucleusS3AssetStore` implements TFM.S3Library's
+`IS3AssetStore` over three entities (`S3AssetRecord`, `S3AssetPreviousPath`,
+`S3AssetVersionClaim`). Two of the contract's rules are enforced by unique indexes rather than by
+code, because Nucleus has no optimistic concurrency and cannot report rows affected. The path rule
+(no two live records share a path, a deleted one may) is the filtered unique index on
+`S3AssetRecord.LivePath`, a column equal to `FullPath` while the record is live and null once it
+is soft-deleted. The version rule is the claim table: every save inserts a row
+`{AssetId:N}:{new version}` inside the same transaction as the record write, so two writers
+racing from one version collide on `UQ_..._S3AssetVersionClaim_Claim` and exactly one commits;
+the previous claim is deleted in the same transaction, leaving one row per asset. Reads run
+outside a transaction and writes inside one, because a transactional context closes its
+connection after a read. A unique violation is recognised by walking the inner-exception chain
+for a type named `SqlException` with `Number` 2601 or 2627 and reading the index name from its
+message, so the package never references SqlClient; the claim or asset-id index means
+`S3AssetConcurrencyException`, the live-path index means `S3AssetConflictException`, anything
+else is rethrown as `S3LibraryException` with the original attached. Ordering, paging, the name
+filter and the count run in memory over the rows the SQL-side equalities select, since the
+provider translates none of them. Tests run `S3AssetStoreContract.Cases` from
+`TFM.S3Library.Testing` against the integration database
+(`tests\TFM.Nucleus.IntegrationTests\S3Library`), each suite under its own cross-process lock.
 
 `Abstractions` holds every interface the other layers speak: `ICoreObject`, `IDataProvider`,
 `IDataContext`, `IObjectSchema`, `IQuery` and the neutral query tokens, plus `NucleusOptions`, the
@@ -71,9 +93,10 @@ dotnet build TFM.Nucleus.slnx --configuration Release
 dotnet test  TFM.Nucleus.slnx --configuration Release --no-build
 ```
 
-Restore needs no credentials: every `TFM.*` dependency is now an in-repo project reference and the
-rest come from nuget.org. `nuget.config` still reads `GITHUB_USER` and `GITHUB_TOKEN` for
-consistency with the other TFM repos.
+Restore needs `GITHUB_USER` and `GITHUB_TOKEN` in the environment: `nuget.config` reads the
+GitHub Packages credential from them, and `TFM.Bindery`, `TFM.Bindery.Testing`,
+`TFM.S3Library.Abstractions` and `TFM.S3Library.Testing` come from that feed. Everything else is an
+in-repo project reference or comes from nuget.org.
 
 Warnings become errors only when `ContinuousIntegrationBuild=true`. To reproduce what CI enforces:
 
@@ -105,10 +128,12 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The five packages
-  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version
-  (two identical per-TFM lines in its csproj); a Bindery release that changes the page contract
-  means a bump here.
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The six packages
+  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version and
+  `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version (two identical per-TFM lines in
+  each csproj); a release of either library that changes its store contract means a bump here.
+  The integration test project pins the matching `*.Testing` package at the same version as the
+  store's contract pin, or NuGet would lift the contract package underneath the store silently.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
@@ -120,6 +145,8 @@ warning in new code fails CI.
   an attribute, or a registration method is a major version and a coordinated release.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
+- **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
+  behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all four packages and is the reference documentation consumers see on the feed.
+  all six packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.

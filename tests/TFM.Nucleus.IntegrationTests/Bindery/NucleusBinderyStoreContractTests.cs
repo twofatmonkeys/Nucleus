@@ -21,7 +21,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task Contract(string name)
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync();
+            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
             var store = new NucleusBinderyStore(manager);
             var contractCase = BinderyStoreContract.Find(name);
             Assert.True(contractCase.AppliesTo(store), "the Nucleus store implements every optional capability");
@@ -34,7 +34,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task Publish_SnapshotsUnderTheRowsOwnId_AndMovesTheToken()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync();
+            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
             await ResetAsync(manager);
             var store = new NucleusBinderyStore(manager);
             await store.SaveDraftAsync(BinderyStoreContract.NewPage("pub-1"));
@@ -52,7 +52,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task DiscardingANeverPublishedDraft_RemovesTheRow()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync();
+            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
             await ResetAsync(manager);
             var store = new NucleusBinderyStore(manager);
             await store.SaveDraftAsync(BinderyStoreContract.NewPage("gone-1"));

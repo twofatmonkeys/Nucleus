@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Five packages ship from it, all on one version.
+This repository holds the whole family. Six packages ship from it, all on one version.
 
 ## Packages
 
@@ -13,8 +13,9 @@ This repository holds the whole family. Five packages ship from it, all on one v
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. Contains no SQL, proven by a tripwire test. |
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: query rendering, connection and transaction context trees, the bulk engine, schema create, compare and migrate, and SqlDependency change notifications. |
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
+| `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery store works over any provider.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery` and `S3Library` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery and S3Library stores work over any provider.
 
 ## Install
 
@@ -113,6 +114,34 @@ unpublish and delete each run inside one transactional context together with the
 a reader never sees a half-published page. Storage failures surface as Bindery's own
 `BinderyException` with the original attached. The store passes `BinderyStoreContract.Cases` from
 `TFM.Bindery.Testing` against the integration test database.
+
+## S3Library
+
+`TFM.Nucleus.S3Library` is the metadata store for the TFM.S3Library media library. It ships three
+entities (`S3AssetRecord`, one row per asset with the collections as JSON; `S3AssetPreviousPath`,
+one row per path an asset used to answer to, so the library's redirect lookup is indexed; and
+`S3AssetVersionClaim`, the version gate) and `NucleusS3AssetStore`, which implements
+`IS3AssetStore`.
+
+```csharp
+builder.Services.AddNucleus();
+builder.Services.AddNucleusData();
+builder.Services.AddNucleusSQLDataProvider();
+builder.Services.AddS3Library<NucleusS3AssetStore>();
+```
+
+The tables are created and migrated at `InitializeDataProviderAsync` like every other entity.
+Nucleus has no optimistic concurrency and cannot report rows affected, so the store enforces the
+contract's two hard rules with unique indexes instead: `S3AssetRecord.LivePath` carries the full
+path while a record is live and null once it is soft-deleted, so the filtered unique index on it
+is exactly "no two live records share a path"; and every save inserts a claim row for the version
+it moves to, in the same transaction as the record write, so two writers racing from one version
+collide on the claim index and exactly one commits. A unique violation on the claim surfaces as
+the library's `S3AssetConcurrencyException`, one on the live path as `S3AssetConflictException`,
+and any other storage failure as `S3LibraryException` with the original attached. Ordering,
+paging, the name filter and the count happen in memory over the rows the SQL-side filters select.
+The store passes `S3AssetStoreContract.Cases` from `TFM.S3Library.Testing` against the integration
+test database.
 
 ## Entity base classes
 
@@ -286,8 +315,10 @@ src\TFM.Nucleus.Abstractions\    contracts, no SQL
 src\TFM.Nucleus\                 entity core
 src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
+src\TFM.Nucleus.Bindery\         TFM.Bindery page store
+src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
 tests\TFM.Nucleus.Tests\         unit tests, no database
-tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests
+tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\ and S3Library\ contract suites)
 ```
 
 ## Build and test
