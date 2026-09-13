@@ -176,11 +176,11 @@ namespace TFM.Nucleus.Data
         private Parameter HandleComparison(BinaryExpression expression, Operator op)
         {
             var memberExpression = GetMemberExpression(expression.Left, expression.Right);
-            var valueExpression = memberExpression == expression.Left ? expression.Right : expression.Left;
 
             if (memberExpression == null)
                 throw new NotSupportedException("At least one side of comparison must be a member access");
 
+            var valueExpression = ValueSideOf(expression.Left, expression.Right, memberExpression);
             var memberName = GetMemberName(memberExpression);
             var value = GetExpressionValue(valueExpression);
 
@@ -306,11 +306,11 @@ namespace TFM.Nucleus.Data
                     }
 
                     var memberExpression = GetMemberExpression(expression.Arguments[0], expression.Arguments[1]);
-                    var valueExpression = memberExpression == expression.Arguments[0] ? expression.Arguments[1] : expression.Arguments[0];
 
                     if (memberExpression == null)
                         throw new NotSupportedException("At least one side of comparison must be a member access");
 
+                    var valueExpression = ValueSideOf(expression.Arguments[0], expression.Arguments[1], memberExpression);
                     var memberName = GetMemberName(memberExpression);
                     var value = GetExpressionValue(valueExpression);
 
@@ -370,18 +370,42 @@ namespace TFM.Nucleus.Data
             };
         }
 
+        /// <summary>
+        /// Returns the operand behind any chain of Convert nodes, or the expression itself when it
+        /// is not one. C# lowers an enum comparison to Convert(x.Prop, Int32) == Constant(int), and
+        /// a nullable enum to a Nullable&lt;Int32&gt; conversion on both sides, so the column is an
+        /// inner node rather than the operand itself. Ref-struct conversions are left alone: those
+        /// are span conversions and belong to <see cref="UnwrapSpanConversion"/>, which is the only
+        /// place that knows they cannot be folded into a constant.
+        /// </summary>
+        private static Expression StripConversions(Expression expression)
+        {
+            while (expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert
+                && !convert.Type.IsByRefLike)
+                expression = convert.Operand;
+            return expression;
+        }
+
         private MemberExpression? GetMemberExpression(Expression left, Expression right)
         {
-            if (left is MemberExpression leftMember && leftMember.Expression?.NodeType == ExpressionType.Parameter)
+            if (StripConversions(left) is MemberExpression leftMember && leftMember.Expression?.NodeType == ExpressionType.Parameter)
                 return leftMember;
-            if (right is MemberExpression rightMember && rightMember.Expression?.NodeType == ExpressionType.Parameter)
+            if (StripConversions(right) is MemberExpression rightMember && rightMember.Expression?.NodeType == ExpressionType.Parameter)
                 return rightMember;
             return null;
         }
 
+        /// <summary>
+        /// The side of a comparison that is not the column. The member may be nested inside a
+        /// Convert, so the sides are matched after stripping rather than by reference to the
+        /// original nodes.
+        /// </summary>
+        private static Expression ValueSideOf(Expression left, Expression right, MemberExpression member) =>
+            ReferenceEquals(StripConversions(left), member) ? right : left;
+
         private string GetMemberName(Expression expression)
         {
-            if (expression is MemberExpression member)
+            if (StripConversions(expression) is MemberExpression member)
             {
                 if (Attribute.IsDefined(member.Member, typeof(DatabaseColumnAttribute)))
                 {
@@ -396,13 +420,59 @@ namespace TFM.Nucleus.Data
         private object? GetExpressionValue(Expression expression)
         {
             if (expression is ConstantExpression constant)
-            {
-                return constant.Value;
-            }
+                return NormalizeEnums(constant.Value);
 
             // Compile and execute the expression to get the value
             var lambda = Expression.Lambda(expression);
-            return lambda.Compile().DynamicInvoke();
+            return NormalizeEnums(lambda.Compile().DynamicInvoke());
+        }
+
+        /// <summary>
+        /// Binds an enum as its underlying integral value, and an enumerable of enums as an
+        /// enumerable of those values, so a term reaches the provider as the type its column
+        /// actually stores rather than relying on the driver to recognise the enum. The write path
+        /// does the same in SqlDataContext.CoerceValueForDataTable; this is the read path.
+        /// </summary>
+        private static object? NormalizeEnums(object? value)
+        {
+            if (value == null)
+                return null;
+
+            var type = value.GetType();
+            if (type.IsEnum)
+                return Convert.ChangeType(value, Enum.GetUnderlyingType(type));
+
+            // Decided from the declared element type, never by enumerating: mapping every
+            // enumerable would turn a byte[] term into an object[] and break binary comparisons.
+            if (value is System.Collections.IEnumerable items and not string
+                && EnumElementType(type) is Type elementType)
+            {
+                var underlying = Enum.GetUnderlyingType(elementType);
+                var mapped = new List<object?>();
+                foreach (var item in items)
+                    mapped.Add(item == null ? null : Convert.ChangeType(item, underlying));
+                return mapped;
+            }
+
+            return value;
+        }
+
+        /// <summary>
+        /// The enum type behind an IEnumerable&lt;TEnum&gt; or IEnumerable&lt;TEnum?&gt;, or null
+        /// when the sequence is of anything else.
+        /// </summary>
+        private static Type? EnumElementType(Type sequenceType)
+        {
+            foreach (var candidate in sequenceType.GetInterfaces().Append(sequenceType))
+            {
+                if (!candidate.IsGenericType || candidate.GetGenericTypeDefinition() != typeof(IEnumerable<>))
+                    continue;
+                var element = candidate.GetGenericArguments()[0];
+                element = Nullable.GetUnderlyingType(element) ?? element;
+                if (element.IsEnum)
+                    return element;
+            }
+            return null;
         }
     }
 }

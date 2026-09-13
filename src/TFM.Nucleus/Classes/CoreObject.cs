@@ -193,8 +193,24 @@ namespace TFM.Nucleus
             //This allows for proper tracking of changes to the object from the moment of instantiation, which is necessary for accurate logging of changes and linked objects when the object is saved to the database.
             if (property == "ID")
                 _isNew = false;
-            _properties[property] = obj != DBNull.Value ? obj : null;
+            _properties[property] = obj != null && obj != DBNull.Value ? CoerceBoundValue(property, obj) : null;
 
+        }
+
+        /// <summary>
+        /// Widens a database integer into the enum its property is declared as. The reader returns
+        /// the column's integral type, and while the CLR will unbox that straight into an enum it
+        /// will not unbox it into a nullable one, so a WidgetKind? property would throw on its first
+        /// read. Converting here keeps <see cref="GetValue{T}"/> a plain cast, and the guard keeps
+        /// the schema lookup off every string, Guid and date column.
+        /// </summary>
+        private object CoerceBoundValue(string column, object value)
+        {
+            if (value is not (int or long or short or byte or sbyte or uint or ulong or ushort))
+                return value;
+            var propertyType = ObjectSchema.TryGetProperty(column)?.Type;
+            var enumType = propertyType == null ? null : Nullable.GetUnderlyingType(propertyType) ?? propertyType;
+            return enumType is { IsEnum: true } ? Enum.ToObject(enumType, value) : value;
         }
 
         private void LogChanges(ILogger? logger = null)

@@ -78,7 +78,9 @@ is a thin forwarder over `NucleusRuntime.Current`, which `AddNucleusData()` publ
 
 `TFM.Nucleus.Data` orchestrates. `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. `ObjectDataAdaptor<T>`
-is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model;
+is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model,
+unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
+comparison still reads as a column;
 `DataProviderRegistry` routes each entity type to the provider of its nearest registered root,
 which is how one application spans several databases.
 

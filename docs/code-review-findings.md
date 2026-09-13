@@ -144,6 +144,25 @@ throws `NotSupportedException` for a ref struct. `Evaluator` now refuses to fold
 subtrees, and `ExpressionParser.HandleContains` unwraps the span conversion, so both spellings
 translate to the same `IN` clause. The `LangVersion 12.0` pin on the test projects is gone.
 
+### An enum column could not be compared in a predicate
+
+C# lowers `c.Status == CartStatus.Active` to `Convert(c.Status, Int32) == Constant(1)`, and a
+nullable enum to a `Nullable<Int32>` conversion on both sides. `ExpressionParser.GetMemberExpression`
+recognised only a bare member whose expression is the lambda parameter, so neither side looked like
+a column and every such predicate failed with "At least one side of comparison must be a member
+access". The parser now strips `Convert` and `ConvertChecked` nodes before looking for the column,
+picks the value side by matching the stripped operands rather than the original ones, and binds an
+enum, or a collection of enums, as its underlying integral value. Ref-struct conversions are still
+left to `UnwrapSpanConversion`.
+
+### A nullable enum column threw on its first read after loading
+
+The reader returns the column's `int`, which `BindValue` wrote straight into the property bag. The
+CLR unboxes a boxed `int` into `WidgetKind` but not into `WidgetKind?`, so `GetValue<T>`'s cast threw
+`InvalidCastException` the moment the property was read. Filtering on such a column was therefore
+only half a feature. `BindValue` now widens an integral value into the declared enum, nullable or
+not, which leaves `GetValue<T>` a plain cast and costs a schema lookup only on integer columns.
+
 ### System.Linq.AsyncEnumerable made LINQ operators ambiguous on net10.0
 
 `ObjectDataAdaptor<T>` is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so on .NET 10 an

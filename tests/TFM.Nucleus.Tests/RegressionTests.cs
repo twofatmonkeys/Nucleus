@@ -47,6 +47,31 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void BindDataSet_WidensIntegerIntoNullableEnum()
+        {
+            // The reader hands back the column's int, and a boxed int cannot be unboxed straight
+            // into WidgetKind? the way it can into WidgetKind, so the bind has to widen it.
+            var dataSet = DataSet.Initialize("tbl_NullableWidget", ["ID", "Kind", "OptionalKind"]);
+            dataSet.FillNext([Guid.NewGuid(), 2, 1]);
+
+            var widget = Assert.Single(NullableWidget.BindDataSet(dataSet));
+
+            Assert.Equal(WidgetKind.Premium, widget.Kind);
+            Assert.Equal(WidgetKind.Standard, widget.OptionalKind);
+        }
+
+        [Fact]
+        public void BindDataSet_LeavesNullableEnumNull()
+        {
+            var dataSet = DataSet.Initialize("tbl_NullableWidget", ["ID", "Kind", "OptionalKind"]);
+            dataSet.FillNext([Guid.NewGuid(), 0, DBNull.Value]);
+
+            var widget = Assert.Single(NullableWidget.BindDataSet(dataSet));
+
+            Assert.Null(widget.OptionalKind);
+        }
+
+        [Fact]
         public void GetDBValue_UnsetNullableIsDbNull()
         {
             var widget = new NullableWidget();

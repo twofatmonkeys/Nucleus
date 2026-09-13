@@ -248,7 +248,7 @@ Override these on an entity to run logic at defined points:
 
 ## Async query operators
 
-`ObjectDataAdaptor<T>` is a real LINQ provider, so the usual operators compose and execute server-side. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip.
+`ObjectDataAdaptor<T>` is a real LINQ provider, so the usual operators compose and execute server-side. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
 
 ## Registration reference
 
