@@ -52,7 +52,7 @@ namespace TFM.Nucleus.Data.SQL
                     var childObjSchema = tableSchema.ObjectSchema.GetObjectSchema(childColl.Type.GetGenericArguments()[0]);
                     if (childTableSchema != null)
                     {
-                        var childQuery = new SelectQuery(childTableSchema);
+                        var childQuery = new SelectQuery(childTableSchema) { ChildCollectionProperty = childColl.Name };
                         var parentProperty = childObjSchema.ParentObjectProperty
                             ?? throw new InvalidQueryException(
                                 $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
@@ -73,7 +73,15 @@ namespace TFM.Nucleus.Data.SQL
 
 
 
-        public override string BuildQuery()
+        public override string BuildQuery() => BuildQuery(includeChildQueries: true);
+
+        /// <summary>
+        /// The batch: this query's rows, the unpaged count when requested, then, when
+        /// <paramref name="includeChildQueries"/> is set, each child collection query in
+        /// LinkedQueries pre-order, which is the order a reader meets their result sets. A
+        /// streamed read leaves the children out and fetches them itself.
+        /// </summary>
+        public string BuildQuery(bool includeChildQueries)
         {
             if (queryText != null)
                 return queryText;
@@ -88,9 +96,22 @@ namespace TFM.Nucleus.Data.SQL
                 if (where != null)
                     sb.Append(' ').Append(where);
             }
-            foreach (var link in LinkedQueries)
-                sb.Append($"; {Environment.NewLine}").Append(link.BuildQuery());
+            if (includeChildQueries)
+                foreach (var link in LinkedQueries)
+                    sb.Append($"; {Environment.NewLine}").Append(link.BuildQuery());
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// The order of the root rows. A TOP without an order would let the server pick one set
+        /// of parents for the rows and another for the children's subquery, so a root with child
+        /// queries and a Take is ordered by [ID] when no order was asked for.
+        /// </summary>
+        private string? RootOrderBy()
+        {
+            if (!OrderBy.IsEmpty)
+                return OrderBy.BuildOrderByStatement()?.ToString();
+            return Take > 0 && LinkedQueries.Count > 0 ? "ORDER BY [ID]" : null;
         }
 
         private StringBuilder BuildPlainSelect()
@@ -100,8 +121,8 @@ namespace TFM.Nucleus.Data.SQL
                 sb.Append($"{(i == 0 ? "" : " ,")}[{Columns[i]}]");
             sb.Append($" FROM {TableName}{(WithNoLock ? "" : " WITH(NOLOCK)")}");
             sb.Append(' ').Append(BuildWhere());
-            if (ParentQuery == null && !OrderBy.IsEmpty)
-                sb.Append(' ').Append(OrderBy.BuildOrderByStatement());
+            if (ParentQuery == null && RootOrderBy() is { } orderBy)
+                sb.Append(' ').Append(orderBy);
             return sb;
         }
 
@@ -114,9 +135,17 @@ namespace TFM.Nucleus.Data.SQL
             if (ParentQuery != null)
                 throw new InvalidQueryException("Paging is not supported on child queries.");
             var columnList = string.Join(" ,", Columns.Select(c => $"[{c}]"));
+            var sb = new StringBuilder($"SELECT {columnList} FROM ").Append(PagedWindow(columnList));
+            sb.Append(" ORDER BY [__paged].[__RowNumber]");
+            return sb;
+        }
+
+        /// <summary>The ROW_NUMBER window over this query's rows, cut to the requested page.</summary>
+        private StringBuilder PagedWindow(string columnList)
+        {
             var orderBy = OrderBy.IsEmpty ? "ORDER BY [ID]" : OrderBy.BuildOrderByStatement()?.ToString() ?? "ORDER BY [ID]";
             var sb = new StringBuilder(
-                $"SELECT {columnList} FROM (SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
+                $"(SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
                 $"FROM {TableName}{(WithNoLock ? "" : " WITH(NOLOCK)")}");
             var where = BuildWhere();
             if (where != null)
@@ -124,9 +153,27 @@ namespace TFM.Nucleus.Data.SQL
             sb.Append($") AS [__paged] WHERE [__paged].[__RowNumber] > {Skip}");
             if (Take > 0)
                 sb.Append($" AND [__paged].[__RowNumber] <= {Skip + Take}");
-            sb.Append(" ORDER BY [__paged].[__RowNumber]");
             return sb;
         }
+
+        /// <summary>
+        /// Selects the IDs of exactly the rows this query returns, for a child query to select
+        /// its rows by. A page or a TOP applies here too, or the children of every matching
+        /// parent would be fetched rather than those of the parents returned.
+        /// </summary>
+        private string ParentIdSelect()
+        {
+            if (ParentQuery == null && Skip > 0)
+                return $"SELECT [ID] FROM {PagedWindow("[ID]")}";
+            var top = ParentQuery == null && Take > 0;
+            var sb = new StringBuilder(top ? $"SELECT TOP {Take} [ID] FROM {TableName}" : $"SELECT [ID] FROM {TableName}");
+            if (BuildWhere() is { } where)
+                sb.Append(' ').Append(where);
+            if (top && RootOrderBy() is { } orderBy)
+                sb.Append(' ').Append(orderBy);
+            return sb.ToString();
+        }
+
         private StringBuilder? BuildWhere()
         {
             var softDeleteFilter = SoftDeleteFilter();
@@ -147,19 +194,25 @@ namespace TFM.Nucleus.Data.SQL
             }
             else
             {
-                var sb = new StringBuilder($"WHERE {LinkedColumn} IN (SELECT ID FROM {ParentQuery.TableName} ");
-                sb.Append(((SelectQuery)ParentQuery).BuildWhere()).Append(')');
+                var sb = new StringBuilder($"WHERE {LinkedColumn} IN (")
+                    .Append(((SelectQuery)ParentQuery).ParentIdSelect()).Append(')');
                 if (softDeleteFilter != null)
                     sb.Append($" AND {softDeleteFilter}");
                 return sb;
             }
         }
 
-        /// <summary>Soft-deletable types are filtered to live rows unless IncludeDeleted is set.</summary>
+        /// <summary>
+        /// Soft-deletable types are filtered to live rows unless IncludeDeleted is set on this
+        /// query or any query above it: a read that includes deleted parents includes their
+        /// deleted children too.
+        /// </summary>
         private string? SoftDeleteFilter() =>
-            !IncludeDeleted && TableSchema?.ObjectSchema is { IsDeletable: true, DeleteBehavior: DeleteBehavior.Soft }
-                ? "[IsDeleted] = 0"
+            !IncludesDeleted && TableSchema != null && SoftDelete.Applies(TableSchema)
+                ? SoftDelete.LiveRowFilter
                 : null;
+
+        private bool IncludesDeleted => IncludeDeleted || (ParentQuery as SelectQuery)?.IncludesDeleted == true;
 
         //public override Task<DbDataReader?> ExecuteAsync() => throw new Exception("A Data.Context must be supplied");
         //public override Task<DbDataReader?> ExecuteAsync(Context dataContext) => ExecuteAsync(dataContext, CancellationToken.None);
@@ -175,5 +228,8 @@ namespace TFM.Nucleus.Data.SQL
         public bool IncludeDeleted { get; set; }
         public void AddOrderBy(string propertyName, bool descending = false) =>
             OrderBy.Add(new OrderBy(propertyName, descending ? OrderByType.DESCENDING : OrderByType.ASCENDING));
+
+        public bool ExcludeChildCollection(string propertyName) =>
+            LinkedQueries.RemoveAll(q => q.ChildCollectionProperty == propertyName) > 0;
     }
 }

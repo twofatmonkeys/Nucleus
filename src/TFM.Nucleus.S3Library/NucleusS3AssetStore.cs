@@ -281,7 +281,7 @@ public sealed class NucleusS3AssetStore : IS3AssetStore
     private async Task<S3Asset> ToAssetAsync(S3AssetRecord row, CancellationToken ct) =>
         S3AssetRecordMapper.ToAsset(row, await PreviousPathsOf(row.AssetId, ct).ConfigureAwait(false));
 
-    /// <summary>The rows the SQL side of a query selects; one composed predicate, since Nucleus keeps only the last Where.</summary>
+    /// <summary>The rows the SQL side of a query selects, as one composed predicate.</summary>
     private Task<List<S3AssetRecord>> LoadAsync(S3AssetQuery query, CancellationToken ct)
     {
         var predicate = SqlPredicateFor(query);

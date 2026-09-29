@@ -633,6 +633,38 @@ namespace TFM.Nucleus
         public static Task<NucleusCollection<T>> LoadWhereAsync<T>(Expression<Func<T, bool>> expression, CancellationToken token = default) where T : CoreObject<T>, new() =>
             NucleusRuntime.Current.LoadWhereAsync<T>(expression.Body, token);
 
+        /// <summary>
+        /// Loads by primary key, leaving the selected child collections unloaded, as in
+        /// <c>LoadByID&lt;Bundle&gt;(id, b =&gt; b.Files)</c>. Their rows are neither queried nor
+        /// transferred; call <c>LoadAsync()</c> on a collection to fetch it later.
+        /// </summary>
+        public static T? LoadByID<T>(Guid id, params Expression<Func<T, INucleusChildCollection>>[] exclude) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadByID<T>(id, ChildCollectionSelector.PropertyNames(exclude));
+
+        /// <summary>Loads the matching rows, leaving the selected child collections unloaded.</summary>
+        public static NucleusCollection<T> LoadWhere<T>(Expression<Func<T, bool>> expression, params Expression<Func<T, INucleusChildCollection>>[] exclude) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadWhere<T>(expression.Body, ChildCollectionSelector.PropertyNames(exclude));
+
+        /// <inheritdoc cref="LoadWhere{T}(Expression{Func{T, bool}}, Expression{Func{T, INucleusChildCollection}}[])"/>
+        public static Task<NucleusCollection<T>> LoadWhereAsync<T>(Expression<Func<T, bool>> expression, CancellationToken token, params Expression<Func<T, INucleusChildCollection>>[] exclude) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadWhereAsync<T>(expression.Body, ChildCollectionSelector.PropertyNames(exclude), token);
+
+        #endregion
+
+        #region Static delete API (forwarders over the ambient runtime)
+
+        /// <summary>
+        /// Deletes every matching row without loading any, with its child collection rows, in one
+        /// transaction; the type must be [Deletable]. Returns the rows of <typeparamref name="T"/>
+        /// affected. A predicate matching every row is refused.
+        /// </summary>
+        public static int DeleteWhere<T>(Expression<Func<T, bool>> predicate) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.DeleteWhere(predicate);
+
+        /// <inheritdoc cref="DeleteWhere{T}(Expression{Func{T, bool}})"/>
+        public static Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.DeleteWhereAsync(predicate, token);
+
         #endregion
 
         [JsonIgnore]
@@ -734,6 +766,12 @@ namespace TFM.Nucleus
         public TParent Parent { get => GetValue<TParent>() ?? throw new InvalidOperationException("Parent object is not bound."); }
 
         void ICoreChildObject<TParent>.BindParent(TParent parent) => BindParent(parent);
+
+        void ICoreChildObject<TParent>.BindLoadedParent(TParent parent)
+        {
+            ArgumentNullException.ThrowIfNull(parent);
+            BindValue(nameof(Parent), parent);
+        }
         protected internal void BindParent(TParent parent)
         {
             ArgumentNullException.ThrowIfNull(parent);

@@ -51,3 +51,43 @@ namespace TFM.Nucleus.IntegrationTests
         Premium = 2,
     }
 }
+
+namespace TFM.Nucleus.IntegrationTests
+{
+    /// <summary>A parent whose child rows carry the content, like a bundle and its files.</summary>
+    [Deletable]
+    public class IntBundle : CoreObject<IntBundle>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntBundleFile, IntBundle> Files => GetChildCollection<IntBundleFile, IntBundle>();
+    }
+
+    [Deletable]
+    public class IntBundleFile : CoreChildObject<IntBundleFile, IntBundle>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public string? Content { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    /// <summary>A soft-deleted parent over hard-deleted children.</summary>
+    [Deletable(DeleteBehavior.Soft)]
+    public class IntSoftBundle : CoreObject<IntSoftBundle>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntSoftBundleNote, IntSoftBundle> Notes => GetChildCollection<IntSoftBundleNote, IntSoftBundle>();
+    }
+
+    [Deletable]
+    public class IntSoftBundleNote : CoreChildObject<IntSoftBundleNote, IntSoftBundle>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+}

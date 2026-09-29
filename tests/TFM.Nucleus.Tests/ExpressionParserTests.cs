@@ -213,5 +213,176 @@ namespace TFM.Nucleus.Tests
 
             Assert.Contains("[RestrictedName]=@p0 AND [Kind]=@p1", sql);
         }
+
+        // ---- Terms that used to be dropped ------------------------------------------------------
+        // A dropped term widens the selection. For a load that returns too many rows; for a
+        // delete it removes them, so every one of these must translate or throw.
+
+        private static SelectQuery NewFlagSelect() =>
+            new("[dbo].[tbl_FlagWidget]", ["ID", "Name", "Quantity", "IsArchived"], typeof(FlagWidget));
+
+        private static (string Sql, ParameterCollection Parameters) ParseFlag(Expression expression)
+        {
+            var query = NewFlagSelect();
+            ExpressionParser.ParseExpressionToQuery(query, expression);
+            return (SqlSnapshot.Normalize(query.BuildQuery()), query.Where.AllParameters());
+        }
+
+        private static (string Sql, ParameterCollection Parameters) ParseFlag(Expression<Func<FlagWidget, bool>> predicate) =>
+            ParseFlag(predicate.Body);
+
+        [Fact]
+        public void BareBoolMember_RendersEqualsTrue()
+        {
+            var (sql, parameters) = ParseFlag(w => w.IsArchived);
+
+            Assert.EndsWith("WHERE [IsArchived]=@p0", sql);
+            Assert.Equal(true, Assert.Single(parameters)!.Value);
+        }
+
+        [Fact]
+        public void NegatedBoolMember_RendersEqualsFalse()
+        {
+            var (sql, parameters) = ParseFlag(w => !w.IsArchived);
+
+            Assert.EndsWith("WHERE [IsArchived]=@p0", sql);
+            Assert.Equal(false, Assert.Single(parameters)!.Value);
+        }
+
+        [Fact]
+        public void BoolMemberInOr_KeepsBothBranches()
+        {
+            var (sql, _) = ParseFlag(w => w.Quantity == 1 || w.IsArchived);
+
+            Assert.EndsWith("WHERE (([Quantity]=@p0) OR ([IsArchived]=@p1))", sql);
+        }
+
+        [Fact]
+        public void AndOfOr_GroupsTheOr()
+        {
+            var (sql, _) = ParseFlag(w => w.Name == "a" && (w.Quantity == 1 || w.Quantity == 2));
+
+            Assert.EndsWith("WHERE [Name]=@p0 AND (([Quantity]=@p1) OR ([Quantity]=@p2))", sql);
+        }
+
+        [Fact]
+        public void OrThenAnd_GroupsTheOr()
+        {
+            var (sql, _) = ParseFlag(w => (w.Quantity == 1 || w.Quantity == 2) && w.Name == "a");
+
+            Assert.EndsWith("WHERE (([Quantity]=@p0) OR ([Quantity]=@p1)) AND [Name]=@p2", sql);
+        }
+
+        [Fact]
+        public void OrOfAnds_GroupsEachBranch()
+        {
+            var (sql, _) = ParseFlag(w => (w.Name == "a" && w.Quantity == 1) || (w.Name == "b" && w.Quantity == 2));
+
+            Assert.EndsWith("WHERE (([Name]=@p0 AND [Quantity]=@p1) OR ([Name]=@p2 AND [Quantity]=@p3))", sql);
+        }
+
+        [Fact]
+        public void ChainedOr_SharesOneGroup()
+        {
+            var (sql, _) = ParseFlag(w => w.Quantity == 1 || w.Quantity == 2 || w.Quantity == 3);
+
+            Assert.EndsWith("WHERE (([Quantity]=@p0) OR ([Quantity]=@p1) OR ([Quantity]=@p2))", sql);
+        }
+
+        [Fact]
+        public void ConstantFalseInOr_KeepsTheOtherBranch()
+        {
+            var flag = false;
+
+            var (sql, _) = ParseFlag(w => w.Name == "a" || flag);
+
+            Assert.EndsWith("WHERE [Name]=@p0", sql);
+        }
+
+        [Fact]
+        public void ConstantTrueInAnd_KeepsTheOtherTerm()
+        {
+            var flag = true;
+
+            var (sql, _) = ParseFlag(w => flag && w.Name == "a");
+
+            Assert.EndsWith("WHERE [Name]=@p0", sql);
+        }
+
+        [Fact]
+        public void ChainedWhere_AppliesEveryFilter()
+        {
+            var source = new FlagWidget[0].AsQueryable()
+                .Where(w => w.Name == "a")
+                .Where(w => w.Quantity == 1);
+
+            var (sql, _) = ParseFlag(source.Expression);
+
+            Assert.EndsWith("WHERE [Name]=@p0 AND [Quantity]=@p1", sql);
+        }
+
+        [Fact]
+        public void UnsupportedOperatorInChain_Throws()
+        {
+            var source = new FlagWidget[0].AsQueryable()
+                .OrderBy(w => w.Name)
+                .Where(w => w.Quantity == 1);
+
+            Assert.Throws<InvalidOperationException>(() => ParseFlag(source.Expression));
+        }
+
+        [Fact]
+        public void PredicateMatchingNothing_Throws()
+        {
+            Assert.Throws<InvalidOperationException>(() => ParseFlag(w => false));
+        }
+
+        [Fact]
+        public void UntranslatableTerm_ThrowsRatherThanDropping()
+        {
+            // A property of a column (Name.Length) is not a column the provider can compare.
+            Assert.Throws<InvalidOperationException>(() => ParseFlag(w => w.Name!.Length > 3 && w.Quantity == 1));
+        }
+
+        [Theory]
+        [InlineData(0, PredicateShape.MatchesAll)]
+        [InlineData(1, PredicateShape.MatchesNone)]
+        [InlineData(2, PredicateShape.Filtered)]
+        [InlineData(3, PredicateShape.MatchesNone)]
+        [InlineData(4, PredicateShape.MatchesAll)]
+        public void Classify_FoldsConstants(int caseIndex, PredicateShape expected)
+        {
+            var flag = true;
+            Expression<Func<FlagWidget, bool>>[] cases =
+            [
+                w => true,
+                w => false,
+                w => w.Name == "a" || !flag,
+                w => w.Name == "a" && !flag,
+                w => w.Name == "a" || flag,
+            ];
+
+            Assert.Equal(expected, ExpressionParser.Classify(cases[caseIndex].Body));
+        }
+
+        [Fact]
+        public void Classify_UnfilteredQueryable_MatchesAll()
+        {
+            var source = new FlagWidget[0].AsQueryable();
+
+            Assert.Equal(PredicateShape.MatchesAll, ExpressionParser.Classify(source.Expression));
+        }
+    }
+
+    public class FlagWidget : CoreObject<FlagWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Quantity { get => GetValue<int>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public bool IsArchived { get => GetValue<bool>(); set => SetValue(value); }
     }
 }

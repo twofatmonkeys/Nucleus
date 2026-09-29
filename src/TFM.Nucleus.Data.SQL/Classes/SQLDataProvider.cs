@@ -185,11 +185,30 @@ namespace TFM.Nucleus.Data.SQL
             return InsertQuery.Create(GetTableSchema<T>(), objs);
         }
 
-        public DeleteQuery? CreateDeleteQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
+        /// <summary>
+        /// Deletes the given objects by ID, with every row of their child collections, whether
+        /// or not those were loaded. Null when there is nothing to delete.
+        /// </summary>
+        public DeleteWhereQuery? CreateDeleteQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
         {
-            if (objs == null || !objs.Any())
+            if (objs == null)
                 return null;
-            return DeleteQuery.Create(GetTableSchema<T>(), objs.Cast<ICoreObject>());
+            return CreateDeleteByIdQuery(GetTableSchema<T>(), objs.Where(o => o != null && !o.IsNew).Select(o => o.ID));
+        }
+
+        /// <summary>Deletes rows of one table by ID, cascading to child collection rows.</summary>
+        public DeleteWhereQuery? CreateDeleteByIdQuery(SqlTableSchema tableSchema, IEnumerable<Guid> ids) =>
+            DeleteWhereQuery.ForIds(tableSchema, SqlDataSchema.GetTableSchema, ids);
+
+        /// <summary>
+        /// Deletes the rows of <typeparamref name="T"/> matching a predicate body, cascading to
+        /// child collection rows. The caller checks the predicate with
+        /// <see cref="ExpressionParser.CheckDeletePredicate"/> first.
+        /// </summary>
+        public DeleteWhereQuery CreateDeleteWhereQuery<T>(Expression predicate) where T : ICoreObject<T>, new()
+        {
+            var query = new DeleteWhereQuery(GetTableSchema<T>(), SqlDataSchema.GetTableSchema);
+            return (DeleteWhereQuery)ExpressionParser.ParseExpressionToQuery(query, predicate);
         }
 
         public Query? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()

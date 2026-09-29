@@ -90,6 +90,13 @@ var adaptor = manager.Get<Customer>();
 var list    = adaptor.Where(c => c.Name == "Acme").ToList();
 var page    = await adaptor.ToPagedResultAsync(skip: 20, take: 10);   // rows plus total, one round trip
 await order.DeleteAsync();                                            // [Deletable] types only
+
+// Leave a child collection unloaded, and load it later only if it is needed
+var light = await adaptor.Where(c => c.Name == "Acme").Exclude(c => c.Orders).ToListAsync();
+await light[0].Orders.LoadAsync();
+
+// Delete by predicate: no row is loaded, child rows go too, the count comes back
+var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
 ```
 
 ## Bindery
@@ -131,7 +138,7 @@ builder.Services.AddS3Library<NucleusS3AssetStore>();
 ```
 
 The tables are created and migrated at `InitializeDataProviderAsync` like every other entity.
-Nucleus has no optimistic concurrency and cannot report rows affected, so the store enforces the
+Nucleus has no optimistic concurrency and cannot report the rows an update affected, so the store enforces the
 contract's two hard rules with unique indexes instead: `S3AssetRecord.LivePath` carries the full
 path while a record is live and null once it is soft-deleted, so the filtered unique index on it
 is exactly "no two live records share a path"; and every save inserts a claim row for the version
@@ -221,6 +228,9 @@ These live on `CoreObject` and forward to the runtime that `AddNucleusData()` pu
 | `LoadAll<T>()` | `NucleusCollection<T>` | Whole collection. |
 | `LoadWhere<T>(Expression<Func<T, bool>>)` | `NucleusCollection<T>` | Translated to a parameterised query. |
 | `LoadWhereAsync<T>(Expression<Func<T, bool>>, CancellationToken)` | `Task<NucleusCollection<T>>` | Async form. |
+| `LoadByID<T>(Guid, params Expression<Func<T, INucleusChildCollection>>[] exclude)` | `T?` | Leaves the selected child collections unloaded. Bypasses the cache when anything is excluded. |
+| `LoadWhere<T>(predicate, params exclude)`, `LoadWhereAsync<T>(predicate, CancellationToken, params exclude)` | as above | The same, for a predicate. |
+| `DeleteWhere<T>(Expression<Func<T, bool>>)`, `DeleteWhereAsync<T>(..., CancellationToken)` | `int`, `Task<int>` | Deletes every matching row without loading any, with its child collection rows, in one transaction. Returns the rows of `T` affected. See [Child collections and deleting](#child-collections-and-deleting). |
 | `BulkSave<TObject>(IEnumerable<TObject>)` | `void` | Routes large batches through the provider's bulk engine. |
 
 Instance members on every entity:
@@ -229,11 +239,41 @@ Instance members on every entity:
 |---|---|
 | `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Runs `Validate()`, then writes only the changed columns. |
 | `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction; the caller commits or rolls back. |
-| `Delete()`, `DeleteAsync(CancellationToken)` | `[Deletable]` types only. Cascades to loaded child collections when every child type is also deletable, and all guards are checked before anything executes. |
+| `Delete()`, `DeleteAsync(CancellationToken)` | `[Deletable]` types only. Removes the object's child collection rows by parent ID in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is not `[Deletable]` or is stored by another provider. |
 | `IsNew`, `IsReadOnly`, `HasChanges`, `DataChanged` | Change-tracking state. |
 | `ToJson()`, `DisplayName` | Serialisation and display helpers. |
 
 Equality, `GetHashCode` and the explicit conversion to `Guid` are all based on `ID`.
+
+## Child collections and deleting
+
+A `NucleusChildCollection` property is loaded with its parent on every load path: `LoadWhere`,
+`LoadByID`, paged loads, and the async LINQ operators. The child rows arrive in the same round trip
+for the non-streaming paths, and loaded children come back unchanged, with `Parent` bound and
+nothing staged. When a load has a `Take` or a page, the child query selects the children of the
+returned parents only.
+
+**Leaving a collection out.** `Exclude(x => x.Items)` on a query, or the `exclude` selectors on
+`LoadByID` and `LoadWhere`, drop that collection's query. Its rows are never queried or
+transferred, and the collection comes back with `IsLoaded` false. Reading it (enumerating, `Count`,
+the indexer, `Contains`, `Remove`, `Clear`) throws `InvalidOperationException` rather than
+answering as if the parent had no children. Adding still works, and added children save with the
+parent. `collection.LoadAsync()` fetches the stored children by the parent's ID and merges them by
+ID with any added since; `IObjectDataManager.LoadChildCollectionAsync(collection)` does the same
+without the ambient runtime. An excluded load never reads from or populates the `[Cacheable]` cache.
+Serialising a parent whose collection is unloaded throws for the same reason.
+
+**Deleting by predicate.** `DeleteWhere` and `DeleteWhereAsync` exist on `CoreObject` (static), the
+object data manager (each in a transaction of its own, with cache eviction), and `IDataContext`
+(in a caller-owned context and transaction, without cache eviction). No row is loaded. The predicate
+uses the same translation as `LoadWhere`, with two guards: a predicate that matches every row, such
+as `x => true`, throws `ArgumentException`, and one that matches none, such as `x => false`,
+returns 0 without a round trip. Soft-deletable types are flagged, and only rows not already
+deleted count.
+
+**The cascade.** Deleting a parent, by object or by predicate, deletes its child collection rows at
+every depth in one batch: deepest first, each level selecting by its parent's condition, and each
+type keeping its own hard or soft behaviour. It no longer depends on which children were loaded.
 
 ## Lifecycle hooks
 
@@ -248,7 +288,7 @@ Override these on an entity to run logic at defined points:
 
 ## Async query operators
 
-`ObjectDataAdaptor<T>` is a real LINQ provider, so the usual operators compose and execute server-side. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
+`ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. Order, page and project in memory, or use `ToPagedResultAsync`. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
 
 ## Registration reference
 
@@ -292,6 +332,21 @@ Override these on an entity to run logic at defined points:
 | `BulkCopyBatchSize` | `50000` | Rows per bulk copy batch. |
 
 Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+
+## Behaviour changes
+
+These came in with delete by predicate and child collection exclusion. Each fixes a defect, but each
+can change what existing code sees.
+
+- **Predicates no longer drop terms.** A bare bool column (`x => x.IsArchived`) is now a condition;
+  it used to be ignored and match every row. `x => false` matches nothing; it used to match
+  everything. `A && (B || C)` and `(A || B) && C` now group as written. A term that cannot be
+  translated throws instead of being dropped. Queries that silently returned too many rows now
+  return the right ones.
+- **Loads attach child collections on every path.** `LoadWhere`, `LoadByID` and paged loads used to
+  discard the child rows they fetched and return empty collections.
+- **Deleting a parent removes all of its child rows**, not only the ones loaded in memory.
+- **A chained `Where` applies every filter.** Only the last one used to apply.
 
 ## Features worth knowing
 

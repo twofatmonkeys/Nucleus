@@ -51,7 +51,69 @@ safe to call, but removing it is a public API change and was left for a major ve
 Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs`, `SQLConfiguration.cs`
 and `DBColumn.cs`.
 
+### Saving a parent rewrites every loaded child
+
+`UpdateQuery` links an update for every child in each loaded collection, and an update always sets
+`Timestamp`, so saving a parent touches every child row even when none changed. Skipping unchanged
+children is not safe as things stand: `HasChanges` covers an object's own columns only, and a
+grandchild's update is linked from its child's, so a clean child with a changed grandchild would
+lose the grandchild's write. The fix needs a recursive dirty check first. Loaded children are no
+longer dirty themselves (see "Loaded children were dirty" below), so the only write is the
+timestamp.
+
+### Children removed from a collection are never deleted
+
+`NucleusChildCollection.RemovedChildren` records removals and says it is "consumed by the delete
+pipeline", but nothing reads it. Removing a child from a collection and saving the parent leaves
+the child's row in place.
+
+### Bindery page deletes match the page id by collation
+
+`NucleusBinderyStore.DeletePageAsync` deletes versions with `PageId = @pageId`, and `VersionsOf`
+reads them the same way. Under a case-insensitive collation that also matches a page id differing
+only in case. The document lookup filters ordinally; the version paths do not. This predates the
+switch to delete by predicate, which kept the same condition.
+
+### Pruning versions still loads their content
+
+`NucleusBinderyStore.PruneVersionsAsync` loads every version of a page, JSON included, to order
+them and choose which to delete. Ordering happens in memory because the provider translates none,
+so avoiding the load needs column projection, which Nucleus does not have.
+
 ## Fixed
+
+### The predicate parser dropped terms it could not place
+
+A bare bool column (`x => x.Flag`) produced no condition and matched every row; `x.A == 1 || x.Flag`
+lost the whole OR; `x => false` and any constant sub-condition vanished, so `x => false` loaded the
+table. `A && (B || C)` rendered as `(A AND B) OR C` because OR operands were added straight to the
+enclosing collection, and `(A || B) && C` rendered as `A OR B AND C` because `WhereClause` did not
+parenthesise a nested OR. `.Where(a).Where(b)` applied only `b`. Each widened the selection, which
+for a load returned too many rows and, once deletes by predicate existed, would have deleted them.
+The parser now folds boolean constants, nests every OR, translates bare bool columns, ANDs every
+Where in a chain, and throws for anything it cannot translate. Cover in `ExpressionParserTests`.
+
+### Non-streaming loads discarded their child collections
+
+`SelectQuery` batched a SELECT per child collection, but `GetDataSet` read only the first result
+set, so `LoadWhere`, `LoadByID` and paged loads transferred every child row and returned empty
+collections. The streaming path attached children but re-queried them, having already sent the
+batched copies to be drained. Child result sets are now read into `DataSet.LinkedDataSets` and
+attached by `ChildGraphBinder`, and `StreamAsync` sends the root query alone. Child subqueries
+also ignored the parent's page and TOP, so a paged load fetched the children of every matching
+parent; they now select the returned parents only. Cover in `ChildQuerySqlTests` and
+`ChildCollectionLoadIntegrationTests`.
+
+### Loaded children were dirty
+
+Attaching a child went through `Add`, which bound the parent with `SetValue` and staged a change on
+every loaded child. Loaded children are now attached with their parent bound as a stored value.
+
+### Deleting a parent orphaned the children it had not loaded
+
+The delete cascaded only over children held in memory, and there are no foreign keys, so a parent
+loaded without its children (every non-streaming load, per above) left their rows behind. Every
+delete now removes child rows in SQL by parent ID. Cover in `DeleteWhereIntegrationTests`.
 
 ### Infinite recursion in ObjectSchema.Get(dynamic)
 

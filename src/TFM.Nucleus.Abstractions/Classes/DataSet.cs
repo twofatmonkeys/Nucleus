@@ -41,6 +41,12 @@ namespace TFM.Nucleus
         /// <summary>The unpaged total row count when the query requested WithTotalCount; otherwise null.</summary>
         public long? TotalRowCount { get; set; }
 
+        /// <summary>
+        /// The rows of the query's child collection queries: entry i holds the rows of the
+        /// query's LinkedQueries[i], and carries that query's own children the same way.
+        /// </summary>
+        public List<DataSet> LinkedDataSets { get; } = [];
+
         public ref object?[] GetNewRow()
         {
             var (left, right) = ArrayIndex(_nextRow);

@@ -22,7 +22,35 @@ namespace TFM.Nucleus
         private readonly TParent _parent;
         private readonly List<TChild> _inner = [];
         private readonly List<TChild> _removedChildren = [];
+        private bool _isLoaded = true;
         private ICoreObject CastParent => _parent as ICoreObject ?? throw new InvalidCastException("Error casting Parent object as ICoreObject");
+
+        /// <summary>
+        /// False when the parent was loaded with this collection excluded. Its rows exist in
+        /// storage but not here, so reading or removing throws until <see cref="LoadAsync"/>
+        /// runs; adding still works, and the added children save with the parent.
+        /// </summary>
+        public bool IsLoaded => _isLoaded;
+
+        /// <summary>
+        /// Loads the collection when it was excluded, merging any children added since; does
+        /// nothing when it is already loaded. Goes through the ambient runtime.
+        /// </summary>
+        public Task LoadAsync(CancellationToken cancellationToken = default) =>
+            _isLoaded ? Task.CompletedTask : NucleusRuntime.Current.LoadChildCollectionAsync(this, cancellationToken);
+
+        /// <summary>Throws when the collection's stored children were never loaded.</summary>
+        private void EnsureLoaded([CallerMemberName] string? member = null)
+        {
+            if (!_isLoaded)
+                throw new InvalidOperationException(
+                    $"The {typeof(TChild).Name} children of this {typeof(TParent).Name} were excluded when it was loaded, so {member} " +
+                    "cannot answer. Call LoadAsync() on the collection first, or load the parent without excluding it.");
+        }
+
+        void INucleusChildCollection.MarkUnloaded() => _isLoaded = false;
+
+        ICoreObject INucleusChildCollection.ParentObject => CastParent;
 
         /// <summary>
         /// Children removed from the collection since the last save; consumed by the delete
@@ -105,9 +133,14 @@ namespace TFM.Nucleus
 
         public TChild this[int index]
         {
-            get => _inner[index];
+            get
+            {
+                EnsureLoaded();
+                return _inner[index];
+            }
             set
             {
+                EnsureLoaded();
                 var previous = _inner[index];
                 UnbindChild(previous);
                 _inner.RemoveAt(index);
@@ -117,20 +150,41 @@ namespace TFM.Nucleus
             }
         }
 
-        public int Count => _inner.Count;
+        public int Count
+        {
+            get
+            {
+                EnsureLoaded();
+                return _inner.Count;
+            }
+        }
         public bool IsReadOnly => false;
-        public bool Contains(TChild item) => _inner.Contains(item);
-        public void CopyTo(TChild[] array, int arrayIndex) => _inner.CopyTo(array, arrayIndex);
-        public int IndexOf(TChild item) => _inner.IndexOf(item);
+        public bool Contains(TChild item)
+        {
+            EnsureLoaded();
+            return _inner.Contains(item);
+        }
+        public void CopyTo(TChild[] array, int arrayIndex)
+        {
+            EnsureLoaded();
+            _inner.CopyTo(array, arrayIndex);
+        }
+        public int IndexOf(TChild item)
+        {
+            EnsureLoaded();
+            return _inner.IndexOf(item);
+        }
 
         public void Insert(int index, TChild item)
         {
+            EnsureLoaded();
             if (BindChild(item, index))
                 OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, item, index));
         }
 
         public void RemoveAt(int index)
         {
+            EnsureLoaded();
             var item = _inner[index];
             UnbindChild(item);
             _inner.RemoveAt(index);
@@ -139,6 +193,7 @@ namespace TFM.Nucleus
 
         public void Clear()
         {
+            EnsureLoaded();
             if (_inner.Count == 0)
                 return;
             foreach (var item in _inner)
@@ -147,7 +202,11 @@ namespace TFM.Nucleus
             OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
         }
 
-        public IEnumerator<TChild> GetEnumerator() => _inner.GetEnumerator();
+        public IEnumerator<TChild> GetEnumerator()
+        {
+            EnsureLoaded();
+            return _inner.GetEnumerator();
+        }
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         // Non-generic IList explicit implementation
@@ -158,14 +217,14 @@ namespace TFM.Nucleus
 
         object? IList.this[int index]
         {
-            get => _inner[index];
+            get => this[index];
             set => this[index] = (TChild)value!;  // routes through your generic indexer
         }
 
         int IList.Add(object? value)
         {
             Add((TChild)value!);  // routes through your generic Add → AddAndBind
-            return Count - 1;
+            return _inner.Count - 1;
         }
 
         void IList.Insert(int index, object? value) => Insert(index, (TChild)value!);
@@ -173,11 +232,37 @@ namespace TFM.Nucleus
         bool IList.Contains(object? value) => Contains((TChild)value!);
         int IList.IndexOf(object? value) => IndexOf((TChild)value!);
 
-        void ICollection.CopyTo(Array array, int index) => ((ICollection)_inner).CopyTo(array, index);
+        void ICollection.CopyTo(Array array, int index)
+        {
+            EnsureLoaded();
+            ((ICollection)_inner).CopyTo(array, index);
+        }
 
 
 
-        public IEnumerable<ICoreObject> ChildObjects => this.Cast<ICoreObject>();
+        /// <summary>
+        /// The children held here, for saving, committing and deleting. For a collection that
+        /// was excluded at load these are only the children added since, which is exactly what
+        /// a save must write, so this never throws.
+        /// </summary>
+        public IEnumerable<ICoreObject> ChildObjects => _inner.Cast<ICoreObject>();
+
+        void INucleusChildCollection.AttachLoaded(IEnumerable<ICoreObject> children)
+        {
+            ArgumentNullException.ThrowIfNull(children);
+            var present = _inner.Select(c => ((ICoreObject)c).ID).ToHashSet();
+            foreach (var child in children)
+            {
+                if (child is not TChild typed)
+                    throw new ArgumentException($"{child.GetType().Name} is not a {typeof(TChild).Name}.", nameof(children));
+                if (!present.Add(child.ID))
+                    continue;
+                typed.BindLoadedParent(_parent);
+                _inner.Add(typed);
+                child.PropertyChanged += Obj_PropertyChanged;
+            }
+            _isLoaded = true;
+        }
 
         private void OnCollectionChanged(NotifyCollectionChangedEventArgs e) => CollectionChanged?.Invoke(this, e);
 
@@ -202,6 +287,7 @@ namespace TFM.Nucleus
 
         public bool Remove(TChild item)
         {
+            EnsureLoaded();
             if (item == null)
                 return false;
             var index = _inner.IndexOf(item);
@@ -218,7 +304,7 @@ namespace TFM.Nucleus
             var provider = _parent.DataProvider
                 ?? throw new InvalidOperationException(
                     $"{typeof(TParent).Name} has no data provider, so a child collection query cannot be built.");
-            return provider.CreateInsertAndUpdateQuery(this);
+            return provider.CreateInsertAndUpdateQuery(_inner);
         }
 
         public Type ChildType => typeof(TChild);

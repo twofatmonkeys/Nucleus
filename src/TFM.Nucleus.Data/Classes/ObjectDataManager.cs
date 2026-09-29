@@ -11,6 +11,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using TFM.Nucleus;
+using TFM.Nucleus.Abstractions.Interfaces;
 
 namespace TFM.Nucleus.Data
 {
@@ -52,16 +53,23 @@ namespace TFM.Nucleus.Data
         /// <summary>The layered cache backing [Cacheable] types (whole collection + Guid index).</summary>
         public NucleusCache Cache { get; }
 
-        /// <summary>Conservative post-commit eviction: the type itself plus linked and child types.</summary>
-        private void EvictCache(Type entityType)
+        /// <summary>
+        /// Conservative post-commit eviction: the type itself, its linked types, and its child
+        /// collection types at every depth, since a delete now cascades through all of them.
+        /// </summary>
+        private void EvictCache(Type entityType) => EvictCache(entityType, []);
+
+        private void EvictCache(Type entityType, HashSet<Type> evicted)
         {
+            if (!evicted.Add(entityType))
+                return;
             Cache.Evict(entityType);
             if (_objectSchema.Get(entityType) is { } schema)
             {
                 foreach (var linked in schema.LinkedObjectSchemas ?? [])
                     Cache.Evict(linked.Type);
                 foreach (var childProperty in schema.NucleusChildCollectionProperties ?? [])
-                    Cache.Evict(childProperty.Type.GetGenericArguments()[0]);
+                    EvictCache(childProperty.Type.GetGenericArguments()[0], evicted);
             }
         }
 
@@ -270,13 +278,15 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>
-        /// Validates every object (and cascaded child) is deletable, then builds one delete query
-        /// per entity type, grouped by owning provider. All guards run before anything executes.
-        /// Each provider group runs in its own transaction — cross-provider deletes are not atomic.
+        /// Validates every object is deletable, then builds one delete query per entity type,
+        /// grouped by owning provider. The provider's query removes each object's child
+        /// collection rows by parent ID, loaded or not, and throws while being built if a child
+        /// type cannot be deleted, so all guards run before anything executes. Each provider
+        /// group runs in its own transaction; cross-provider deletes are not atomic.
         /// </summary>
         private List<(IDataProvider Provider, IQuery[] Queries, Type[] Types)> BuildDeleteQueriesByProvider<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
-            var groups = ExpandDeleteGraph(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
+            var groups = GroupDeleteRoots(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
             return [.. groups
                 .GroupBy(g => _registry.GetProvider(g.Key))
                 .Select(providerGroup => (providerGroup.Key,
@@ -286,18 +296,16 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>
-        /// Depth-first expansion of the delete graph: each object's loaded child-collection
-        /// members are deleted with it. Throws before execution when any type in the graph is
-        /// not [Deletable] or any object is read only; new objects are skipped.
+        /// Groups the objects to delete by type. Throws before execution when a type is not
+        /// [Deletable] or an object is read only; new objects are skipped, having no row.
+        /// Children are not collected here: the delete removes them in SQL.
         /// </summary>
-        private static Dictionary<Type, List<ICoreObject>> ExpandDeleteGraph(IEnumerable<ICoreObject> roots)
+        private static Dictionary<Type, List<ICoreObject>> GroupDeleteRoots(IEnumerable<ICoreObject> roots)
         {
             var groups = new Dictionary<Type, List<ICoreObject>>();
             var seen = new HashSet<Guid>();
-            var stack = new Stack<ICoreObject>(roots);
-            while (stack.Count > 0)
+            foreach (var obj in roots)
             {
-                var obj = stack.Pop();
                 if (obj.IsNew || !seen.Add(obj.ID))
                     continue;
                 var schema = obj.ObjectSchema;
@@ -308,11 +316,55 @@ namespace TFM.Nucleus.Data
                 if (!groups.TryGetValue(schema.Type, out var list))
                     groups[schema.Type] = list = [];
                 list.Add(obj);
-                foreach (var collection in obj.NucleusChildCollections)
-                    foreach (var child in collection.ChildObjects)
-                        stack.Push(child);
             }
             return groups;
+        }
+
+        /// <summary>
+        /// Deletes every row of <typeparamref name="T"/> matching <paramref name="predicate"/>
+        /// without loading any, with their child collection rows, in one transaction. Returns
+        /// the rows of <typeparamref name="T"/> affected. A predicate matching every row throws
+        /// <see cref="ArgumentException"/>; one matching none returns 0 without a round trip.
+        /// </summary>
+        public int DeleteWhere<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject<T>, new()
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                return 0;
+            using var context = ProviderFor<T>().CreateContext(ContextOptions.Transactional);
+            int affected;
+            try
+            {
+                affected = context.DeleteWhere(predicate);
+            }
+            catch
+            {
+                context.TryRollback();
+                throw;
+            }
+            EvictCache(typeof(T));
+            return affected;
+        }
+
+        /// <inheritdoc cref="DeleteWhere{T}(Expression{Func{T, bool}})"/>
+        public async Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                return 0;
+            await using var context = await ProviderFor<T>().CreateContextAsync(ContextOptions.Transactional, cancellationToken);
+            int affected;
+            try
+            {
+                affected = await context.DeleteWhereAsync(predicate, cancellationToken);
+            }
+            catch
+            {
+                await context.TryRollbackAsync(cancellationToken);
+                throw;
+            }
+            EvictCache(typeof(T));
+            return affected;
         }
 
         private static readonly ConcurrentDictionary<Type, MethodInfo> _deleteQueryFactories = [];
@@ -345,19 +397,33 @@ namespace TFM.Nucleus.Data
         /// One page of rows plus the unpaged total count, fetched in a single round trip.
         /// The optional expression is a LINQ Where tree (or null for all rows).
         /// </summary>
-        public async Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression = null, CancellationToken cancellationToken = default)
+        public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression = null, CancellationToken cancellationToken = default)
+            where T : ICoreObject<T>, new() =>
+            LoadPagedAsync<T>(skip, take, expression, [], cancellationToken);
+
+        /// <summary>
+        /// One page of rows plus the unpaged total count, in a single round trip, leaving the
+        /// named child collection properties unloaded.
+        /// </summary>
+        public async Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
+            IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken = default)
             where T : ICoreObject<T>, new()
         {
             ArgumentOutOfRangeException.ThrowIfNegative(skip);
             ArgumentOutOfRangeException.ThrowIfNegative(take);
+            var excluded = ExcludedCollections<T>(excludedCollections);
+            if (expression != null && ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                return new PagedResult<T>([]) { Skip = skip, Take = take, TotalCount = 0 };
             var provider = ProviderFor<T>();
-            var query = provider.ParseSelectExpression<T>(expression ?? Expression.Constant(true));
+            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded);
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
             using var context = await provider.CreateContextAsync(token: cancellationToken);
             var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var result = new PagedResult<T>(dataSet.BindRows<T>())
+            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet);
+            MarkUnloaded(rows, excluded);
+            var result = new PagedResult<T>(rows)
             {
                 Skip = skip,
                 Take = take,
@@ -367,12 +433,19 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>Loads by primary key; [Cacheable] types answer from the Guid index in O(1).</summary>
-        public T? LoadByID<T>(Guid id) where T : ICoreObject<T>, new()
+        public T? LoadByID<T>(Guid id) where T : ICoreObject<T>, new() => LoadByID<T>(id, []);
+
+        /// <summary>
+        /// Loads by primary key, leaving the named child collections unloaded. [Cacheable] types
+        /// answer from the cache only when nothing is excluded, since the cache holds whole objects.
+        /// </summary>
+        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new()
         {
+            ArgumentNullException.ThrowIfNull(excludedCollections);
             if (id == Guid.Empty)
                 return default;
             var schema = _objectSchema.Get<T>();
-            if (schema is { IsCacheable: true })
+            if (schema is { IsCacheable: true } && excludedCollections.Count == 0)
             {
                 Load<T>(); // ensure the collection (and its index) is populated
                 return Cache.TryGetById<T>(id, out var cached) ? cached : default;
@@ -381,7 +454,42 @@ namespace TFM.Nucleus.Data
             var predicate = Expression.Equal(
                 Expression.Property(parameter, nameof(ICoreObject.ID)),
                 Expression.Constant(id));
-            return ((NucleusCollection<T>?)Load<T>(predicate)) is { Count: > 0 } loaded ? loaded[0] : default;
+            return ((NucleusCollection<T>?)Load<T>(predicate, excludedCollections)) is { Count: > 0 } loaded ? loaded[0] : default;
+        }
+
+        /// <summary>
+        /// The schemas of the child collection properties a load leaves out. Throws for a name
+        /// that is not a child collection of <typeparamref name="T"/>, so a typo cannot silently
+        /// load everything.
+        /// </summary>
+        private IPropertySchema[] ExcludedCollections<T>(IReadOnlyCollection<string> excludedCollections)
+        {
+            ArgumentNullException.ThrowIfNull(excludedCollections);
+            if (excludedCollections.Count == 0)
+                return [];
+            var properties = _objectSchema.Get<T>()?.NucleusChildCollectionProperties ?? [];
+            return [.. excludedCollections.Select(name => properties.FirstOrDefault(p => p.Name == name)
+                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection.", nameof(excludedCollections)))];
+        }
+
+        /// <summary>The select for a load, without the child queries of excluded collections.</summary>
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded)
+        {
+            var query = provider.ParseSelectExpression<T>(expression);
+            foreach (var property in excluded)
+                query.ExcludeChildCollection(property.Name);
+            return query;
+        }
+
+        /// <summary>Marks each excluded collection of each loaded object as not loaded.</summary>
+        private static void MarkUnloaded<T>(IEnumerable<T> objs, IPropertySchema[] excluded) where T : ICoreObject<T>
+        {
+            if (excluded.Length == 0)
+                return;
+            foreach (var obj in objs)
+                foreach (var property in excluded)
+                    if (property.Getter?.Invoke(obj, null) is INucleusChildCollection collection)
+                        collection.MarkUnloaded();
         }
 
         #region INucleusRuntime
@@ -434,9 +542,53 @@ namespace TFM.Nucleus.Data
             }
         }
 
+        private static readonly ConcurrentDictionary<Type, MethodInfo> _childLoaders = [];
+
+        /// <summary>
+        /// Loads a child collection that was excluded when its parent was loaded: the rows whose
+        /// parent is the collection's owner, with their own children, attached as loaded and
+        /// merged by ID with any children added since. A loaded collection is left as it is.
+        /// </summary>
+        public async Task LoadChildCollectionAsync(INucleusChildCollection collection, CancellationToken token = default)
+        {
+            ArgumentNullException.ThrowIfNull(collection);
+            if (collection.IsLoaded)
+                return;
+            var loader = _childLoaders.GetOrAdd(collection.ChildType, static t =>
+                typeof(ObjectDataManager).GetMethod(nameof(LoadChildrenOfAsync), BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .MakeGenericMethod(t));
+            var children = await (Task<List<ICoreObject>>)loader.Invoke(this, [collection.ParentObject, token])!;
+            collection.AttachLoaded(children);
+        }
+
+        /// <summary>The rows of <typeparamref name="TChild"/> whose parent is <paramref name="parent"/>, with their children.</summary>
+        private async Task<List<ICoreObject>> LoadChildrenOfAsync<TChild>(ICoreObject parent, CancellationToken token) where TChild : ICoreObject<TChild>, new()
+        {
+            var provider = ProviderFor<TChild>();
+            var query = provider.ParseSelectExpression<TChild>(Expression.Constant(true));
+            var childSchema = query.DataTableSchema?.ObjectSchema ?? _objectSchema.Get<TChild>()
+                ?? throw new InvalidOperationException($"{typeof(TChild).Name} has no schema.");
+            var parentProperty = childSchema.ParentObjectProperty
+                ?? throw new InvalidOperationException($"{childSchema.Name} is used as a child collection but has no [ParentObject] property.");
+            var parentColumn = query.DataTableSchema?.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name;
+            query.AddWhere(new Parameter(parentColumn, parent.ID));
+            using var context = await provider.CreateContextAsync(token: token);
+            var loaded = ChildGraphBinder.BuildCollection<TChild>(query, await context.GetDataSetAsync(query, token));
+            return [.. loaded.Cast<ICoreObject>()];
+        }
+
         NucleusCollection<T> INucleusRuntime.LoadAll<T>() => Load<T>();
 
         T? INucleusRuntime.LoadByID<T>(Guid id) where T : default => LoadByID<T>(id);
+
+        T? INucleusRuntime.LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections) where T : default =>
+            LoadByID<T>(id, excludedCollections);
+
+        NucleusCollection<T> INucleusRuntime.LoadWhere<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) =>
+            (NucleusCollection<T>?)Load<T>(expression, excludedCollections) ?? [];
+
+        async Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken token) =>
+            (NucleusCollection<T>?)await LoadAsync<T>(expression, excludedCollections, token) ?? [];
 
         NucleusCollection<T> INucleusRuntime.LoadWhere<T>(Expression expression) =>
             (NucleusCollection<T>?)Load<T>(expression) ?? [];
@@ -445,13 +597,24 @@ namespace TFM.Nucleus.Data
             (NucleusCollection<T>?)await LoadAsync<T>(expression, token) ?? [];
 
         #endregion
-        public INucleusCollection<T>? Load<T>(Expression expression) where T : ICoreObject<T>, new()
+        /// <summary>Loads the matching rows, each with its child collections attached.</summary>
+        public INucleusCollection<T>? Load<T>(Expression expression) where T : ICoreObject<T>, new() =>
+            Load<T>(expression, []);
+
+        /// <summary>
+        /// Loads the matching rows with their child collections, except the named ones, which
+        /// are neither queried nor transferred and come back unloaded.
+        /// </summary>
+        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new()
         {
-            var qry = ProviderFor<T>().ParseSelectExpression<T>(expression);
+            var excluded = ExcludedCollections<T>(excludedCollections);
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                return new NucleusCollection<T>();
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
             using var context = ProviderFor<T>().CreateContext();
-            var ds = context.GetDataSet(qry);
-            var data = ds.BuildCollection<T>();
-            return data;
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry));
+            MarkUnloaded(rows, excluded);
+            return rows;
         }
 
         public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new()
@@ -459,22 +622,43 @@ namespace TFM.Nucleus.Data
             return await LoadAsync<T>(expression, CancellationToken.None);
         }
 
-        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        /// <inheritdoc cref="Load{T}(Expression)"/>
+        public Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            LoadAsync<T>(expression, [], cancellationToken);
+
+        /// <inheritdoc cref="Load{T}(Expression, IReadOnlyCollection{string})"/>
+        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
-            var qry = ProviderFor<T>().ParseSelectExpression<T>(expression);
+            var excluded = ExcludedCollections<T>(excludedCollections);
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                return new NucleusCollection<T>();
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var ds = await context.GetDataSetAsync(qry, cancellationToken);
-            var data = ds.BuildCollection<T>();
-            return data;
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken));
+            MarkUnloaded(rows, excluded);
+            return rows;
         }
 
-        public async IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
-        {
-            var qry = ProviderFor<T>().ParseSelectExpression<T>(expression);
-            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            // Pre-load entire child graph, keyed by parent ID at each level
-            var childMaps = await PreloadChildGraphAsync(qry, qry.DataTableSchema!.ObjectSchema, context, cancellationToken);
+        /// <summary>
+        /// Streams the matching rows. The child graph is fetched first, one query per child
+        /// collection, and each row is yielded with its children attached.
+        /// </summary>
+        public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadStreamAsync<T>(expression, [], cancellationToken);
 
+        /// <summary>
+        /// Streams the matching rows, leaving the named child collections unloaded: their
+        /// queries never run.
+        /// </summary>
+        public async IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            var excluded = ExcludedCollections<T>(excludedCollections);
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                yield break;
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
+            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
+            var children = await ChildGraphBinder.LoadAsync(qry, context, cancellationToken);
 
             await foreach (var row in context.StreamAsync(qry, cancellationToken))
             {
@@ -483,107 +667,11 @@ namespace TFM.Nucleus.Data
                 {
                     obj.BindValue(row.ColumnNames[i], row.Values[i]);
                 }
-                AttachChildGraph(obj, childMaps);
+                ChildGraphBinder.Attach(obj, children);
+                MarkUnloaded([obj], excluded);
                 yield return obj;
             }
         }
-
-        private async Task<ChildGraph?> PreloadChildGraphAsync(
-    IQuery query,
-    IObjectSchema schema,
-    IDataContext context,
-    CancellationToken cancellationToken)
-        {
-            if (schema.NucleusChildCollectionProperties is not { Length: > 0 } childProps)
-                return null;
-            if (query.LinkedQueries.ToList() is not { Count: > 0 })
-                return null;
-
-            var graph = new ChildGraph();
-
-            foreach (var childQuery in query.LinkedQueries)
-            {
-                // Match query to property via ChildType
-                var childCollectionProp = schema.NucleusChildCollectionProperties.FirstOrDefault(p => 
-                    p.ChildType == childQuery.DataTableSchema?.ObjectSchema.Type
-                );
-                // No matching collection property on the parent means this child query does not
-                // belong to this graph; skip it rather than dereferencing null further down.
-                if (childCollectionProp is null) continue;
-                var prop = schema.GetObjectSchema(childQuery.DataTableSchema?.ObjectSchema.Type
-                    ?? throw new InvalidOperationException("Child query DataTableSchema or ObjectSchema is null"));
-                if (prop is null) continue;
-
-                var map = new Dictionary<Guid, List<ICoreObject>>();
-
-                await foreach (var row in context.StreamAsync(childQuery, cancellationToken))
-                {
-                    var childObj = (ICoreObject)Activator.CreateInstance(prop.Type!)!;
-                    Guid parentId = Guid.Empty;
-
-                    for (int i = 0; i < row.ColumnNames.Length; i++)
-                    {
-                        if (row.ColumnNames[i] == prop.ParentObjectProperty!.Name && row.Values[i] is Guid rowParentId)
-                            parentId = rowParentId;
-                        childObj.BindValue(row.ColumnNames[i], row.Values[i]);
-                    }
-
-                    if (parentId == Guid.Empty) continue;
-
-                    if (!map.TryGetValue(parentId, out var list))
-                    {
-                        list = [];
-                        map[parentId] = list;
-                    }
-                    list.Add(childObj);
-                }
-
-                // Recurse for grandchildren
-                var grandchildGraph = await PreloadChildGraphAsync(
-                    childQuery, prop, context, cancellationToken);
-
-                // Attach grandchildren to children
-                if (grandchildGraph is not null)
-                {
-                    foreach (var children in map.Values)
-                        foreach (var child in children)
-                            AttachChildGraph(child, grandchildGraph);
-                }
-
-                graph.Add(childCollectionProp, map);
-            }
-
-            return graph;
-        }
-
-        private static void AttachChildGraph(ICoreObject parent, ChildGraph? graph)
-        {
-            if (graph is null) return;
-
-            var parentId = parent.ID;
-
-            foreach (var (prop, map) in graph)
-            {
-                if (!map.TryGetValue(parentId, out var children)) continue;
-
-                // Get  the collection, populate it
-                var collection = prop.Getter?.Invoke(parent, null);
-                if (collection is IList list)
-                {
-                    foreach (var child in children)
-                        list.Add(child);
-                }
-                //prop.SetValue(parent, collection);
-            }
-        }
-
-        private class ChildGraph : List<(IPropertySchema Property, Dictionary<Guid, List<ICoreObject>> Map)>
-        {
-            public void Add(IPropertySchema prop, Dictionary<Guid, List<ICoreObject>> map)
-                => Add((prop, map));
-        }
-
-
     }
 
     public enum DataSchemaStatus

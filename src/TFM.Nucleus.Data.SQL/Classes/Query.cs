@@ -109,6 +109,10 @@ namespace TFM.Nucleus.Data.SQL
         }
         public string? LinkedColumn;
         public Query? ParentQuery;
+
+        /// <summary>For a child collection query, the parent's collection property it fills.</summary>
+        public string? ChildCollectionProperty;
+        string? IQuery.ChildCollectionProperty => ChildCollectionProperty;
         public bool UseConstraints => Constraints.Length > 0;
         internal SqlTableSchema? TableSchema;
 
@@ -521,10 +525,14 @@ namespace TFM.Nucleus.Data.SQL
             _orCollection.Add(collection);
         }
 
+        /// <summary>
+        /// Renders the clause. An OR group inside an AND is parenthesised, because AND binds
+        /// tighter than OR in SQL: without it (A OR B) AND C rendered as A OR B AND C.
+        /// </summary>
         public string WhereClause() => ExpressionType switch
         {
             Type.Parameter => _parameter!.SQLWhereCondition(),
-            Type.And => string.Join(" AND ", _andCollection.Select(c => c.WhereClause())),
+            Type.And => string.Join(" AND ", _andCollection.Select(c => c.ExpressionType == Type.Or ? $"({c.WhereClause()})" : c.WhereClause())),
             Type.Or => string.Join(" OR ", _orCollection.Select(c => $"({c.WhereClause()})")),
             Type.Empty => "",
             _ => throw new InvalidOperationException("Bad WhereParameter")

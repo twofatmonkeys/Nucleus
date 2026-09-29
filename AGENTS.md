@@ -48,7 +48,7 @@ original attached, per Bindery's contract. Tests run the framework-neutral
 `TFM.Nucleus.S3Library` is the second: `NucleusS3AssetStore` implements TFM.S3Library's
 `IS3AssetStore` over three entities (`S3AssetRecord`, `S3AssetPreviousPath`,
 `S3AssetVersionClaim`). Two of the contract's rules are enforced by unique indexes rather than by
-code, because Nucleus has no optimistic concurrency and cannot report rows affected. The path rule
+code, because Nucleus has no optimistic concurrency and cannot report the rows an update affected. The path rule
 (no two live records share a path, a deleted one may) is the filtered unique index on
 `S3AssetRecord.LivePath`, a column equal to `FullPath` while the record is live and null once it
 is soft-deleted. The version rule is the claim table: every save inserts a row
@@ -82,11 +82,26 @@ is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutr
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
 comparison still reads as a column;
 `DataProviderRegistry` routes each entity type to the provider of its nearest registered root,
-which is how one application spans several databases.
+which is how one application spans several databases. The parser never drops a term: every Where in
+a chain is ANDed, boolean constants are folded, an OR always becomes its own group, and anything it
+cannot translate throws, because the same translation drives deletes. `ExpressionParser.Classify`
+lets callers skip a predicate that matches nothing, and `CheckDeletePredicate` refuses a delete that
+matches everything. `ChildGraphBinder` is the one place child collections are materialised and
+attached, from either a data set's linked result sets or streamed child queries; it binds each
+child's parent as a stored value, so loaded children are never dirty. A load can exclude a child
+collection by property name, which drops its query and marks the collection unloaded
+(`INucleusChildCollection.IsLoaded`); reading an unloaded collection throws, adding does not.
 
 `TFM.Nucleus.Data.SQL` renders the neutral model as T-SQL and owns every SQL string in the
 solution, along with schema create, compare and migrate, the bulk engine, and SqlDependency
-notifications.
+notifications. A select batches its child collection queries after its own rows, and
+`GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
+parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
+Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
+collection rows deepest first through the parent's condition, then the root, then
+`SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
+`SqlDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
+detach the subqueries from their parents. The soft-delete rule lives once, in `SoftDelete`.
 
 ## Build and test
 

@@ -47,6 +47,14 @@ namespace TFM.Nucleus
         public TParent Parent { get; }
         public void BindParent(TParent parent);
 
+        /// <summary>
+        /// Binds the parent of a child read from storage as its stored value: no change is
+        /// staged and no event raised, so a freshly loaded child is not dirty. Nucleus calls this
+        /// while materialising; application code adds children through the collection.
+        /// </summary>
+        [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+        public void BindLoadedParent(TParent parent) => BindParent(parent);
+
     }
 
     public interface ICoreChildObject<TChild, TParent> : ICoreObject<TChild>, ICoreChildObject<TParent>

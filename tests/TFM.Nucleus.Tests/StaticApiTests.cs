@@ -39,6 +39,33 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public async Task DeleteWhereAsync_ForwardsToRuntime()
+        {
+            var provider = InstallRuntime();
+            provider.RowsAffectedByDeleteWhere = 2;
+
+            var affected = await CoreObject.DeleteWhereAsync<TestDeletableWidget>(w => w.Name == "static");
+
+            Assert.Equal(2, affected);
+            var (entityType, _) = Assert.Single(Assert.Single(provider.Contexts).DeletedWhere);
+            Assert.Equal(typeof(TestDeletableWidget), entityType);
+        }
+
+        [Fact]
+        public void LoadByID_WithExclusion_LeavesTheCollectionUnloaded()
+        {
+            var provider = InstallRuntime();
+            var id = Guid.NewGuid();
+            provider.SetupRows<TestDeletableParent>(new Dictionary<string, object?> { ["ID"] = id, ["Name"] = "static" });
+
+            var parent = CoreObject.LoadByID<TestDeletableParent>(id, p => p.Children);
+
+            Assert.NotNull(parent);
+            Assert.False(parent!.Children.IsLoaded);
+            Assert.Equal(["Children"], Assert.IsType<FakeQuery>(Assert.Single(provider.CreatedQueries)).ExcludedCollections);
+        }
+
+        [Fact]
         public void LoadAll_ReturnsEveryRow()
         {
             var provider = InstallRuntime();

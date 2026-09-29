@@ -176,17 +176,18 @@ public sealed class NucleusBinderyStore : IBinderyStore, IBinderyVersionStore, I
         ArgumentException.ThrowIfNullOrWhiteSpace(pageId);
         return RunAsync("Deleting the page", pageId, async () =>
         {
-            var versions = await VersionsOf(pageId).ToListAsync(cancellationToken).ConfigureAwait(false);
+            // Reads happen before the transaction opens, because a transactional context closes
+            // its connection after a read. The versions are deleted by predicate, so their JSON
+            // is never loaded; the count the delete reports says whether any existed.
             var row = await FindDocumentAsync(pageId, cancellationToken).ConfigureAwait(false);
-            if (row is null && versions.Count == 0)
-                return false;
             var token = await LoadOrCreateTokenAsync(cancellationToken).ConfigureAwait(false);
 
             await using var context = await _data.DataProvider.CreateContextAsync(ContextOptions.Transactional, cancellationToken).ConfigureAwait(false);
             try
             {
-                foreach (var version in versions)
-                    await context.DeleteAsync(version, cancellationToken).ConfigureAwait(false);
+                var versions = await context.DeleteWhereAsync<BinderyPageVersion>(v => v.PageId == pageId, cancellationToken).ConfigureAwait(false);
+                if (row is null && versions == 0)
+                    return false;
                 if (row is not null)
                     await context.DeleteAsync(row, cancellationToken).ConfigureAwait(false);
                 await token.SaveAsync(context, cancellationToken).ConfigureAwait(false);

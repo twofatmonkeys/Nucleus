@@ -27,6 +27,14 @@ namespace TFM.Nucleus.Data
 
         /// <summary>Appends an ordering term by property/column name.</summary>
         public void AddOrderBy(string propertyName, bool descending = false);
+
+        /// <summary>
+        /// Leaves a child collection out of the load: its query, and the queries of its own
+        /// children, are removed. Returns false when the query has no child query for that
+        /// collection property.
+        /// </summary>
+        public bool ExcludeChildCollection(string propertyName) =>
+            throw new NotSupportedException($"{GetType().Name} cannot exclude child collections.");
     }
 
     public interface IInsertQuery : IQuery
@@ -69,6 +77,12 @@ namespace TFM.Nucleus.Data
         public IEnumerable<IQuery> LinkedQueries { get; }
         public int CountLinkedQueries();
         public IWhereCollection NewWhereCollection();
+
+        /// <summary>
+        /// For a query that loads a child collection, the name of the parent's collection
+        /// property it fills; null for any other query.
+        /// </summary>
+        public string? ChildCollectionProperty => null;
 
 
     }

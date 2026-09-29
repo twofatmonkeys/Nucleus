@@ -9,6 +9,18 @@ namespace TFM.Nucleus.Data
 {
     public static class ObjectDataAdaptorQueryableExtensions
     {
+        /// <summary>
+        /// Leaves a child collection out of a Nucleus query, so <c>.Where(..).Exclude(b =&gt; b.Files)</c>
+        /// works as well as <c>.Exclude(..).Where(..)</c>. Only queries from IObjectDataAdaptor support it.
+        /// </summary>
+        public static IQueryable<TSource> Exclude<TSource>(this IQueryable<TSource> source,
+            Expression<Func<TSource, TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection>> collection)
+            where TSource : ICoreObject<TSource>, new() =>
+            source is ObjectDataAdaptor<TSource> adaptor
+                ? adaptor.Exclude(collection)
+                : throw new InvalidOperationException(
+                    $"Exclude applies to Nucleus queries only; this source is a {source.GetType().Name}.");
+
         public static async Task<List<TSource>> ToListAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
             var list = new List<TSource>();

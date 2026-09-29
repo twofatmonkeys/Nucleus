@@ -21,15 +21,12 @@ namespace TFM.Nucleus.Data.SQL
             Type = QueryType.DELETE;
             TableName = tableSchema.TableName;
             TableSchema = tableSchema;
-            _isSoftDelete = tableSchema.ObjectSchema is { IsDeletable: true, DeleteBehavior: DeleteBehavior.Soft };
+            _isSoftDelete = SoftDelete.Applies(tableSchema);
             var idColumn = tableSchema.IdentityColumn ?? throw new InvalidQueryException("Table schema does not have an identity column defined");
             var id = obj.GetPropertyValue(idColumn.PropertySchema.Name) ?? throw new InvalidQueryException("Unable to retrieve identity value from ICoreObject<>");
             Where.And(idColumn.ColumnName, id);
             if (_isSoftDelete)
-            {
-                SetParameters.Add(new Parameter("IsDeleted", true));
-                SetParameters.Add(new Parameter("DeletedAt", ServerFunction.SysDateTimeOffset));
-            }
+                SetParameters.AddRange(SoftDelete.NewSetParameters());
         }
 
         public static DeleteQuery? Create(SqlTableSchema tableSchema, IEnumerable<ICoreObject>? objs)

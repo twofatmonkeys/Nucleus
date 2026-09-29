@@ -14,6 +14,9 @@ namespace TFM.Nucleus.Tests
         public List<FakeDataContext> Contexts { get; } = [];
         public List<object> CreatedQueries { get; } = [];
 
+        /// <summary>The row count every delete by predicate on this provider's contexts reports.</summary>
+        public int RowsAffectedByDeleteWhere { get; set; }
+
         public Guid ConnectionIdentifier { get; } = Guid.NewGuid();
         public DataProviderStatus Status => DataProviderStatus.Ok;
         public Type? RootType { get; set; }
@@ -136,6 +139,14 @@ namespace TFM.Nucleus.Tests
         public bool IncludeDeleted { get; set; }
         public void AddOrderBy(string propertyName, bool descending = false) => Orderings.Add((propertyName, descending));
 
+        /// <summary>Every child collection a load excluded from this query.</summary>
+        public List<string> ExcludedCollections { get; } = [];
+        public bool ExcludeChildCollection(string propertyName)
+        {
+            ExcludedCollections.Add(propertyName);
+            return true;
+        }
+
         // IInsertQuery / IUpdateQuery
         IInsertQuery IInsertQuery.Create(string tablename) => new FakeQuery(EntityType, FakeQueryKind.Insert);
         IUpdateQuery IUpdateQuery.Create(string tablename, string idColumn, Guid idValue) => new FakeQuery(EntityType, FakeQueryKind.Update);
@@ -196,6 +207,18 @@ namespace TFM.Nucleus.Tests
         public Task SaveAsync(ICoreObject obj, CancellationToken token) => Task.CompletedTask;
         public Task DeleteAsync(ICoreObject obj) => Task.CompletedTask;
         public Task DeleteAsync(ICoreObject obj, CancellationToken token) => Task.CompletedTask;
+
+        /// <summary>Every predicate a delete by predicate received, with its entity type.</summary>
+        public List<(Type EntityType, LambdaExpression Predicate)> DeletedWhere { get; } = [];
+
+        public int DeleteWhere<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject<T>, new()
+        {
+            DeletedWhere.Add((typeof(T), predicate));
+            return provider.RowsAffectedByDeleteWhere;
+        }
+
+        public Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            Task.FromResult(DeleteWhere(predicate));
         public void BulkSave(IEnumerable<ICoreObject?>? objects) { }
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => Task.CompletedTask;
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => Task.CompletedTask;

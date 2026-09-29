@@ -275,13 +275,30 @@ namespace TFM.Nucleus.Data.SQL
             return obj.IsNew ? new InsertQuery(tableSchema, obj) : new UpdateQuery(tableSchema, obj);
         }
 
-        private DeleteQuery BuildDeleteQuery(ICoreObject obj)
+        /// <summary>The object's row and every row of its child collections, loaded or not.</summary>
+        private DeleteWhereQuery BuildDeleteQuery(ICoreObject obj)
         {
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
             var tableSchema = Provider.GetTableSchema(obj.GetType());
             if (!tableSchema.ObjectSchema.IsDeletable)
                 throw new NotSupportedException($"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
-            return new DeleteQuery(tableSchema, obj);
+            return Provider.CreateDeleteByIdQuery(tableSchema, [obj.ID])!;
+        }
+
+        int IDataContext.DeleteWhere<T>(Expression<Func<T, bool>> predicate)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                return 0;
+            return ExecuteDelete(Provider.CreateDeleteWhereQuery<T>(predicate.Body));
+        }
+
+        async Task<int> IDataContext.DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                return 0;
+            return await ExecuteDeleteAsync(Provider.CreateDeleteWhereQuery<T>(predicate.Body), token);
         }
 
         void IDataContext.Rollback() => Rollback();
@@ -506,17 +523,19 @@ namespace TFM.Nucleus.Data.SQL
         IEnumerable<T> IDataContext.Load<T>(Expression expression) => Load<T>(expression);
         public INucleusCollection<T> Load<T>(Expression expression) where T : ICoreObject<T>, new()
         {
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                return new NucleusCollection<T>();
             var query = Provider.ParseSelectExpression<T>(expression);
-            var dataSet = GetDataSet(query);
-            return dataSet.BuildCollection<T>();
+            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query));
         }
 
         async Task<IEnumerable<T>> IDataContext.LoadAsync<T>(Expression expression) => await LoadAsync<T>(expression);
         public async Task<INucleusCollection<T>> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new()
         {
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                return new NucleusCollection<T>();
             var query = Provider.ParseSelectExpression<T>(expression);
-            var dataSet = await GetDataSetAsync(query, CancellationToken.None);
-            return dataSet.BuildCollection<T>();
+            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None));
         }
 
 
@@ -871,8 +890,80 @@ namespace TFM.Nucleus.Data.SQL
 
 
 
+        /// <summary>
+        /// Runs a delete batch and returns the rows of its root type affected, summed over its
+        /// chunks. Each chunk is one command, never regrouped, split or bulk copied: its child
+        /// statements select through the parent's condition and must run in the order rendered.
+        /// </summary>
+        public int ExecuteDelete(DeleteWhereQuery query)
+        {
+            ArgumentNullException.ThrowIfNull(query);
+            var affected = 0;
+            foreach (var chunk in query.FlattenLinkedQueries())
+            {
+                var parameters = DeleteParameters(chunk);
+                try
+                {
+                    _CurrentCommand!.CommandText = chunk.BuildQuery();
+                    _CurrentCommand.Parameters.Clear();
+                    _CurrentCommand.Parameters.TryAddRange(parameters);
+                    affected += Convert.ToInt32(_CurrentCommand.ExecuteScalar());
+                }
+                catch (Exception ex)
+                {
+                    if (HasTransaction)
+                        Rollback();
+                    throw new Exception($"Unable to execute delete on DB. {ex.Message}", ex);
+                }
+            }
+            return affected;
+        }
+
+        /// <inheritdoc cref="ExecuteDelete(DeleteWhereQuery)"/>
+        public async Task<int> ExecuteDeleteAsync(DeleteWhereQuery query, CancellationToken token)
+        {
+            ArgumentNullException.ThrowIfNull(query);
+            var affected = 0;
+            foreach (var chunk in query.FlattenLinkedQueries())
+            {
+                var parameters = DeleteParameters(chunk);
+                try
+                {
+                    _CurrentCommand!.CommandText = chunk.BuildQuery();
+                    _CurrentCommand.Parameters.Clear();
+                    _CurrentCommand.Parameters.TryAddRange(parameters);
+                    affected += Convert.ToInt32(await _CurrentCommand.ExecuteScalarAsync(token));
+                }
+                catch (Exception ex)
+                {
+                    if (HasTransaction)
+                        Rollback();
+                    throw new Exception($"Unable to execute delete on DB. {ex.Message}", ex);
+                }
+            }
+            return affected;
+        }
+
+        /// <summary>
+        /// A chunk's own parameters, each declared once however many statements reference it.
+        /// Throws before anything runs when they exceed the per-command limit.
+        /// </summary>
+        private SqlParameter[] DeleteParameters(Query chunk)
+        {
+            var parameters = chunk.Parameters.GetSQLParams() ?? [];
+            if (parameters.Length > SqlConfig.MaxParametersPerQuery)
+                throw new InvalidQueryException(
+                    $"A delete of {chunk.TableName} needs {parameters.Length} parameters; the limit is {SqlConfig.MaxParametersPerQuery}. Narrow the predicate.");
+            return parameters;
+        }
+
         public void ExecuteSQL(IQuery query)
         {
+            if (query is DeleteWhereQuery delete)
+            {
+                ExecuteDelete(delete);
+                return;
+            }
             try
             {
                 foreach (var qry in query.Split(SqlConfig.MaxParametersPerQuery))
@@ -997,6 +1088,11 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (token == null)
                 token = CancellationToken.None;
+            if (query is DeleteWhereQuery delete)
+            {
+                await ExecuteDeleteAsync(delete, token.Value);
+                return;
+            }
             try
             {
                 if(!(query is Query sqlQuery))
@@ -1169,6 +1265,8 @@ namespace TFM.Nucleus.Data.SQL
                 if (reader != null && sqlQuery is SelectQuery { WithTotalCount: true } &&
                     reader.NextResult() && reader.Read())
                     dataSet.TotalRowCount = reader.GetInt64(0);
+                if (reader != null && sqlQuery is SelectQuery)
+                    ReadChildResults(reader, sqlQuery, dataSet);
                 return dataSet;
             }
             catch (Exception ex)
@@ -1208,6 +1306,8 @@ namespace TFM.Nucleus.Data.SQL
                 if (reader != null && query is SelectQuery { WithTotalCount: true } &&
                     await reader.NextResultAsync(token) && await reader.ReadAsync(token))
                     dataSet.TotalRowCount = reader.GetInt64(0);
+                if (reader != null && query is SelectQuery)
+                    await ReadChildResultsAsync(reader, query, dataSet, token);
                 return dataSet;
             }
             catch (Exception ex)
@@ -1218,6 +1318,44 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        /// <summary>
+        /// Reads the result set of each child collection query, in the pre-order the batch
+        /// renders them, into the data set's linked data sets.
+        /// </summary>
+        private static void ReadChildResults(SqlDataReader reader, Query query, DataSet dataSet)
+        {
+            foreach (var childQuery in query.LinkedQueries)
+            {
+                if (!reader.NextResult())
+                    throw new SqlDataContextException($"The batch returned no result set for the child query on {childQuery.TableName}.", SqlDataContextExceptionType.MissingResultSet);
+                var childSet = DataSet.Initialize(childQuery.TableSchema);
+                while (reader.Read())
+                    reader.GetValues(childSet.GetNewRow());
+                dataSet.LinkedDataSets.Add(childSet);
+                ReadChildResults(reader, childQuery, childSet);
+            }
+        }
+
+        /// <inheritdoc cref="ReadChildResults"/>
+        private static async Task ReadChildResultsAsync(SqlDataReader reader, Query query, DataSet dataSet, CancellationToken token)
+        {
+            foreach (var childQuery in query.LinkedQueries)
+            {
+                if (!await reader.NextResultAsync(token))
+                    throw new SqlDataContextException($"The batch returned no result set for the child query on {childQuery.TableName}.", SqlDataContextExceptionType.MissingResultSet);
+                var childSet = DataSet.Initialize(childQuery.TableSchema);
+                while (await reader.ReadAsync(token))
+                    reader.GetValues(childSet.GetNewRow());
+                dataSet.LinkedDataSets.Add(childSet);
+                await ReadChildResultsAsync(reader, childQuery, childSet, token);
+            }
+        }
+
+        /// <summary>
+        /// Streams the query's own rows. A select's child collection queries are left out of
+        /// the command: the caller fetches them itself, and sending them here only transferred
+        /// every child row to be drained unread.
+        /// </summary>
         public async IAsyncEnumerable<StreamingRow> StreamAsync(IQuery query, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             if (query == null || query is not Query sqlQuery)
@@ -1228,7 +1366,9 @@ namespace TFM.Nucleus.Data.SQL
             _CurrentCommand = _CurrentConnection.CreateCommand();
             if (HasTransaction && _CurrentTransaction != null)
                 _CurrentCommand.Transaction = _CurrentTransaction;
-            _CurrentCommand.CommandText = sqlQuery.BuildQuery();
+            _CurrentCommand.CommandText = sqlQuery is SelectQuery select
+                ? select.BuildQuery(includeChildQueries: false)
+                : sqlQuery.BuildQuery();
             if (_UseDependency)
             {
                 _CurrentCommand.Notification = null;
@@ -1507,6 +1647,8 @@ namespace TFM.Nucleus.Data.SQL
         CurrentCommandIsNull = 10,
         CurrentConnectionIsNull = 20,
         InvalidIQueryType = 30,
+        /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
+        MissingResultSet = 40,
         Unspecified = 99,
     }
 
