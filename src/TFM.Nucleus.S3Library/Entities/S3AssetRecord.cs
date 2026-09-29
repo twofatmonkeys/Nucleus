@@ -67,7 +67,7 @@ public class S3AssetRecord : CoreObject<S3AssetRecord>
     [DatabaseColumn]
     public int? Height { get => GetValue<int?>(); set => SetValue(value); }
 
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? AltText { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]
@@ -86,11 +86,11 @@ public class S3AssetRecord : CoreObject<S3AssetRecord>
     public bool ServeInline { get => GetValue<bool>(); set => SetValue(value); }
 
     /// <summary>The variants as JSON; null when there are none.</summary>
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? VariantsJson { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>The superseded blobs as JSON; null when there are none.</summary>
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? SupersededJson { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>Denormalised from <see cref="SupersededJson"/> so the purge filter is one equality.</summary>

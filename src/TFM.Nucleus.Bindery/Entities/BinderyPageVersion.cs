@@ -18,7 +18,7 @@ public class BinderyPageVersion : CoreObject<BinderyPageVersion>
     [DatabaseColumn(DataType.Unicode)]
     public string? VersionId { get => GetValue<string>(); set => SetValue(value); }
 
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? Json { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]

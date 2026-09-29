@@ -13,7 +13,7 @@ namespace TFM.Nucleus.Bindery;
 public class BinderyDocument : CoreObject<BinderyDocument>
 {
     /// <summary>Bindery's immutable page id.</summary>
-    [TextColumn(64, Unique = true)]
+    [DatabaseColumn(DataType.Unicode, 64, Unique = true)]
     public string? PageId { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>Normalised route for editor-created pages; null for zone sets on code pages.</summary>
@@ -30,10 +30,10 @@ public class BinderyDocument : CoreObject<BinderyDocument>
     [DatabaseColumn]
     public bool IncludeInSitemap { get => GetValue<bool>(); set => SetValue(value); }
 
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? DraftJson { get => GetValue<string>(); set => SetValue(value); }
 
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? PublishedJson { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]

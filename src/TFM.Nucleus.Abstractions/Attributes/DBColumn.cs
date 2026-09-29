@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
@@ -48,6 +48,9 @@ namespace TFM.Nucleus.Data
 
         public DatabaseColumnAttribute(int? datalength, [CallerMemberName] string? columnName = null) :
             this(DataType.NotSpecified, datalength, columnName) { }
+
+        public DatabaseColumnAttribute(DataType datatype, int datalength, [CallerMemberName] string? columnName = null) :
+            this(datatype, (int?)datalength, columnName){ }
 
         public DatabaseColumnAttribute(DataType datatype, int? datalength, [CallerMemberName] string? columnName = null)
         {

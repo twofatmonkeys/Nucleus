@@ -9,7 +9,7 @@ public class BinderyBlockTemplate : CoreObject<BinderyBlockTemplate>
     [DatabaseColumn(DataType.Unicode, Unique = true)]
     public string? TemplateId { get => GetValue<string>(); set => SetValue(value); }
 
-    [TextColumn(-1)]
+    [DatabaseColumn(DataType.Unicode, -1)]
     public string? Json { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]
