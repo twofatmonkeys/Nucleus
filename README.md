@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Six packages ship from it, all on one version.
+This repository holds the whole family. Seven packages ship from it, all on one version.
 
 ## Packages
 
@@ -14,8 +14,9 @@ This repository holds the whole family. Six packages ship from it, all on one ve
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: query rendering, connection and transaction context trees, the bulk engine, schema create, compare and migrate, and SqlDependency change notifications. |
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 | `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
+| `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery` and `S3Library` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery and S3Library stores work over any provider.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery`, `S3Library` and `Stencil` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery, S3Library and Stencil stores work over any provider.
 
 ## Install
 
@@ -148,6 +149,49 @@ the library's `S3AssetConcurrencyException`, one on the live path as `S3AssetCon
 and any other storage failure as `S3LibraryException` with the original attached. Ordering,
 paging, the name filter and the count happen in memory over the rows the SQL-side filters select.
 The store passes `S3AssetStoreContract.Cases` from `TFM.S3Library.Testing` against the integration
+test database.
+
+## Stencil
+
+`TFM.Nucleus.Stencil` is the template store for TFM.Stencil-based document packages: TFM.Mailroom
+for email templates and TFM.Paperwork (2.0 and later) for PDF templates. It ships two entities
+(`StencilTemplateRecord`, one row per template with its file manifest as JSON, and
+`StencilTemplateFile`, one row per file holding its bytes) and `NucleusTemplateStore`, which
+implements `ITemplateStore`.
+
+`NucleusTemplateStore` is abstract. Each consumer registers its store by its concrete type, and one
+database holds every consumer's templates, so a host writes one sealed subclass per consumer, each
+naming its own collection:
+
+```csharp
+public sealed class MailroomTemplates(IObjectDataManager data, ILogger<MailroomTemplates>? logger = null)
+    : NucleusTemplateStore(data, "mailroom", logger);
+
+public sealed class PaperworkTemplates(IObjectDataManager data, ILogger<PaperworkTemplates>? logger = null)
+    : NucleusTemplateStore(data, "paperwork", logger);
+
+builder.Services.AddNucleus();
+builder.Services.AddNucleusData();
+builder.Services.AddNucleusSQLDataProvider();
+builder.Services.AddMailroom<MailroomTemplates>();
+builder.Services.AddTfmPaperwork<PaperworkTemplates>();
+```
+
+The tables are created and migrated at `InitializeDataProviderAsync` like every other entity. The
+collection partitions them: the same template key in two collections is two templates, and a
+listing only ever sees its own collection. A collection name is compared case-insensitively and
+cannot contain `:` or `|`.
+
+Keys and paths match case-insensitively, as in Stencil's reference store: both unique keys
+(`{collection}:{key}` on the record, `{recordKey}|{path}` on each file) are stored lowercased, so
+the rule holds under any collation, while the template's key and each file's path read back with
+the casing they were saved with. Listings and counts read record rows only, never file content;
+the name filter, ordering and paging happen in memory. Deletes run by predicate, so removing a
+template never loads its bytes, and they sweep by key, so content the manifest never listed goes
+with the template. Stencil defines no exception type of its own, so a storage failure is logged
+with the operation and key and rethrown unchanged.
+
+The store passes `TemplateStoreContract.Cases` from `TFM.Stencil.Testing` against the integration
 test database.
 
 ## Entity base classes
@@ -372,8 +416,9 @@ src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Bindery\         TFM.Bindery page store
 src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
+src\TFM.Nucleus.Stencil\          TFM.Stencil template store
 tests\TFM.Nucleus.Tests\         unit tests, no database
-tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\ and S3Library\ contract suites)
+tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\, S3Library\ and Stencil\ contract suites)
 ```
 
 ## Build and test

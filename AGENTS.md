@@ -4,7 +4,7 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as six packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as seven packages that version and
 release together.
 
 | Package | Source | Role |
@@ -15,6 +15,7 @@ release together.
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
 | `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
 | `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
+| `TFM.Nucleus.Stencil` | `src\TFM.Nucleus.Stencil` | TFM.Stencil's template bundle store (used by TFM.Mailroom and TFM.Paperwork) over Nucleus entities. Provider neutral; depends on `TFM.Stencil.Abstractions` from the feed. |
 
 Until August 2026 these lived in four separate repositories, with the shared tests and the only
 real documentation in a fifth unversioned folder (`Nucleus.v2`). They were always released in
@@ -29,8 +30,8 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery` and
-`S3Library` sit beside `Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery`,
+`S3Library` and `Stencil` sit beside `Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
 the neutral layers" rule is enforced by `ProviderSeamTests`, which scans the compiled string
 literals of the neutral assemblies.
 
@@ -65,6 +66,27 @@ filter and the count run in memory over the rows the SQL-side equalities select,
 provider translates none of them. Tests run `S3AssetStoreContract.Cases` from
 `TFM.S3Library.Testing` against the integration database
 (`tests\TFM.Nucleus.IntegrationTests\S3Library`), each suite under its own cross-process lock.
+
+`TFM.Nucleus.Stencil` is the third: `NucleusTemplateStore` implements TFM.Stencil's
+`ITemplateStore`, the one store contract TFM.Mailroom and TFM.Paperwork 2.x both take, over two
+entities (`StencilTemplateRecord`, one row per template with the file manifest as JSON, and
+`StencilTemplateFile`, one row per file's bytes). The store is abstract and partitioned by a
+collection name the subclass passes in, because each consumer registers its store by concrete
+type and one database holds every consumer's templates; a host writes one sealed subclass per
+consumer. Both unique keys are composites stored lowercased (`RecordKey` is
+`{collection}:{key}`, `FileKey` is `{recordKey}|{path}`), so uniqueness and lookups are
+case-insensitive under any collation while `Key` and `Path` keep the caller's casing. Files are
+tied to their record by `RecordKey`, not as a Nucleus child collection: a child can only be saved
+through its parent, and the store writes one file at a time. Deletes run by predicate
+(`IDataContext.DeleteWhereAsync`), files first by record key and then the record, so no bytes are
+loaded and a file row left behind by a content save that raced a delete is swept too; a file save
+is a delete by file key and an insert on one transaction, for the same reason. Reads run outside
+a transaction and writes inside one, as in S3Library. Listings read record rows only, and the
+name filter, ordering and paging run in memory. Stencil.Abstractions defines no exception type,
+so a storage failure is logged with the operation and key and rethrown unchanged, and nothing is
+retried. Tests run `TemplateStoreContract.Cases` from `TFM.Stencil.Testing` against the
+integration database (`tests\TFM.Nucleus.IntegrationTests\Stencil`); each test works in a
+collection of its own, so the suite needs no reset and no lock.
 
 `Abstractions` holds every interface the other layers speak: `ICoreObject`, `IDataProvider`,
 `IDataContext`, `IObjectSchema`, `IQuery` and the neutral query tokens, plus `NucleusOptions`, the
@@ -112,7 +134,8 @@ dotnet test  TFM.Nucleus.slnx --configuration Release --no-build
 
 Restore needs `GITHUB_USER` and `GITHUB_TOKEN` in the environment: `nuget.config` reads the
 GitHub Packages credential from them, and `TFM.Bindery`, `TFM.Bindery.Testing`,
-`TFM.S3Library.Abstractions` and `TFM.S3Library.Testing` come from that feed. Everything else is an
+`TFM.S3Library.Abstractions`, `TFM.S3Library.Testing`, `TFM.Stencil.Abstractions` and
+`TFM.Stencil.Testing` come from that feed. Everything else is an
 in-repo project reference or comes from nuget.org.
 
 Warnings become errors only when `ContinuousIntegrationBuild=true`. To reproduce what CI enforces:
@@ -145,10 +168,11 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The six packages
-  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version and
-  `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version (two identical per-TFM lines in
-  each csproj); a release of either library that changes its store contract means a bump here.
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The seven packages
+  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version,
+  `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version and `TFM.Nucleus.Stencil` a
+  `TFM.Stencil.Abstractions` version (two identical per-TFM lines in each csproj); a release of
+  any of those libraries that changes its store contract means a bump here.
   The integration test project pins the matching `*.Testing` package at the same version as the
   store's contract pin, or NuGet would lift the contract package underneath the store silently.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
@@ -165,5 +189,5 @@ warning in new code fails CI.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all six packages and is the reference documentation consumers see on the feed.
+  all seven packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.
