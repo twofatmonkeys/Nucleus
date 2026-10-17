@@ -37,6 +37,14 @@ namespace TFM.Nucleus.Data
         public bool IndexSortDESC = false;
         public bool PrimaryKey = false;
         public int? DecimalPlaces = null;
+
+        /// <summary>
+        /// The scale of a decimal column, settable in attribute syntax: <c>[DatabaseColumn(Scale = 6)]</c>.
+        /// It writes <see cref="DecimalPlaces"/>, which C# cannot name in an attribute because it is
+        /// nullable. Reads 0 while no scale is set, in which case the provider's default applies.
+        /// </summary>
+        public int Scale { get => DecimalPlaces ?? 0; set => DecimalPlaces = value; }
+
         public eServerFunction SetValueOverride = eServerFunction.NULL;
         public bool ReturnOutputToProperty = false;
         //public bool ForceTimestamp = false;

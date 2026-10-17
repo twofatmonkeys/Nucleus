@@ -217,7 +217,8 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `ColumnName` | property name | Physical column name. |
 | `DataType` | `NotSpecified` | One of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
 | `DataLength` | inferred | Column length. `-1` maps to `max`. |
-| `DecimalPlaces` | none | Scale for decimal columns. |
+| `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
+| `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
 | `Unique` | `false` | Adds a filtered unique nonclustered index on the column. NULLs are not constrained. See below. |
 | `NonClusteredIndex` | `false` | Adds a non-clustered index on the column. Neither this nor `Unique` is allowed on a `max` length or FILESTREAM column. |

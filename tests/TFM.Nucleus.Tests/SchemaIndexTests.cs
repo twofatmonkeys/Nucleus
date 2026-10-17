@@ -56,6 +56,17 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void Scale_SetsTheDecimalScale_AndUnsetKeepsTheDefault()
+        {
+            var schema = UniqueSchema();
+
+            Assert.Equal(6, schema["Weight"].Scale);
+            Assert.Equal(14, schema["Weight"].Precision);
+            Assert.Equal(5, schema["Amount"].Scale);
+            Assert.Equal(15, schema["Amount"].Precision);
+        }
+
+        [Fact]
         public void ColumnWithoutIndex_ColumnIndexSqlThrows()
         {
             var schema = UniqueSchema();

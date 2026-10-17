@@ -29,6 +29,22 @@ namespace TFM.Nucleus.Tests
     /// </summary>
     public class TestUniqueWidget : CoreObject<TestUniqueWidget>
     {
+        /// <summary>A decimal with an explicit scale, for the scale test.</summary>
+        [DatabaseColumn(Scale = 6)]
+        public decimal Weight
+        {
+            get => GetValue<decimal>();
+            set => SetValue(value);
+        }
+
+        /// <summary>A decimal on the provider's default scale.</summary>
+        [DatabaseColumn]
+        public decimal Amount
+        {
+            get => GetValue<decimal>();
+            set => SetValue(value);
+        }
+
         [DatabaseColumn(Unique = true)]
         public string? Code
         {
