@@ -28,6 +28,7 @@
   <Project Path="src/TFM.Nucleus.Bindery/TFM.Nucleus.Bindery.csproj" />
   <Project Path="src/TFM.Nucleus.S3Library/TFM.Nucleus.S3Library.csproj" />
   <Project Path="src/TFM.Nucleus.Stencil/TFM.Nucleus.Stencil.csproj" />
+  <Project Path="src/TFM.Nucleus.Attribution/TFM.Nucleus.Attribution.csproj" />
   <Folder Name="/tests/">
     <Project Path="tests/TFM.Nucleus.Tests/TFM.Nucleus.Tests.csproj" />
     <Project Path="tests/TFM.Nucleus.IntegrationTests/TFM.Nucleus.IntegrationTests.csproj" />

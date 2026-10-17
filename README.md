@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Seven packages ship from it, all on one version.
+This repository holds the whole family. Eight packages ship from it, all on one version.
 
 ## Packages
 
@@ -15,8 +15,9 @@ This repository holds the whole family. Seven packages ship from it, all on one 
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 | `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
 | `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
+| `TFM.Nucleus.Attribution` | Keeps [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution)'s marketing touches and frozen sales in Nucleus tables: `NucleusAttributionStore` implements `IAttributionStore` over three entities, with touch writes that are safe to retry and sale replacement on one transaction. Provider neutral; see [Attribution](#attribution). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery`, `S3Library` and `Stencil` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery, S3Library and Stencil stores work over any provider.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery, S3Library, Stencil and Attribution stores work over any provider.
 
 ## Install
 
@@ -193,6 +194,42 @@ with the operation and key and rethrown unchanged.
 
 The store passes `TemplateStoreContract.Cases` from `TFM.Stencil.Testing` against the integration
 test database.
+
+## Attribution
+
+`TFM.Nucleus.Attribution` is the store for TFM.Attribution, which records where each visit came
+from (utm tags, click ids, referrer) and freezes each sale's share of the credit. It ships three
+entities (`AttributionTouchRecord`, one row per touch; `AttributionSaleRecord`, one row per sale;
+`AttributionShareRecord`, one row per share of a sale) and `NucleusAttributionStore`, which
+implements `IAttributionStore`:
+
+```csharp
+builder.Services.AddNucleus();
+builder.Services.AddNucleusData();
+builder.Services.AddNucleusSQLDataProvider();
+builder.Services.AddAttribution<NucleusAttributionStore>(builder.Configuration);
+```
+
+The tables are created and migrated at `InitializeDataProviderAsync` like every other entity. Every
+column of the library's `AttributionTouch` has a column of its own, sized by the library's
+`MaxLength` constants, and values are clipped to them on the way in. The touch's channel and
+origin, and a share's position, are stored by name, as the library asks: a rename is a data
+migration. The library's own ids live in `TouchId` and `ShareId`, because a Nucleus `ID` cannot be
+set; `Weight` keeps six places (`[DatabaseColumn(Scale = 6)]`).
+
+Only the library's background worker calls the store, and it retries an attempt that fails or runs
+past its timeout. `AddTouchesAsync` is therefore safe to repeat: it skips any touch id already
+stored and inserts the rest in one transaction, and the unique index on `TouchId` turns two
+attempts racing each other into a failure the worker retries. `ReplaceSaleAsync` deletes the sale
+and its shares by predicate and inserts the new record on one transactional context, so a reader
+sees the old record or the new one. `GetSaleAsync` reads a frozen sale back for the host's reports;
+it is not part of the library's contract. Session id lookups are chunked into IN lists of 1,000.
+A storage failure is logged with the operation and rethrown unchanged, and the worker decides
+whether to retry. The touch table is hard deletable so a host can purge old touches, or a backfill
+run, by predicate; the store itself never deletes one.
+
+TFM.Attribution ships no contract test package, so the store's rules are tested directly against
+the integration test database (`tests\TFM.Nucleus.IntegrationTests\Attribution`).
 
 ## Entity base classes
 
@@ -418,8 +455,9 @@ src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Bindery\         TFM.Bindery page store
 src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
 src\TFM.Nucleus.Stencil\          TFM.Stencil template store
+src\TFM.Nucleus.Attribution\      TFM.Attribution touch and sale store
 tests\TFM.Nucleus.Tests\         unit tests, no database
-tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\, S3Library\ and Stencil\ contract suites)
+tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\, S3Library\ and Stencil\ contract suites, Attribution\ store tests)
 ```
 
 ## Build and test

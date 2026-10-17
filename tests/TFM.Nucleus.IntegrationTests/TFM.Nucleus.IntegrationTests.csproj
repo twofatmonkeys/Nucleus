@@ -48,6 +48,7 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus.Bindery\TFM.Nucleus.Bindery.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.S3Library\TFM.Nucleus.S3Library.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Stencil\TFM.Nucleus.Stencil.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Attribution\TFM.Nucleus.Attribution.csproj" />
   </ItemGroup>
 
 </Project>
