@@ -97,7 +97,7 @@
             ["term.notequals.null"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] IS NOT NULL",
             ["term.serverfunction"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name]<SYSDATETIME()",
             ["term.startswith"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%'",
-            ["update.many"] = "UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p0,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p1 UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p2,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p3 UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p4,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p5",
+            ["update.many"] = "UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p0,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p1;\nUPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p2,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p3;\nUPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Quantity] = @p4,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p5",
             ["update.null"] = "UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Name] = NULL,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p0",
             ["update.one"] = "UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Name] = @p0,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p1",
             ["update.tablename"] = "UPDATE [dbo].[tbl_TestWidget] WITH (ROWLOCK) SET [Name] = @p0 WHERE [ID]=@p1",

@@ -203,7 +203,7 @@ namespace TFM.Nucleus.Data.SQL
                 sb.Append($" WHERE {WhereRenderer.Render(q.Where, this)}");
             }
             foreach (var l in q.LinkedQueries)
-                sb.Append($" {l.BuildQuery()}");
+                sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
         }
 
