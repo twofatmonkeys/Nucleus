@@ -24,6 +24,11 @@ namespace TFM.Nucleus.Data.Queries
         public OrderByCollection OrderBy = new();
         public WhereCollection Where = new();
         public ParameterCollection SetParameters { get; set; } = [];
+        /// <summary>
+        /// Lets a select read rows other transactions have not committed yet. Off by default, so
+        /// a select reads committed data. SQL Server only: PostgreSQL never reads uncommitted rows
+        /// and ignores it.
+        /// </summary>
         public bool WithNoLock = false;
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;

@@ -42,7 +42,7 @@ namespace TFM.Nucleus.Tests
             var (_, child) = ParentWithChild(p => { p.Skip = 10; p.Take = 5; });
 
             Assert.EndsWith(
-                $"WHERE Parent IN (SELECT [ID] FROM (SELECT [ID], ROW_NUMBER() OVER (ORDER BY [ID]) AS [__RowNumber] FROM {Parent} WITH(NOLOCK)) AS [__paged] " +
+                $"WHERE Parent IN (SELECT [ID] FROM (SELECT [ID], ROW_NUMBER() OVER (ORDER BY [ID]) AS [__RowNumber] FROM {Parent}) AS [__paged] " +
                 "WHERE [__paged].[__RowNumber] > 10 AND [__paged].[__RowNumber] <= 15)",
                 ChildSql(child));
         }

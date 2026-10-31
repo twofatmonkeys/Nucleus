@@ -522,6 +522,13 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 
 ## Behaviour changes
 
+These came in with the fixes for the SQL Server review findings.
+
+- **SQL Server selects read committed data.** `Query.WithNoLock` was inverted: every select ran
+  `WITH(NOLOCK)` and read uncommitted rows unless the flag was set, which removed the hint. A
+  select now reads committed data, as on PostgreSQL, so it can wait for a row another transaction
+  is writing. Set `WithNoLock = true` on a query to read uncommitted rows.
+
 These came in with the shared provider layer.
 
 - **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSQLDataProvider`,
