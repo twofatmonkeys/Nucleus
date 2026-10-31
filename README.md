@@ -487,7 +487,7 @@ Override these on an entity to run logic at defined points:
 | `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters; a larger insert or update batch goes to the bulk engine. |
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
-| `BulkCopyBatchSize` | `50000` | Not currently applied: bulk statements run in batches of 50,000 rows. |
+| `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
 
 Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
 

@@ -20,12 +20,6 @@ namespace TFM.Nucleus.Data.SQL
     internal partial class SqlDataContext
     {
         /// <summary>
-        /// Default batch size for bulk INSERT/UPDATE operations.
-        /// Prevents transaction log pressure and lock escalation at high row counts.
-        /// </summary>
-        private const int DefaultBulkBatchSize = 50000;
-
-        /// <summary>
         /// Routes each table of the batch to the insert or the update strategy:
         /// - INSERT: grouped by column signature (preserves DB defaults for unset columns)
         /// - UPDATE: VARBINARY bitmask (single statement, no grouping, handles varying ChangedProperties)
@@ -86,7 +80,7 @@ namespace TFM.Nucleus.Data.SQL
                     await BulkCopyToTempTableAsync(tempTable, dt, token);
 
                     var baseSql = BuildBulkInsertSql(write.TableName, tempTable, dataColumns, serverFunctionColumns);
-                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "INSERT", token);
+                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "INSERT", token);
                 }
                 finally
                 {
@@ -165,7 +159,7 @@ namespace TFM.Nucleus.Data.SQL
 
                 var baseSql = BuildBitmaskUpdateSql(
                     write.TableName, tempTable, dataColumns, whereColumns, serverFunctionColumns);
-                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "UPDATE", token);
+                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "UPDATE", token);
             }
             finally
             {

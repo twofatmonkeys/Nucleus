@@ -14,9 +14,9 @@ namespace TFM.Nucleus.IntegrationTests
     public abstract class DatabaseFixture : IAsyncLifetime
     {
         public TestConfig.DatabaseSettings? Settings { get; }
-        public IDataProvider? Provider { get; private set; }
-        public ObjectDataManager? Manager { get; private set; }
-        private ServiceProvider? _services;
+        public IDataProvider? Provider => _stack?.Provider;
+        public ObjectDataManager? Manager => _stack?.Manager;
+        private TestStack? _stack;
 
         protected DatabaseFixture(TestConfig.DatabaseSettings? settings)
         {
@@ -36,24 +36,40 @@ namespace TFM.Nucleus.IntegrationTests
         {
             if (Settings == null)
                 return;
+            _stack = await StartStackAsync(services => AddProvider(services, Settings));
+        }
 
+        /// <summary>
+        /// Boots AddNucleus plus the provider <paramref name="addProvider"/> registers and
+        /// initialises its schema. The fixture's own stack is one; a test that needs the provider
+        /// configured differently starts another and disposes it.
+        /// </summary>
+        protected async Task<TestStack> StartStackAsync(Action<IServiceCollection> addProvider)
+        {
             var services = new ServiceCollection();
             var log = new CapturingLoggerProvider();
             services.AddLogging(builder => builder.AddProvider(log));
             services.AddNucleus();
-            AddProvider(services, Settings);
-            _services = services.BuildServiceProvider();
-
-            Provider = _services.GetRequiredService<IDataProvider>();
-            var status = await Provider.InitializeAsync();
-            if (status != DataProviderStatus.Ok)
-                throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}{Environment.NewLine}{string.Join(Environment.NewLine, log.Entries)}");
-            Manager = new ObjectDataManager(Provider, _services.GetRequiredService<IObjectSchemaProvider>(), null);
+            addProvider(services);
+            var built = services.BuildServiceProvider();
+            try
+            {
+                var provider = built.GetRequiredService<IDataProvider>();
+                var status = await provider.InitializeAsync();
+                if (status != DataProviderStatus.Ok)
+                    throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}{Environment.NewLine}{string.Join(Environment.NewLine, log.Entries)}");
+                return new TestStack(built, provider, new ObjectDataManager(provider, built.GetRequiredService<IObjectSchemaProvider>(), null));
+            }
+            catch
+            {
+                built.Dispose();
+                throw;
+            }
         }
 
         public ValueTask DisposeAsync()
         {
-            _services?.Dispose();
+            _stack?.Dispose();
             GC.SuppressFinalize(this);
             return ValueTask.CompletedTask;
         }
@@ -79,6 +95,15 @@ namespace TFM.Nucleus.IntegrationTests
         internal Task<TestDatabaseLock> LockAsync(string suite) => TestDatabaseLock.AcquireAsync($"{suite}-{ProviderName}");
     }
 
+    /// <summary>A booted Nucleus stack over one provider; disposing it disposes its services.</summary>
+    public sealed class TestStack(ServiceProvider services, IDataProvider provider, ObjectDataManager manager) : IDisposable
+    {
+        public IDataProvider Provider { get; } = provider;
+        public ObjectDataManager Manager { get; } = manager;
+
+        public void Dispose() => services.Dispose();
+    }
+
     /// <summary>SQL Server, configured by the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.</summary>
     public sealed class SqlServerFixture() : DatabaseFixture(TestConfig.TryGetSettings())
     {
@@ -87,13 +112,24 @@ namespace TFM.Nucleus.IntegrationTests
         protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
 
         protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings) =>
+            AddProvider(services, settings, _ => { });
+
+        private static void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<SQLConfiguration> configure) =>
             services.AddNucleusSQLDataProvider(options =>
             {
                 options.Server = settings.Server;
                 options.Database = settings.Database;
                 options.Username = settings.Username;
                 options.Password = settings.Password;
+                configure(options);
             });
+
+        /// <summary>A second stack on the same database with its settings changed by <paramref name="configure"/>.</summary>
+        public Task<TestStack> StartStackAsync(Action<SQLConfiguration> configure)
+        {
+            var settings = RequireSettings();
+            return StartStackAsync(services => AddProvider(services, settings, configure));
+        }
     }
 
     [CollectionDefinition(Name)]

@@ -19,7 +19,22 @@ namespace TFM.Nucleus.Data.SQL
         public bool UseIntegratedSecurity { get; set; }
 
         public int SQLPacketSize { get; set; } = 1500;
-        public int BulkCopyBatchSize { get; set; } = 50000;
+
+        /// <summary>
+        /// The most staged rows one bulk INSERT or UPDATE statement writes. A larger batch runs as
+        /// several statements in the same transaction, which keeps log growth and lock
+        /// escalation in check.
+        /// </summary>
+        public int BulkCopyBatchSize
+        {
+            get => _bulkCopyBatchSize;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+                _bulkCopyBatchSize = value;
+            }
+        }
+        private int _bulkCopyBatchSize = 50000;
 
         internal SqlConnection BuildNewSQLConnection(bool useTransaction)
         {
