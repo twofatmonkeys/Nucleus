@@ -30,5 +30,30 @@ namespace TFM.Nucleus.Tests
             });
             return WhitespaceRegex().Replace(replaced, " ").Trim();
         }
+
+        // Only the generated p{n} variables are renumbered; named variables such as @sql or
+        // @tempTableName in the schema scripts are part of the text and stay as written.
+        [GeneratedRegex(@"(?<!@)@p\d+(?!\d)")]
+        private static partial Regex GeneratedVariableRegex();
+
+        /// <summary>
+        /// Renumbers the generated variables and turns CRLF into LF, and changes nothing else, so
+        /// a raw golden pins every space and separator. <see cref="Normalize"/> collapses
+        /// whitespace, which hides exactly the differences a renderer refactor can introduce.
+        /// </summary>
+        public static string NormalizeVariablesOnly(string sql)
+        {
+            var map = new Dictionary<string, string>();
+            var replaced = GeneratedVariableRegex().Replace(sql, m =>
+            {
+                if (!map.TryGetValue(m.Value, out var name))
+                {
+                    name = $"@p{map.Count}";
+                    map[m.Value] = name;
+                }
+                return name;
+            });
+            return replaced.Replace("\r\n", "\n");
+        }
     }
 }

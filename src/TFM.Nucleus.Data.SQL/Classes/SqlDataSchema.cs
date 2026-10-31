@@ -424,6 +424,102 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        // ---- Statement builders. Every DDL string the schema runs is built here, so the text can
+        // ---- be pinned by golden tests apart from the code that executes it.
+
+        internal static IReadOnlyList<string> CreateTableStatements(SqlTableSchema tableSchema)
+        {
+            var idColumn = tableSchema.IdentityColumn.ColumnName;
+            //Create table
+            var qry = $"CREATE TABLE [dbo].[{tableSchema.TableName}](" +
+                $"[{idColumn}][uniqueidentifier] ROWGUIDCOL NOT NULL," +
+                "[ClusterID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL, ";
+            foreach (var col in tableSchema.Columns)
+                if (col.ColumnName != idColumn)
+                    qry += $"[{col.ColumnName}] {col.SqlDataConstructor}";
+            if (IsSoftDeletable(tableSchema))
+                qry += SoftDeleteColumnSql(tableSchema);
+            //add default primary key constraint
+            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
+                "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
+            if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
+                qry += "TEXTIMAGE_ON [PRIMARY] ";
+            if (qry.Contains("FILESTREAM"))
+                qry += "FILESTREAM_ON [FileStream] ";
+            List<string> statements = [qry];
+
+            //add id generation default constraint
+            statements.Add($"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_{idColumn}]  DEFAULT(newid()) FOR[{idColumn}]");
+            //create indexes
+            statements.Add($"CREATE UNIQUE CLUSTERED INDEX [CIX_{tableSchema.TableName}_ClusterID] ON [dbo].[{tableSchema.TableName}](" +
+                "[ClusterID] DESC)WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
+                "IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]");
+            foreach (var col in tableSchema.Columns.Where(c => c.HasColumnIndex))
+                statements.Add(ColumnIndexSql(tableSchema, col));
+            return statements;
+        }
+
+        internal static string RenameTableSql(string tableName, string tempTableName) =>
+            $"EXEC sp_rename '{tableName}', '{tempTableName}'";
+
+        /// <summary>Renames the default constraints of the renamed table; binds the temp table name to <paramref name="tempTableVariable"/>.</summary>
+        internal static string RenameDefaultConstraintsSql(string tempTableVariable) => @$"DECLARE @sql NVARCHAR(MAX) = '';
+
+SELECT @sql = @sql + 'EXEC sp_rename N''dbo.[' + name + ']'', N''' + name + '_temp'', N''OBJECT'';' + CHAR(13)
+FROM sys.objects
+WHERE parent_object_id = OBJECT_ID(@{tempTableVariable}) AND type = 'D';
+
+EXEC sp_executesql @sql;";
+
+        /// <summary>Renames the indexes of the renamed table; binds @tempTableName and @tblname.</summary>
+        internal const string RenameIndexesSql = @"DECLARE @sql NVARCHAR(MAX) = '';
+
+SELECT @sql = @sql + 'EXEC sp_rename N''dbo.' + @tempTableName + '.' + name + ''', N''' + REPLACE(name, @tblname, @tempTableName) + ''', N''INDEX'';' + CHAR(13)
+FROM sys.indexes
+WHERE object_id = OBJECT_ID(@tempTableName) AND type_desc != 'HEAP' AND name IS NOT NULL;
+
+EXEC sp_executesql @sql;";
+
+        internal static string CopyTableDataSql(string sourceTableName, string destTableName, IReadOnlyList<string> commonColumns, bool orderByClusterId)
+        {
+            var qry = $"INSERT INTO {destTableName}({String.Join(", ", commonColumns)}) " +
+                $"SELECT {String.Join(", ", commonColumns)} FROM {sourceTableName}";
+            if (orderByClusterId)
+                qry += " ORDER BY ClusterID ASC";
+            return qry;
+        }
+
+        internal static string DropTableSql(string tableName) => $"DROP TABLE [dbo].[{tableName}]";
+
+        //update timestamps if necessary. *only needed for legacy tables, may be deprecated in the future
+        internal static string BackfillTimestampSql(string tableName) =>
+            $"UPDATE [dbo].[{tableName}] SET [Timestamp] = SYSDATETIMEOFFSET() WHERE [Timestamp] IS NULL";
+
+        internal static string DropColumnIndexSql(string indexName, string tableName) => $"DROP INDEX [{indexName}] ON [dbo].[{tableName}]";
+
+        internal static string DropFullTextCatalogSql(string catalogName) => $"DROP FULLTEXT CATALOG [{catalogName}]";
+
+        internal static string DropFullTextIndexSql(string tableName) => $"DROP FULLTEXT INDEX ON [dbo].[{tableName}]";
+
+        internal static string CreateFullTextIndexSql(string tableName) =>
+            $"CREATE FULLTEXT INDEX ON [dbo].[{tableName}] KEY INDEX [PK_{tableName}] ON ([ftc_{tableName}]) WITH CHANGE_TRACKING AUTO";
+
+        internal static string AddFullTextColumnSql(string tableName, string columnName) =>
+            $"ALTER FULLTEXT INDEX ON [dbo].[{tableName}] ADD([{columnName}] LANGUAGE [English])";
+
+        /// <summary>The columns both tables share, minus the identity, which the new table generates.</summary>
+        private static List<string> CommonColumns(SqlColumn[] sourceColumns, SqlColumn[] destColumns)
+        {
+            List<string> commoncolumns = [];
+            foreach (var s in destColumns.Select(x => x.Name))
+                if (sourceColumns.Any(x => x.Name!.Equals(s, StringComparison.OrdinalIgnoreCase) && !x.Name.Equals("ClusterID")))
+                    commoncolumns.Add(s!);
+            return commoncolumns;
+        }
+
+        private static bool HasClusterId(SqlColumn[] columns) =>
+            columns.Any(x => x.Name!.Equals("ClusterID", StringComparison.OrdinalIgnoreCase));
+
         private void UpdateTableSchema(SqlDataContext context, SqlTableSchema tableSchema)
         {
             var tempTableName = $"{tableSchema.TableName}_{DateTime.Now.ToString("yyyyMMddHHmmss")}";
@@ -444,8 +540,7 @@ namespace TFM.Nucleus.Data.SQL
                 CopyTableData(context, tempTableName, tableSchema.TableName!);
                 //drop old table
                 DropTable(context, tempTableName);
-                //update timestamps if necessary. *only needed for legacy tables, may be deprecated in the future
-                context.ExecuteSQL($"UPDATE [dbo].[{tableSchema.TableName}] SET [Timestamp] = SYSDATETIMEOFFSET() WHERE [Timestamp] IS NULL");
+                context.ExecuteSQL(BackfillTimestampSql(tableSchema.TableName));
             }
         }
         private async Task UpdateTableSchemaAsync(SqlDataContext context, SqlTableSchema tableSchema, CancellationToken? cancellationToken = null)
@@ -468,169 +563,62 @@ namespace TFM.Nucleus.Data.SQL
                 await CopyTableDataAsync(context, tempTableName, tableSchema.TableName!, cancellationToken);
                 //drop old table
                 await DropTableAsync(context, tempTableName, cancellationToken);
-                //update timestamps if necessary. *only needed for legacy tables, may be deprecated in the future
-                await context.ExecuteSQLAsync($"UPDATE [dbo].[{tableSchema.TableName}] SET [Timestamp] = SYSDATETIMEOFFSET() WHERE [Timestamp] IS NULL");
+                await context.ExecuteSQLAsync(BackfillTimestampSql(tableSchema.TableName));
             }
         }
 
         private void CreateTable(SqlDataContext context, SqlTableSchema tableSchema)
         {
-            var idColumn = tableSchema.IdentityColumn.ColumnName;
-            //Create table
-            var qry = $"CREATE TABLE [dbo].[{tableSchema.TableName}](" +
-                $"[{idColumn}][uniqueidentifier] ROWGUIDCOL NOT NULL," +
-                "[ClusterID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL, ";
-            foreach (var col in tableSchema.Columns)
-                if (col.ColumnName != idColumn)
-                    qry += $"[{col.ColumnName}] {col.SqlDataConstructor}";
-            if (IsSoftDeletable(tableSchema))
-                qry += SoftDeleteColumnSql(tableSchema);
-            //add default primary key constraint
-            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
-                "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
-            if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
-                qry += "TEXTIMAGE_ON [PRIMARY] ";
-            if (qry.Contains("FILESTREAM"))
-                qry += "FILESTREAM_ON [FileStream] ";
-            context.ExecuteSQL(qry);
-
-            //add id generation default constraint
-            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_{idColumn}]  DEFAULT(newid()) FOR[{idColumn}]";
-            context.ExecuteSQL(qry);
-            //create indexes
-            qry = $"CREATE UNIQUE CLUSTERED INDEX [CIX_{tableSchema.TableName}_ClusterID] ON [dbo].[{tableSchema.TableName}](" +
-                "[ClusterID] DESC)WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                "IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
-            context.ExecuteSQL(qry);
-            foreach (var col in tableSchema.Columns.Where(c => c.HasColumnIndex))
-                context.ExecuteSQL(ColumnIndexSql(tableSchema, col));
+            foreach (var statement in CreateTableStatements(tableSchema))
+                context.ExecuteSQL(statement);
         }
         private async Task CreateTableAsync(SqlDataContext context, SqlTableSchema tableSchema, CancellationToken? cancellationToken = null)
         {
-            var idColumn = tableSchema.IdentityColumn.ColumnName;
-            //Create table
-            var qry = $"CREATE TABLE [dbo].[{tableSchema.TableName}](" +
-                $"[{idColumn}][uniqueidentifier] ROWGUIDCOL NOT NULL," +
-                "[ClusterID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL, ";
-            foreach (var col in tableSchema.Columns)
-                if (col.ColumnName != idColumn)
-                    qry += $"[{col.ColumnName}] {col.SqlDataConstructor}";
-            if (IsSoftDeletable(tableSchema))
-                qry += SoftDeleteColumnSql(tableSchema);
-            //add default primary key constraint
-            qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
-                "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
-            if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
-                qry += "TEXTIMAGE_ON [PRIMARY] ";
-            if (qry.Contains("FILESTREAM"))
-                qry += "FILESTREAM_ON [FileStream] ";
-            await context.ExecuteSQLAsync(qry);
-
-            //add id generation default constraint
-            qry = $"ALTER TABLE[dbo].[{tableSchema.TableName}] ADD CONSTRAINT[DF_{tableSchema.TableName}_{idColumn}]  DEFAULT(newid()) FOR[{idColumn}]";
-            await context.ExecuteSQLAsync(qry);
-            //create indexes
-            qry = $"CREATE UNIQUE CLUSTERED INDEX [CIX_{tableSchema.TableName}_ClusterID] ON [dbo].[{tableSchema.TableName}](" +
-                "[ClusterID] DESC)WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                "IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
-            await context.ExecuteSQLAsync(qry);
-            foreach (var col in tableSchema.Columns.Where(c => c.HasColumnIndex))
-                await context.ExecuteSQLAsync(ColumnIndexSql(tableSchema, col));
+            foreach (var statement in CreateTableStatements(tableSchema))
+                await context.ExecuteSQLAsync(statement);
         }
 
         private void RenameTable(SqlDataContext context, SqlTableSchema tableSchema, string tempTableName)
         {
-            var renqry = $"EXEC sp_rename '{tableSchema.TableName}', '{tempTableName}'";
-            context.ExecuteSQL(renqry);
+            context.ExecuteSQL(RenameTableSql(tableSchema.TableName, tempTableName));
 
             //rename default constraints
             var tempTableParam = new Parameter("tempTableName", tempTableName);
+            context.ExecuteSQL(RenameDefaultConstraintsSql(tempTableParam.Variable!), tempTableParam);
 
-            var constraintqry = @$"DECLARE @sql NVARCHAR(MAX) = '';
-
-SELECT @sql = @sql + 'EXEC sp_rename N''dbo.[' + name + ']'', N''' + name + '_temp'', N''OBJECT'';' + CHAR(13)
-FROM sys.objects 
-WHERE parent_object_id = OBJECT_ID(@{tempTableParam.Variable}) AND type = 'D';
-
-EXEC sp_executesql @sql;";
-            context.ExecuteSQL(constraintqry, tempTableParam);
-
-            var indexQry = @"DECLARE @sql NVARCHAR(MAX) = '';
-
-SELECT @sql = @sql + 'EXEC sp_rename N''dbo.' + @tempTableName + '.' + name + ''', N''' + REPLACE(name, @tblname, @tempTableName) + ''', N''INDEX'';' + CHAR(13)
-FROM sys.indexes 
-WHERE object_id = OBJECT_ID(@tempTableName) AND type_desc != 'HEAP' AND name IS NOT NULL;
-
-EXEC sp_executesql @sql;";
-            context.ExecuteSQL(indexQry, new ParameterCollection(new Parameter("tempTableName", tempTableName, false), new Parameter("tblname", tableSchema.TableName!, false)));
-        } 
+            context.ExecuteSQL(RenameIndexesSql, new ParameterCollection(new Parameter("tempTableName", tempTableName, false), new Parameter("tblname", tableSchema.TableName!, false)));
+        }
         private async Task RenameTableAsync(SqlDataContext context, SqlTableSchema tableSchema, string tempTableName, CancellationToken? cancellationToken = null)
         {
-            var renqry = $"EXEC sp_rename '{tableSchema.TableName}', '{tempTableName}'";
-            await context.ExecuteSQLAsync(renqry);
-            
+            await context.ExecuteSQLAsync(RenameTableSql(tableSchema.TableName, tempTableName));
+
             //rename default constraints
             var tempTableParam = new Parameter("tempTableName", tempTableName);
-            
-            var constraintqry = @$"DECLARE @sql NVARCHAR(MAX) = '';
+            await context.ExecuteSQLAsync(RenameDefaultConstraintsSql(tempTableParam.Variable!), tempTableParam);
 
-SELECT @sql = @sql + 'EXEC sp_rename N''dbo.[' + name + ']'', N''' + name + '_temp'', N''OBJECT'';' + CHAR(13)
-FROM sys.objects 
-WHERE parent_object_id = OBJECT_ID(@{tempTableParam.Variable}) AND type = 'D';
-
-EXEC sp_executesql @sql;";
-            await context.ExecuteSQLAsync(constraintqry, tempTableParam);
-
-            var indexQry = @"DECLARE @sql NVARCHAR(MAX) = '';
-
-SELECT @sql = @sql + 'EXEC sp_rename N''dbo.' + @tempTableName + '.' + name + ''', N''' + REPLACE(name, @tblname, @tempTableName) + ''', N''INDEX'';' + CHAR(13)
-FROM sys.indexes 
-WHERE object_id = OBJECT_ID(@tempTableName) AND type_desc != 'HEAP' AND name IS NOT NULL;
-
-EXEC sp_executesql @sql;";
-            await context.ExecuteSQLAsync(indexQry, new ParameterCollection(new Parameter("tempTableName", tempTableName, false), new Parameter("tblname", tableSchema.TableName!, false)));
+            await context.ExecuteSQLAsync(RenameIndexesSql, new ParameterCollection(new Parameter("tempTableName", tempTableName, false), new Parameter("tblname", tableSchema.TableName!, false)));
         }
 
         private void CopyTableData(SqlDataContext context, string sourceTableName, string destTableName)
         {
-            List<string> commoncolumns = [];
             var sourceColumns = SqlDataProvider.SqlConfig.GetDatabaseColumns(sourceTableName, context);
             var destColumns = SqlDataProvider.SqlConfig.GetDatabaseColumns(destTableName, context);
-            foreach (var s in destColumns.Select(x => x.Name))
-                if (sourceColumns.Any(x => x.Name!.Equals(s, StringComparison.OrdinalIgnoreCase) && !x.Name.Equals("ClusterID")))
-                    commoncolumns.Add(s!);
-
-            var qry = $"INSERT INTO {destTableName}({String.Join(", ", commoncolumns)}) " +
-                $"SELECT {String.Join(", ", commoncolumns)} FROM {sourceTableName}";
-            if (sourceColumns.Any(x => x.Name!.Equals("ClusterID", StringComparison.OrdinalIgnoreCase)))
-                qry += " ORDER BY ClusterID ASC";
-            context.ExecuteSQL(qry);
+            context.ExecuteSQL(CopyTableDataSql(sourceTableName, destTableName, CommonColumns(sourceColumns, destColumns), HasClusterId(sourceColumns)));
         }
         private async Task CopyTableDataAsync(SqlDataContext context, string sourceTableName, string destTableName, CancellationToken? cancellationToken = null)
         {
-            List<string> commoncolumns = [];
             var sourceColumns = await SqlDataProvider.SqlConfig.GetDatabaseColumnsAsync(sourceTableName, context, cancellationToken ?? CancellationToken.None);
             var destColumns = await SqlDataProvider.SqlConfig.GetDatabaseColumnsAsync(destTableName, context, cancellationToken ?? CancellationToken.None);
-            foreach (var s in destColumns.Select(x => x.Name))
-                if (sourceColumns.Any(x => x.Name!.Equals(s, StringComparison.OrdinalIgnoreCase) && !x.Name.Equals("ClusterID")))
-                    commoncolumns.Add(s!);
-
-            var qry = $"INSERT INTO {destTableName}({String.Join(", ", commoncolumns)}) " +
-                $"SELECT {String.Join(", ", commoncolumns)} FROM {sourceTableName}";
-            if (sourceColumns.Any(x => x.Name!.Equals("ClusterID", StringComparison.OrdinalIgnoreCase)))
-                qry += " ORDER BY ClusterID ASC";
-            await context.ExecuteSQLAsync(qry);
+            await context.ExecuteSQLAsync(CopyTableDataSql(sourceTableName, destTableName, CommonColumns(sourceColumns, destColumns), HasClusterId(sourceColumns)));
         }
 
         private void DropTable(SqlDataContext context, string tableName)
         {
-            var qry = $"DROP TABLE [dbo].[{tableName}]";
-            context.ExecuteSQL(qry);
+            context.ExecuteSQL(DropTableSql(tableName));
         }
         private async Task DropTableAsync(SqlDataContext context, string tableName, CancellationToken? cancellationToken = null)
         {
-            var qry = $"DROP TABLE [dbo].[{tableName}]";
-            await context.ExecuteSQLAsync(qry);
+            await context.ExecuteSQLAsync(DropTableSql(tableName));
         }
 
         private void UpdateTableFullTextIndexes(IEnumerable<SqlTableSchema> sqlSchema)
@@ -643,7 +631,7 @@ EXEC sp_executesql @sql;";
                 if (!sqlSchema.Any(x => x.TableName == tblname && x.HasFullTextIndex))
                 {
                     //drop full-text catalog
-                    SqlDataProvider.SqlConfig.ExecuteQuery($"DROP FULLTEXT CATALOG [{ftc}]", null);
+                    SqlDataProvider.SqlConfig.ExecuteQuery(DropFullTextCatalogSql(ftc), null);
                 }
             }
             var ftTables = sqlSchema.Where(x => x.HasFullTextIndex).ToList();
@@ -683,16 +671,11 @@ EXEC sp_executesql @sql;";
                 {
                     //drop existing full-text index
                     if (SqlDataProvider.SqlConfig.TableHasFtIndex(tableSchema.TableName!))
-                        SqlDataProvider.SqlConfig.ExecuteQuery($"DROP FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}]", null);
+                        SqlDataProvider.SqlConfig.ExecuteQuery(DropFullTextIndexSql(tableSchema.TableName), null);
                     //recreate full-text index
-                    var ftcName = $"ftc_{tableSchema.TableName}";
-                    var idxqry = $"CREATE FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}] KEY INDEX [PK_{tableSchema.TableName}] ON ([{ftcName}]) WITH CHANGE_TRACKING AUTO";
-                    SqlDataProvider.SqlConfig.ExecuteQuery(idxqry, null);
+                    SqlDataProvider.SqlConfig.ExecuteQuery(CreateFullTextIndexSql(tableSchema.TableName), null);
                     foreach (var col in tableSchema.Columns.Where(x => x.FullTextIndex))
-                    {
-                        var colQry = $"ALTER FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}] ADD([{col.ColumnName}] LANGUAGE [English])";
-                        SqlDataProvider.SqlConfig.ExecuteQuery(colQry, null);
-                    }
+                        SqlDataProvider.SqlConfig.ExecuteQuery(AddFullTextColumnSql(tableSchema.TableName, col.ColumnName), null);
                 }
             }
         }
@@ -706,7 +689,7 @@ EXEC sp_executesql @sql;";
                 if (!sqlSchema.Any(x => x.TableName == tblname && x.HasFullTextIndex))
                 {
                     //drop full-text catalog
-                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync($"DROP FULLTEXT CATALOG [{ftc}]", null, cancellationToken);
+                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync(DropFullTextCatalogSql(ftc), null, cancellationToken);
                 }
             }
             var ftTables = sqlSchema.Where(x => x.HasFullTextIndex).ToList();
@@ -746,16 +729,11 @@ EXEC sp_executesql @sql;";
                 {
                     //drop existing full-text index
                     if (await SqlDataProvider.SqlConfig.TableHasFtIndexAsync(tableSchema.TableName!))
-                        await SqlDataProvider.SqlConfig.ExecuteQueryAsync($"DROP FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}]", null, cancellationToken);
+                        await SqlDataProvider.SqlConfig.ExecuteQueryAsync(DropFullTextIndexSql(tableSchema.TableName), null, cancellationToken);
                     //recreate full-text index
-                    var ftcName = $"ftc_{tableSchema.TableName}";
-                    var idxqry = $"CREATE FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}] KEY INDEX [PK_{tableSchema.TableName}] ON ([{ftcName}]) WITH CHANGE_TRACKING AUTO";
-                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync(idxqry, null, cancellationToken);
+                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync(CreateFullTextIndexSql(tableSchema.TableName), null, cancellationToken);
                     foreach (var col in tableSchema.Columns.Where(x => x.FullTextIndex))
-                    {
-                        var colQry = $"ALTER FULLTEXT INDEX ON [dbo].[{tableSchema.TableName}] ADD([{col.ColumnName}] LANGUAGE [English])";
-                        await SqlDataProvider.SqlConfig.ExecuteQueryAsync(colQry, null, cancellationToken);
-                    }
+                        await SqlDataProvider.SqlConfig.ExecuteQueryAsync(AddFullTextColumnSql(tableSchema.TableName, col.ColumnName), null, cancellationToken);
                 }
             }
         }
@@ -776,7 +754,7 @@ EXEC sp_executesql @sql;";
                 foreach (var indexName in drop)
                 {
                     _logger?.LogInformation("Dropping column index {index} on table {tablename}.", indexName, table.TableName);
-                    SqlDataProvider.SqlConfig.ExecuteQuery($"DROP INDEX [{indexName}] ON [dbo].[{table.TableName}]", null);
+                    SqlDataProvider.SqlConfig.ExecuteQuery(DropColumnIndexSql(indexName, table.TableName), null);
                 }
                 foreach (var col in create)
                 {
@@ -801,7 +779,7 @@ EXEC sp_executesql @sql;";
                 foreach (var indexName in drop)
                 {
                     _logger?.LogInformation("Dropping column index {index} on table {tablename}.", indexName, table.TableName);
-                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync($"DROP INDEX [{indexName}] ON [dbo].[{table.TableName}]", null, cancellationToken);
+                    await SqlDataProvider.SqlConfig.ExecuteQueryAsync(DropColumnIndexSql(indexName, table.TableName), null, cancellationToken);
                 }
                 foreach (var col in create)
                 {
