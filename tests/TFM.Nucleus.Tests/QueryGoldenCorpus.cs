@@ -142,7 +142,7 @@ namespace TFM.Nucleus.Tests
                 ["term.in.empty"] = () => Term(new Parameter("Quantity", new List<int>(), Operator.In)),
                 ["term.equals.null"] = () => Term(new Parameter("Name", null)),
                 ["term.notequals.null"] = () => Term(new Parameter("Name", null, Operator.NotEquals)),
-                ["term.serverfunction"] = () => Term(new Parameter("Name", ServerFunction.SysDateTime, Operator.LessThan)),
+                ["term.serverfunction"] = () => Term(new Parameter("Name", ServerFunction.CurrentDateTime, Operator.LessThan)),
                 ["where.or.and"] = () => Where<TestWidget>(w => (w.Name == "a" || w.Name == "b") && w.Quantity > 1),
                 ["where.and.or"] = () => Where<TestWidget>(w => w.Name == "a" && (w.Quantity == 1 || w.Quantity == 2)),
                 ["where.methods"] = () => Where<TestWidget>(w => w.Name!.StartsWith("a") && w.Name.EndsWith("z") && w.Name.Contains("m")),

@@ -41,11 +41,23 @@ namespace TFM.Nucleus
         public string Name { get; }
 
 
+        [Obsolete("Use IsFullTextSearch.")]
         public bool HasFullTextIndex { get; }
         public bool IsDBColumn { get; }
         public bool SkipOnDbRead { get; }
         public bool IsOverridden { get; }
+        [Obsolete("Use IsIndexed.")]
         public bool IsNonClusteredIndex { get; }
+
+        // The neutral names forward to the obsolete ones by default, so an implementation written
+        // against the old names still compiles.
+#pragma warning disable CS0618
+        /// <summary>The column's text is indexed for full-text search where the provider supports it.</summary>
+        public bool IsFullTextSearch => HasFullTextIndex;
+
+        /// <summary>The column gets an index of its own.</summary>
+        public bool IsIndexed => IsNonClusteredIndex;
+#pragma warning restore CS0618
         public bool IsUnique { get; }
         public IObjectSchema? ChildSchema { get; }
         public IObjectSchema? ObjectSchema { get; }

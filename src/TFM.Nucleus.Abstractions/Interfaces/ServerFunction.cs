@@ -26,16 +26,21 @@ namespace TFM.Nucleus.Data
 
         private ServerFunction(ServerFunctionKind kind) => Kind = kind;
 
-        public static readonly ServerFunction SysDateTime = new(ServerFunctionKind.SysDateTime);
-        public static readonly ServerFunction SysDateTimeOffset = new(ServerFunctionKind.SysDateTimeOffset);
+        public static readonly ServerFunction CurrentDateTime = new(ServerFunctionKind.CurrentDateTime);
+        public static readonly ServerFunction CurrentDateTimeOffset = new(ServerFunctionKind.CurrentDateTimeOffset);
         public static readonly ServerFunction UtcNow = new(ServerFunctionKind.UtcNow);
         public static readonly ServerFunction NewGuid = new(ServerFunctionKind.NewGuid);
+
+        [Obsolete("Use CurrentDateTime.")]
+        public static readonly ServerFunction SysDateTime = CurrentDateTime;
+        [Obsolete("Use CurrentDateTimeOffset.")]
+        public static readonly ServerFunction SysDateTimeOffset = CurrentDateTimeOffset;
 
         public static IServerFunction? Get(eServerFunction function) =>
             function switch
             {
-                eServerFunction.CurrentDateTime => SysDateTime,
-                eServerFunction.CurrentDateTimeOffset => SysDateTimeOffset,
+                eServerFunction.CurrentDateTime => CurrentDateTime,
+                eServerFunction.CurrentDateTimeOffset => CurrentDateTimeOffset,
                 _ => null,
             };
 

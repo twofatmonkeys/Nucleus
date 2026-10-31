@@ -293,8 +293,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
         internal static string ServerFunctionSql(IServerFunction function) =>
             function.Kind switch
             {
-                ServerFunctionKind.SysDateTime => "clock_timestamp()::timestamp",
-                ServerFunctionKind.SysDateTimeOffset => "clock_timestamp()",
+                ServerFunctionKind.CurrentDateTime => "clock_timestamp()::timestamp",
+                ServerFunctionKind.CurrentDateTimeOffset => "clock_timestamp()",
                 ServerFunctionKind.UtcNow => "(clock_timestamp() AT TIME ZONE 'UTC')",
                 ServerFunctionKind.NewGuid => "gen_random_uuid()",
                 _ => throw new NotSupportedException($"Server function {function.Kind} is not supported by the PostgreSQL provider."),

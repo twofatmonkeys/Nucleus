@@ -355,8 +355,8 @@ namespace TFM.Nucleus.Data.SQL
         internal static string ServerFunctionSql(IServerFunction function) =>
             function.Kind switch
             {
-                ServerFunctionKind.SysDateTime => "SYSDATETIME()",
-                ServerFunctionKind.SysDateTimeOffset => "SYSDATETIMEOFFSET()",
+                ServerFunctionKind.CurrentDateTime => "SYSDATETIME()",
+                ServerFunctionKind.CurrentDateTimeOffset => "SYSDATETIMEOFFSET()",
                 ServerFunctionKind.UtcNow => "GETUTCDATE()",
                 ServerFunctionKind.NewGuid => "NEWID()",
                 _ => throw new NotSupportedException($"Server function {function.Kind} is not supported by the SQL Server provider."),

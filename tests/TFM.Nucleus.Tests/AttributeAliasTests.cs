@@ -94,7 +94,33 @@
             Assert.Equal((int)eServerFunction.SYSDATETIME, (int)eServerFunction.CurrentDateTime);
             Assert.Equal((int)eServerFunction.SYSDATETIMEOFFSET, (int)eServerFunction.CurrentDateTimeOffset);
 #pragma warning restore CS0618
-            Assert.Same(ServerFunction.SysDateTimeOffset, ServerFunction.Get(eServerFunction.CurrentDateTimeOffset));
+            Assert.Same(ServerFunction.CurrentDateTimeOffset, ServerFunction.Get(eServerFunction.CurrentDateTimeOffset));
+            Assert.Same(ServerFunction.CurrentDateTime, ServerFunction.Get(eServerFunction.CurrentDateTime));
+        }
+
+        [Fact]
+        public void ServerFunctionTokens_KeepTheirObsoleteSpellings()
+        {
+#pragma warning disable CS0618
+            Assert.Same(ServerFunction.CurrentDateTime, ServerFunction.SysDateTime);
+            Assert.Same(ServerFunction.CurrentDateTimeOffset, ServerFunction.SysDateTimeOffset);
+            Assert.Equal(ServerFunctionKind.CurrentDateTime, ServerFunctionKind.SysDateTime);
+            Assert.Equal(ServerFunctionKind.CurrentDateTimeOffset, ServerFunctionKind.SysDateTimeOffset);
+#pragma warning restore CS0618
+        }
+
+        [Fact]
+        public void PropertySchema_ReadsEitherSpelling()
+        {
+            IPropertySchema searchable = ObjectSchema.Get<TestAllTypesWidget>().AllDBColumns.Single(p => p.Name == nameof(TestAllTypesWidget.Searchable));
+            IPropertySchema indexed = ObjectSchema.Get<TestRenamedWidget>().AllDBColumns.Single(p => p.Name == nameof(TestRenamedWidget.Title));
+
+            Assert.True(searchable.IsFullTextSearch);
+            Assert.True(indexed.IsIndexed);
+#pragma warning disable CS0618
+            Assert.True(searchable.HasFullTextIndex);
+            Assert.True(indexed.IsNonClusteredIndex);
+#pragma warning restore CS0618
         }
     }
 }
