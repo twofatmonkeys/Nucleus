@@ -167,16 +167,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             var sb = new StringBuilder($"INSERT INTO {q.TableName}");
             sb.Append($"({string.Join(",", q.SetParameters.Select(x => LeftOperand(x!)))})");
-            if (q.SetParameters.HasOutputParameters)
-            {
-                var outputParams = q.SetParameters.OutputParameters;
-                sb.Append(" OUTPUT ");
-                for (int i = 0; i < outputParams.Count; i++)
-                {
-                    sb.Append($"INSERTED.{LeftOperand(outputParams[i])} AS [{outputParams[i].Variable}]")
-                        .Append(i < outputParams.Count - 1 ? " ," : "");
-                }
-            }
+            sb.Append(OutputClause(q));
             sb.Append(" VALUES ");
             sb.Append($"({string.Join(",", q.SetParameters.Select(x => SetValue(x!)))})");
             foreach (var l in q.LinkedQueries)
@@ -188,16 +179,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             var sb = new StringBuilder($"UPDATE {q.TableName} WITH (ROWLOCK) SET ");
             sb.Append(string.Join(",", q.SetParameters.Select(x => SetCondition(x!))));
-            if (q.SetParameters.HasOutputParameters)
-            {
-                var outputParams = q.SetParameters.OutputParameters;
-                sb.Append(" OUTPUT ");
-                for (int i = 0; i < outputParams.Count; i++)
-                {
-                    sb.Append(i < 1 ? $"({LeftOperand(outputParams[i])}" : $"{SetValue(outputParams[i])}")
-                        .Append(i < q.SetParameters.Count - 1 ? "," : ")");
-                }
-            }
+            sb.Append(OutputClause(q));
             if (!q.Where.IsEmpty)
             {
                 sb.Append($" WHERE {WhereRenderer.Render(q.Where, this)}");
@@ -206,6 +188,15 @@ namespace TFM.Nucleus.Data.SQL
                 sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Returns the stored value of each output term, aliased by the term's variable so the
+        /// context can hand it back. Empty when the write has no output terms.
+        /// </summary>
+        private static string OutputClause(Query q) =>
+            q.SetParameters.HasOutputParameters
+                ? " OUTPUT " + string.Join(" ,", q.SetParameters.OutputParameters.Select(o => $"INSERTED.{LeftOperand(o)} AS [{o.Variable}]"))
+                : "";
 
         // ---- Delete
 

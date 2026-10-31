@@ -51,6 +51,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerPatternMatchIntegrationTests(SqlServerFixture fixture) : PatternMatchIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerServerValueIntegrationTests(SqlServerFixture fixture) : ServerValueIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerSaveBenchmarks(SqlServerFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
     [Collection(SqlServerCollection.Name)]

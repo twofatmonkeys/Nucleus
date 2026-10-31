@@ -51,6 +51,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresPatternMatchIntegrationTests(PostgresFixture fixture) : PatternMatchIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresServerValueIntegrationTests(PostgresFixture fixture) : ServerValueIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresSaveBenchmarks(PostgresFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
     [Collection(PostgresCollection.Name)]

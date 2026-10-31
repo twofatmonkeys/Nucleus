@@ -1,6 +1,4 @@
-﻿using Microsoft.Data.SqlClient;
-
-namespace TFM.Nucleus.IntegrationTests.SqlServer
+﻿namespace TFM.Nucleus.IntegrationTests.SqlServer
 {
     /// <summary>
     /// A table Nucleus does not own may hold a column of a type Nucleus does not map. The schema
@@ -17,7 +15,7 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
         {
             var settings = fixture.RequireSettings();
             var table = $"foreign_{Guid.NewGuid():N}";
-            await ExecuteAsync(settings, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Anything] sql_variant NULL)");
+            await SqlServerScript.ExecuteAsync(settings, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Anything] sql_variant NULL)", Ct);
             try
             {
                 using var stack = await fixture.StartStackAsync(_ => { });
@@ -26,24 +24,8 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             }
             finally
             {
-                await ExecuteAsync(settings, $"DROP TABLE [dbo].[{table}]");
+                await SqlServerScript.ExecuteAsync(settings, $"DROP TABLE [dbo].[{table}]", Ct);
             }
-        }
-
-        private static async Task ExecuteAsync(TestConfig.DatabaseSettings settings, string sql)
-        {
-            var builder = new SqlConnectionStringBuilder
-            {
-                DataSource = settings.Server,
-                InitialCatalog = settings.Database,
-                UserID = settings.Username,
-                Password = settings.Password,
-                TrustServerCertificate = true,
-            };
-            await using var connection = new SqlConnection(builder.ConnectionString);
-            await connection.OpenAsync(Ct);
-            await using var command = new SqlCommand(sql, connection);
-            await command.ExecuteNonQueryAsync(Ct);
         }
     }
 }

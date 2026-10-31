@@ -94,6 +94,20 @@ namespace TFM.Nucleus.Data.SQL
             physicalIndexName = null;
             return false;
         }
+
+        // 334: SQL Server refuses an OUTPUT clause without INTO on a table with an enabled
+        // trigger. Nucleus writes one for every column marked ReturnOutputToProperty.
+        protected override Exception? TranslateEngineFailure(string message, Exception exception)
+        {
+            for (var e = exception; e != null; e = e.InnerException)
+                if (e is SqlException { Number: 334 } sql)
+                    return new SqlDataProviderException(
+                        $"{message} The write reads a [DatabaseColumn(ReturnOutputToProperty = true)] value back with an OUTPUT " +
+                        $"clause, which SQL Server refuses on a table with an enabled trigger. Disable the trigger, or remove " +
+                        $"ReturnOutputToProperty from the entity's columns. {sql.Message}",
+                        SqlDataProviderExceptionType.Error, exception);
+            return null;
+        }
     }
 
     public class SqlDataProviderException : DataProviderException
@@ -107,6 +121,9 @@ namespace TFM.Nucleus.Data.SQL
         {
         }
         internal SqlDataProviderException(string message, SqlDataProviderExceptionType type) : base(message, (DataProviderErrorKind)type)
+        {
+        }
+        internal SqlDataProviderException(string message, SqlDataProviderExceptionType type, Exception innerException) : base(message, (DataProviderErrorKind)type, innerException)
         {
         }
 

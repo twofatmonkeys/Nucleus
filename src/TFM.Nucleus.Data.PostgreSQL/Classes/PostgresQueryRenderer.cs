@@ -124,10 +124,10 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public string Insert(InsertQuery q)
         {
-            RefuseOutputParameters(q);
             var sb = new StringBuilder($"INSERT INTO {TableOf(q)} ");
             sb.Append($"({string.Join(", ", q.SetParameters.Select(p => Quote(p!.Name!)))})");
             sb.Append($" VALUES ({string.Join(", ", q.SetParameters.Select(p => SetValue(p!)))})");
+            sb.Append(ReturningClause(q));
             foreach (var l in q.LinkedQueries)
                 sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
@@ -135,23 +135,24 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public string Update(UpdateQuery q)
         {
-            RefuseOutputParameters(q);
             var sb = new StringBuilder($"UPDATE {TableOf(q)} SET ");
             sb.Append(string.Join(", ", q.SetParameters.Select(p => SetCondition(p!))));
             if (!q.Where.IsEmpty)
                 sb.Append($" WHERE {Condition(q)}");
+            sb.Append(ReturningClause(q));
             foreach (var l in q.LinkedQueries)
                 sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
         }
 
-        // Nothing in Nucleus builds an output parameter; render one and the write would silently
-        // skip the read-back, so refuse it instead.
-        private static void RefuseOutputParameters(Query q)
-        {
-            if (q.SetParameters.HasOutputParameters)
-                throw new NotSupportedException("The PostgreSQL provider does not read written values back.");
-        }
+        /// <summary>
+        /// Returns the stored value of each output term, aliased by the term's variable so the
+        /// context can hand it back. Empty when the write has no output terms.
+        /// </summary>
+        private static string ReturningClause(Query q) =>
+            q.SetParameters.HasOutputParameters
+                ? " RETURNING " + string.Join(", ", q.SetParameters.OutputParameters.Select(o => $"{Quote(o.Name!)} AS {Quote(o.Variable!)}"))
+                : "";
 
         // ---- Delete
 

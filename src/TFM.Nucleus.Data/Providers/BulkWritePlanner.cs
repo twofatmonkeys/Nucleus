@@ -16,6 +16,19 @@ namespace TFM.Nucleus.Data.Providers
     }
 
     /// <summary>
+    /// What a bulk write reads back: the identity column, the output columns in the order the
+    /// statement returns them after the identity, and each written row's output terms by its
+    /// identity and column.
+    /// </summary>
+    public sealed record BulkOutputs(string IdentityColumn, IReadOnlyList<string> Columns, IReadOnlyDictionary<Guid, Dictionary<string, OutputParameter>> ByIdentity)
+    {
+        /// <summary>A write that reads nothing back.</summary>
+        public static readonly BulkOutputs None = new("", [], new Dictionary<Guid, Dictionary<string, OutputParameter>>());
+
+        public bool IsEmpty => Columns.Count == 0;
+    }
+
+    /// <summary>
     /// The engine-neutral half of a bulk insert or update: which tables, which columns, and the
     /// staged rows. An insert batch is grouped by the columns each row sets, so a column a row
     /// leaves unset keeps its database default rather than becoming null. An update batch is
@@ -124,6 +137,35 @@ namespace TFM.Nucleus.Data.Providers
                 }
             }
             return (dataColumns, serverFunctionColumns);
+        }
+
+        /// <summary>
+        /// The output terms of the queries, keyed by the identity of the row each writes: an
+        /// insert carries its identity as a SET term, an update as its WHERE term.
+        /// </summary>
+        public static BulkOutputs ScanOutputs(IEnumerable<Query> queries, TableSchema schema)
+        {
+            var identity = schema.IdentityColumn.ColumnName;
+            List<string> columns = [];
+            Dictionary<Guid, Dictionary<string, OutputParameter>> byIdentity = [];
+            foreach (var q in queries)
+            {
+                var outputs = q.SetParameters.OfType<OutputParameter>().ToList();
+                if (outputs.Count == 0)
+                    continue;
+                var id = q.SetParameters.Concat(q.Where.AllParameters())
+                    .FirstOrDefault(p => p != null && string.Equals(p.Name, identity, StringComparison.OrdinalIgnoreCase))?.Value as Guid?
+                    ?? throw new InvalidOperationException($"A bulk write to '{schema.TableName}' has a row without its {identity}, so its output cannot be read back.");
+                var row = new Dictionary<string, OutputParameter>(StringComparer.OrdinalIgnoreCase);
+                foreach (var output in outputs)
+                {
+                    row[output.Name!] = output;
+                    if (!columns.Contains(output.Name!, StringComparer.OrdinalIgnoreCase))
+                        columns.Add(output.Name!);
+                }
+                byIdentity[id] = row;
+            }
+            return new BulkOutputs(identity, columns, byIdentity);
         }
 
         /// <summary>The WHERE columns of the queries (the identity column of an update), in first-seen order.</summary>

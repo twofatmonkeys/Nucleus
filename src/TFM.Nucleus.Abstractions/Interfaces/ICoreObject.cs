@@ -24,6 +24,12 @@ namespace TFM.Nucleus
         public T? GetPropertyValue<T>(string propertyName);
         public object? GetPropertyValue(string propertyName);
         public void BindValue(string property, object? value);
+
+        /// <summary>
+        /// Takes the value the server stored for a property during a write, such as a value it
+        /// computed. It replaces any value the entity holds or has pending for the property.
+        /// </summary>
+        public void AcceptServerValue(string property, object? value) => BindValue(property, value);
         public IObjectSchema ObjectSchema { get; }
         //protected ISqlSchema SqlSchema { get; }
         public IEnumerable<INucleusChildCollection> NucleusChildCollections { get; }

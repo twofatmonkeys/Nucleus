@@ -100,6 +100,33 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>Copies the current row into <paramref name="row"/>, in <paramref name="schema"/>'s column order.</summary>
         protected virtual void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema) => reader.GetValues(row!);
 
+        /// <summary>
+        /// A value a write returned for <paramref name="column"/>, as the column's property expects
+        /// it, as <see cref="ReadRow"/> converts a loaded value. The default keeps it as read.
+        /// </summary>
+        protected virtual object? ReadOutputValue(object? value, IDataColumnSchema? column) => value;
+
+        /// <summary>Hands a value the server returned to its output term, converted for the property.</summary>
+        protected void ReceiveOutput(OutputParameter output, object? value) =>
+            output.SetReceivedOutput(ReadOutputValue(value is DBNull ? null : value, output.ColumnSchema));
+
+        /// <summary>
+        /// Reads what a bulk statement returned for its output columns: one row per written row,
+        /// the identity first, then <see cref="BulkOutputs.Columns"/> in order. Each value goes to
+        /// the output term of the row with that identity.
+        /// </summary>
+        protected async Task ReceiveBulkOutputsAsync(DbDataReader reader, BulkOutputs outputs, CancellationToken token)
+        {
+            while (await reader.ReadAsync(token))
+            {
+                if (!outputs.ByIdentity.TryGetValue(reader.GetGuid(0), out var row))
+                    continue;
+                for (var i = 1; i < reader.FieldCount; i++)
+                    if (row.TryGetValue(outputs.Columns[i - 1], out var output))
+                        ReceiveOutput(output, reader.GetValue(i));
+            }
+        }
+
         /// <summary>True when the provider can write this table's oversized batch with its bulk engine.</summary>
         protected virtual bool CanUseBulkPath(Query query) => false;
 
@@ -686,7 +713,7 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 foreach (var qry in query.Split(Options.MaxParametersPerQuery))
-                    Prepare(qry.ToString()!, qry.AllQueryParameters).ExecuteNonQuery();
+                    ExecuteWriteAsync(qry, async: false, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
@@ -736,7 +763,7 @@ namespace TFM.Nucleus.Data.Providers
                         var timer = Stopwatch.StartNew();
                         var executionId = Guid.NewGuid();
                         Debug.WriteLine($"{DateTime.Now} Starting SQL execution {executionId} on context:{ContextId}");
-                        await Prepare(queriesByType.ToString()!, queriesByType.AllQueryParameters).ExecuteNonQueryAsync(token);
+                        await ExecuteWriteAsync(queriesByType, async: true, token);
                         Debug.WriteLine($"{DateTime.Now} Finished SQL execution {executionId} in {timer.ElapsedMilliseconds} ms");
                     }
                 }
@@ -745,6 +772,35 @@ namespace TFM.Nucleus.Data.Providers
             {
                 throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex);
             }
+        }
+
+        /// <summary>
+        /// Runs one write command. A write with output terms runs as a reader, and each column it
+        /// returns is matched by its alias to a term's variable; any other write runs without one.
+        /// </summary>
+        private async ValueTask ExecuteWriteAsync(IQuery query, bool async, CancellationToken token)
+        {
+            var command = Prepare(query.ToString()!, query.AllQueryParameters);
+            var outputs = query is Query q
+                ? q.AllQueryOutputParameters.ToDictionary(o => o.Variable!, StringComparer.OrdinalIgnoreCase)
+                : [];
+            if (outputs.Count == 0)
+            {
+                if (async)
+                    await command.ExecuteNonQueryAsync(token);
+                else
+                    command.ExecuteNonQuery();
+                return;
+            }
+            await using var reader = async ? await command.ExecuteReaderAsync(token) : command.ExecuteReader();
+            do
+            {
+                while (async ? await reader.ReadAsync(token) : reader.Read())
+                    for (var i = 0; i < reader.FieldCount; i++)
+                        if (outputs.TryGetValue(reader.GetName(i), out var output))
+                            ReceiveOutput(output, reader.GetValue(i));
+            }
+            while (async ? await reader.NextResultAsync(token) : reader.NextResult());
         }
 
         /// <summary>Runs one provider-written statement, such as schema DDL, on this context.</summary>

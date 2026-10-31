@@ -79,6 +79,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
             }
         }
 
+        protected override object? ReadOutputValue(object? value, IDataColumnSchema? column) =>
+            column == null ? value : PostgresTypes.FromDb(value, column.DataType);
+
         protected override bool CanUseBulkPath(Query query) => BulkWritePlanner.CanUseBulkPath(query);
 
         protected override string DescribeConnection() =>

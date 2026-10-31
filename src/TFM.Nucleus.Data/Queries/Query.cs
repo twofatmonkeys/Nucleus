@@ -47,6 +47,38 @@ namespace TFM.Nucleus.Data.Queries
                 throw new InvalidQueryException("Child query must be of type Query");
             _linkedQueries.Add(q);
         }
+
+        /// <summary>
+        /// Whether a write reads the server's Timestamp back into the entity. Off: the entity
+        /// keeps the client clock, set when its changes are committed. A process-wide switch the
+        /// save benchmarks compare.
+        /// </summary>
+        internal static bool ReadBackTimestamp { get; set; }
+
+        /// <summary>
+        /// The SET terms that write <paramref name="obj"/>: each changed property as its value,
+        /// then each column [DatabaseColumn(SetValueOverride)] has the server compute, as that
+        /// server function, whatever the client set. A column marked ReturnOutputToProperty
+        /// becomes an <see cref="OutputParameter"/>, so the write reads the stored value back
+        /// into the entity.
+        /// </summary>
+        protected void AddWriteTerms(IDataTableSchema tableSchema, ICoreObject obj)
+        {
+            foreach (var prop in obj.ChangedProperties)
+                if (tableSchema.FindByPropertyName(prop.Key) is { } column && !column.PropertySchema.IsOverridden)
+                    SetParameters.Add(WriteTerm(column, prop.Value, obj));
+            foreach (var column in tableSchema.Columns.Where(c => c.PropertySchema.IsOverridden))
+                SetParameters.Add(WriteTerm(column, ServerFunction.Get(column.PropertySchema.DatabaseColumnAttribute!.SetValueOverride), obj));
+        }
+
+        private static Parameter WriteTerm(IDataColumnSchema column, object? value, ICoreObject obj) =>
+            ReadsBack(column)
+                ? new OutputParameter(column, value, (_, args) => obj.AcceptServerValue(column.PropertySchema.Name, args.Value))
+                : new Parameter(column, value);
+
+        private static bool ReadsBack(IDataColumnSchema column) =>
+            column.PropertySchema.DatabaseColumnAttribute?.ReturnOutputToProperty == true &&
+            (ReadBackTimestamp || column.ColumnName != Schema.TableSchema.TimestampColumn);
         public IEnumerable<IDataTableSchema> DistinctTableSchemas()
         {
             var schemas = new HashSet<IDataTableSchema>();

@@ -62,6 +62,10 @@ namespace TFM.Nucleus.Data
             _variable = NextVariableName();
             Operator = Operator.Equals;
         }
+        protected internal Parameter(IDataColumnSchema colSchema, object? value, bool isOutputParameter) : this(colSchema, value)
+        {
+            IsOutputParameter = isOutputParameter;
+        }
         public Parameter(string name, object? value) : this(name, value, true, Operator.Equals)
         {
         }

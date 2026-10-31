@@ -315,8 +315,8 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `IndexDescending` | `false` | Sorts that index descending. Replaces `IndexSortDESC`. |
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
-| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp, instead of sending the client value. |
-| `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
+| `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 **Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and rebuilds the table, copying only the columns whose names the old and new tables share, so **the values in the old column are lost**. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
@@ -543,6 +543,10 @@ These came in with the fixes for the SQL Server review findings.
   starting `50` on both providers, because `%`, `_` and (on SQL Server) `[` in the value acted as
   wildcards. A pattern predicate's value is now bound with those characters escaped, so it matches
   only `50%...`.
+- **`SetValueOverride` and `ReturnOutputToProperty` work on every column.** Only the built-in
+  `Timestamp` was ever computed by the server; on any other column `SetValueOverride` was ignored
+  and the client value written, and nothing was read back. Both now apply to every column on both
+  providers.
 
 These came in with the shared provider layer.
 

@@ -53,9 +53,10 @@ namespace TFM.Nucleus.Data.PostgreSQL
                     var targets = dataColumns.Select(c => Quote(c.Name)).Concat(serverFunctionColumns.Keys.Select(Quote));
                     var values = dataColumns.Select(c => $"s.{Quote(c.Name)}")
                         .Concat(serverFunctionColumns.Values.Select(PostgresQueryRenderer.SetValue));
+                    var outputs = BulkWritePlanner.ScanOutputs(group, write.Schema);
                     await ExecuteBulkStatementAsync(
                         $"INSERT INTO {Table(_pgProvider.SchemaName, write.TableName)} ({string.Join(", ", targets)}) " +
-                        $"SELECT {string.Join(", ", values)} FROM {Quote(staging)} AS s", token);
+                        $"SELECT {string.Join(", ", values)} FROM {Quote(staging)} AS s{ReturningClause(outputs, "")}", outputs, token);
                 }
                 finally
                 {
@@ -84,9 +85,10 @@ namespace TFM.Nucleus.Data.PostgreSQL
                         $"{Quote(c.Name)} = CASE WHEN (get_byte(s.{Quote(ChangedColumn)}, {i / 8}) & {1 << (i % 8)}) > 0 THEN s.{Quote(c.Name)} ELSE t.{Quote(c.Name)} END")
                     .Concat(serverFunctionColumns.Select(kvp => $"{Quote(kvp.Key)} = {PostgresQueryRenderer.SetValue(kvp.Value)}"));
                 var joins = whereColumns.Select(c => $"t.{Quote(c.Name)} = s.{Quote(BulkWritePlanner.WhereColumnAlias(c.Name))}");
+                var outputs = BulkWritePlanner.ScanOutputs(write.Queries, write.Schema);
                 await ExecuteBulkStatementAsync(
                     $"UPDATE {Table(_pgProvider.SchemaName, write.TableName)} AS t SET {string.Join(", ", sets)} " +
-                    $"FROM {Quote(staging)} AS s WHERE {string.Join(" AND ", joins)}", token);
+                    $"FROM {Quote(staging)} AS s WHERE {string.Join(" AND ", joins)}{ReturningClause(outputs, "t.")}", outputs, token);
             }
             finally
             {
@@ -134,14 +136,30 @@ namespace TFM.Nucleus.Data.PostgreSQL
             await importer.CompleteAsync(token);
         }
 
-        private async Task ExecuteBulkStatementAsync(string commandText, CancellationToken token)
+        private Task ExecuteBulkStatementAsync(string commandText, CancellationToken token) =>
+            ExecuteBulkStatementAsync(commandText, BulkOutputs.None, token);
+
+        /// <summary>Runs one bulk statement, reading back what it returns when the write has outputs.</summary>
+        private async Task ExecuteBulkStatementAsync(string commandText, BulkOutputs outputs, CancellationToken token)
         {
             var command = Command ?? throw new DataContextException("No active Command", DataContextErrorKind.CurrentCommandIsNull);
             command.Parameters.Clear();
             command.CommandTimeout = Config.BulkCopyTimeoutSeconds;
             command.CommandText = commandText;
-            await command.ExecuteNonQueryAsync(token);
+            if (outputs.IsEmpty)
+            {
+                await command.ExecuteNonQueryAsync(token);
+                return;
+            }
+            await using var reader = await command.ExecuteReaderAsync(token);
+            await ReceiveBulkOutputsAsync(reader, outputs, token);
         }
+
+        /// <summary>Returns the identity and each output column of every row the statement writes.</summary>
+        private static string ReturningClause(BulkOutputs outputs, string tableAlias) =>
+            outputs.IsEmpty
+                ? ""
+                : $" RETURNING {string.Join(", ", outputs.Columns.Prepend(outputs.IdentityColumn).Select(c => $"{tableAlias}{Quote(c)}"))}";
 
         private async Task TryDropStagingTableAsync(string staging)
         {

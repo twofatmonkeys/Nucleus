@@ -211,11 +211,19 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         public Exception TranslateFailure(string message, Exception exception)
         {
+            if (TranslateEngineFailure(message, exception) is { } translated)
+                return translated;
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
                 return new Exception(message, exception);
             var (entityType, propertyName, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
             return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, propertyName, columnName, exception);
         }
+
+        /// <summary>
+        /// A failure the engine reports that needs explaining in Nucleus's terms, wrapped with
+        /// the explanation; null for any other. The default explains nothing.
+        /// </summary>
+        protected virtual Exception? TranslateEngineFailure(string message, Exception exception) => null;
 
         private (Type? EntityType, string? PropertyName, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
         {
@@ -300,6 +308,11 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         public DataProviderException(string? message, DataProviderErrorKind kind) : base(message)
+        {
+            Kind = kind;
+        }
+
+        public DataProviderException(string? message, DataProviderErrorKind kind, Exception? innerException) : base(message, innerException)
         {
             Kind = kind;
         }

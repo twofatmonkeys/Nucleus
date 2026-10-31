@@ -60,6 +60,51 @@ namespace TFM.Nucleus.IntegrationTests
         public int Count { get => GetValue<int>(); set => SetValue(value); }
     }
 
+    /// <summary>A column the server stamps on every write and the entity reads back, with a child collection.</summary>
+    [Deletable]
+    public class IntStampedItem : CoreObject<IntStampedItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+
+        public NucleusChildCollection<IntStampedLine, IntStampedItem> Lines => GetChildCollection<IntStampedLine, IntStampedItem>();
+    }
+
+    [Deletable]
+    public class IntStampedLine : CoreChildObject<IntStampedLine, IntStampedItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
+    /// <summary>A stamped row without children, for the split and bulk write paths.</summary>
+    [Deletable]
+    public class IntStampedRow : CoreObject<IntStampedRow>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
+    /// <summary>A stamped row in a table of its own, which a test puts a trigger on.</summary>
+    [Deletable]
+    public class IntTriggeredRow : CoreObject<IntTriggeredRow>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
     /// <summary>The save benchmarks' rows, in a table of their own.</summary>
     [Deletable]
     public class IntBenchWidget : CoreObject<IntBenchWidget>

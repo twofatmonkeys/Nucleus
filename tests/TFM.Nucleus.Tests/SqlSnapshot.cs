@@ -31,9 +31,11 @@ namespace TFM.Nucleus.Tests
             return WhitespaceRegex().Replace(replaced, " ").Trim();
         }
 
-        // Only the generated p{n} variables are renumbered; named variables such as @sql or
-        // @tempTableName in the schema scripts are part of the text and stay as written.
-        [GeneratedRegex(@"(?<!@)@p\d+(?!\d)")]
+        // Only the generated p{n} variables are renumbered: as a parameter (@p12) or as the
+        // alias an output column is returned under ([p12] on SQL Server, "p12" on PostgreSQL).
+        // Named variables such as @sql or @tempTableName in the schema scripts are part of the
+        // text and stay as written.
+        [GeneratedRegex(@"(?<=(?<!@)@|\[|"")p\d+(?!\d)")]
         private static partial Regex GeneratedVariableRegex();
 
         /// <summary>
@@ -48,7 +50,7 @@ namespace TFM.Nucleus.Tests
             {
                 if (!map.TryGetValue(m.Value, out var name))
                 {
-                    name = $"@p{map.Count}";
+                    name = $"p{map.Count}";
                     map[m.Value] = name;
                 }
                 return name;

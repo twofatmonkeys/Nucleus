@@ -371,11 +371,22 @@ namespace TFM.Nucleus
         OnOutputParameterReceived(sender, args);
         protected internal void OnOutputParameterReceived(object? sender, IOutputReceivedEventArgs args)
         {
-            _properties[args.PropertyName!] = args.Value!;
+            AcceptServerValue(args.PropertyName!, args.Value);
             if (sender is not null and IQueryOutputParameter)
             {
                 ((IQueryOutputParameter)sender).OutputReceived -= OnOutputParameterReceived;
             }
+        }
+
+        /// <summary>
+        /// Takes the value the server stored for a property during a write. It is coerced as a
+        /// loaded value is, becomes the committed value, and drops any pending client value, so
+        /// committing the object's changes after the write keeps it.
+        /// </summary>
+        public void AcceptServerValue(string property, object? value)
+        {
+            _newProperties.Remove(property);
+            _properties[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
         }
 
 
