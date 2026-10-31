@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TFM.Nucleus;
+using TFM.Nucleus.Data.Schema;
 using TFM.Nucleus.Data.SQL;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -58,7 +59,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 sp.GetRequiredService<IOptionsMonitor<NucleusOptions>>(),
                 new NamedOptionsMonitor<SQLConfiguration>(sp.GetRequiredService<IOptionsMonitor<SQLConfiguration>>(), optionsName),
                 sp.GetService<ILogger<SQLDataProvider>>(),
-                sp.GetService<ILogger<SqlDataSchema>>())
+                sp.GetService<ILogger<SchemaManager>>())
             {
                 RootType = rootType,
             });

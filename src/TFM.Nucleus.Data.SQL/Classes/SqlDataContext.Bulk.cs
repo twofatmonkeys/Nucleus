@@ -7,7 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using static TFM.Nucleus.Data.SQL.SqlColumnSchema;
+using TFM.Nucleus.Data.Schema;
 
 using TFM.Nucleus.Data.Queries;
 
@@ -38,7 +38,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             return query.CountLinkedQueries() > 0
                 && (query.Type == QueryType.INSERT || query.Type == QueryType.UPDATE)
-                && query.TableSchema is SqlTableSchema;
+                && query.TableSchema is TableSchema;
         }
 
         /// <summary>
@@ -65,11 +65,11 @@ namespace TFM.Nucleus.Data.SQL
             allQueries.AddRange(rootQuery.LinkedQueries);
 
             // Safety: all queries must have schema for the bulk path
-            var queriesWithoutSchema = allQueries.Count(q => q.TableSchema is not SqlTableSchema || q.TableName == null);
+            var queriesWithoutSchema = allQueries.Count(q => q.TableSchema is not TableSchema || q.TableName == null);
             if (queriesWithoutSchema > 0)
                 throw new InvalidOperationException(
                     $"{queriesWithoutSchema} of {allQueries.Count} queries are missing TableSchema or TableName. " +
-                    $"All queries in a bulk batch must have SqlTableSchema set.");
+                    $"All queries in a bulk batch must have a TableSchema set.");
 
             var tableGroups = allQueries
                 .GroupBy(q => q.TableName!, StringComparer.OrdinalIgnoreCase);
@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Data.SQL
             foreach (var tableGroup in tableGroups)
             {
                 var queries = tableGroup.ToList();
-                var schema = (SqlTableSchema)queries[0].TableSchema!;
+                var schema = (TableSchema)queries[0].TableSchema!;
                 var tableName = tableGroup.Key;
                 var isUpdate = queries[0].Type == QueryType.UPDATE;
                 var groupId = Guid.NewGuid();
@@ -115,7 +115,7 @@ namespace TFM.Nucleus.Data.SQL
         #region Bulk INSERT
 
         private async Task ExecuteBulkInsertAsync(
-            List<Query> allQueries, SqlTableSchema schema,
+            List<Query> allQueries, TableSchema schema,
             string tableName, Guid executionId, CancellationToken token)
         {
             var groups = GroupByColumnSignature(allQueries);
@@ -255,7 +255,7 @@ namespace TFM.Nucleus.Data.SQL
         #region Bulk UPDATE
 
         private async Task ExecuteBulkUpdateAsync(
-            List<Query> allQueries, SqlTableSchema schema,
+            List<Query> allQueries, TableSchema schema,
             string tableName, Guid executionId, CancellationToken token)
         {
             var dataColumns = new List<BulkColumn>();
@@ -414,10 +414,10 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>
         /// Scans queries for the union of SET columns, split into data columns
-        /// and server function columns. Uses SqlColumnSchema for exact SQL type mapping.
+        /// and server function columns. Uses the column schema for exact SQL type mapping.
         /// </summary>
         private static void ScanSetColumns(
-            List<Query> queries, SqlTableSchema schema,
+            List<Query> queries, TableSchema schema,
             List<BulkColumn> dataColumns,
             Dictionary<string, string> serverFunctionColumns)
         {
@@ -453,7 +453,7 @@ namespace TFM.Nucleus.Data.SQL
         /// Scans queries for WHERE columns (typically the identity column for UPDATE).
         /// </summary>
         private static void ScanWhereColumns(
-            List<Query> queries, SqlTableSchema schema,
+            List<Query> queries, TableSchema schema,
             List<BulkColumn> whereColumns)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -616,30 +616,14 @@ namespace TFM.Nucleus.Data.SQL
 
         private static string WhereColumnAlias(string columnName) => $"_w_{columnName}";
 
-        /// <summary>
-        /// SQL type definition from schema. Mirrors SqlColumnSchema.MSSQLConstructor()
-        /// but omits FILESTREAM (invalid on temp tables) and trailing comma.
-        /// </summary>
-        private static string BuildTempTableTypeDef(SqlColumnSchema col)
-        {
-            var sb = new StringBuilder();
-            sb.Append(col.DataType);
-
-            if (col.DataType is ESqlDataType.Decimal or ESqlDataType.Numeric)
-                sb.Append($"({col.Precision},{col.Scale})");
-            else if (!string.IsNullOrEmpty(col.SqlDataSize))
-                sb.Append($"({col.SqlDataSize})");
-
-            sb.Append(" NULL");
-            return sb.ToString();
-        }
+        private static string BuildTempTableTypeDef(ColumnSchema col) => SqlServerTypeMapper.TempTableTypeDef(col);
 
         /// <summary>
         /// CLR type for DataTable columns. Uses PropertySchema.Type directly,
         /// with overrides for types that SQL maps differently to their CLR representation
         /// (enums → int, ICoreObject → Guid, IDatabaseStringValue → string).
         /// </summary>
-        private static Type GetClrTypeForBulkColumn(SqlColumnSchema col)
+        private static Type GetClrTypeForBulkColumn(ColumnSchema col)
         {
             var type = col.PropertySchema.Type;
 

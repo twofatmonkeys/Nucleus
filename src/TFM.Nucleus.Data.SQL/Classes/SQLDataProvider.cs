@@ -15,6 +15,7 @@ using System.Threading.Tasks;
 using System.Xml.Schema;
 
 using TFM.Nucleus.Data.Queries;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data.SQL
 {
@@ -22,21 +23,24 @@ namespace TFM.Nucleus.Data.SQL
         IObjectSchemaProvider objectSchemaProvider, 
         IOptionsMonitor<NucleusOptions> nucleusOptions, 
         IOptionsMonitor<SQLConfiguration> sqlConfig, 
-        ILogger<SQLDataProvider>? logger, ILogger<SqlDataSchema>? schemaLogger) : IDataProvider
+        ILogger<SQLDataProvider>? logger, ILogger<SchemaManager>? schemaLogger) : IDataProvider
     {
         private readonly ILogger? _logger = logger;
         private IObjectSchemaProvider _objectSchemaProvider = objectSchemaProvider;
         private readonly IOptionsMonitor<NucleusOptions> _nucleusOptions = nucleusOptions;
         private readonly IOptionsMonitor<SQLConfiguration> _sqlConfig = sqlConfig;
-        private SqlDataSchema? _sqlDataSchema;
+        private SchemaManager? _sqlDataSchema;
         //private DataProviderStatus? _status;
 
         protected internal SQLConfiguration SqlConfig => _sqlConfig.CurrentValue;
         protected internal NucleusOptions NucleusOptions => _nucleusOptions.CurrentValue;
 
-        private SqlDataSchema SqlDataSchema { get => _sqlDataSchema ??= CreateSqlDataSchema(); }
+        internal SchemaManager SqlDataSchema { get => _sqlDataSchema ??= CreateSqlDataSchema(); }
 
-        private SqlDataSchema CreateSqlDataSchema() => new(this, _objectSchemaProvider, schemaLogger);
+        private SchemaManager CreateSqlDataSchema() => new(SchemaStore, _objectSchemaProvider, schemaLogger);
+
+        private SqlServerSchemaStore SchemaStore => _schemaStore ??= new SqlServerSchemaStore(this, schemaLogger);
+        private SqlServerSchemaStore? _schemaStore;
 
         public DataProviderStatus Status => SqlDataSchema.Status switch
         {
@@ -199,7 +203,7 @@ namespace TFM.Nucleus.Data.SQL
         }
 
         /// <summary>Deletes rows of one table by ID, cascading to child collection rows.</summary>
-        public DeleteWhereQuery? CreateDeleteByIdQuery(SqlTableSchema tableSchema, IEnumerable<Guid> ids) =>
+        public DeleteWhereQuery? CreateDeleteByIdQuery(TableSchema tableSchema, IEnumerable<Guid> ids) =>
             DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tableSchema, SqlDataSchema.GetTableSchema, ids);
 
         /// <summary>
@@ -231,12 +235,12 @@ namespace TFM.Nucleus.Data.SQL
         public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>
             SqlQuerySubscription<T>.CreateAsync(this, token);
 
-        public SqlTableSchema GetTableSchema(Type type)
+        public TableSchema GetTableSchema(Type type)
         {
             return SqlDataSchema.GetTableSchema(type) ?? throw new Exception($"Error retreiving Sql Table schema for type: {type.FullName}, not found.");
         }
 
-        public SqlTableSchema GetTableSchema<T>()
+        public TableSchema GetTableSchema<T>()
         {
             return SqlDataSchema.GetTableSchema<T>() ?? throw new Exception($"Error retreiving Sql Table schema for type: {typeof(T).FullName}, not found.");
         }
@@ -278,7 +282,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                return await SqlConfig.DatabaseExistsAsync()
+                return await SchemaStore.Catalog.DatabaseExistsAsync(true, CancellationToken.None)
                     ? DataProviderStatus.Ok
                     : DataProviderStatus.NotAvailable;
             }

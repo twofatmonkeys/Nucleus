@@ -159,13 +159,13 @@ namespace TFM.Nucleus.Tests
 
         // ---- Delete by predicate: the SQL ------------------------------------------------------
 
-        private static Func<Type, SqlTableSchema?> Tables(params Type[] types)
+        private static Func<Type, TableSchema?> Tables(params Type[] types)
         {
-            var tables = types.ToDictionary(t => t, t => new SqlTableSchema(ObjectSchema.Get(t), null!));
+            var tables = types.ToDictionary(t => t, t => new TableSchema(ObjectSchema.Get(t)));
             return t => tables.GetValueOrDefault(t);
         }
 
-        private static string DeleteWhereSql<T>(Expression<Func<T, bool>> predicate, Func<Type, SqlTableSchema?> tables)
+        private static string DeleteWhereSql<T>(Expression<Func<T, bool>> predicate, Func<Type, TableSchema?> tables)
         {
             var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(T))!, tables);
             ExpressionParser.ParseExpressionToQuery(query, predicate.Body);
@@ -282,7 +282,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_SoftDeletableType_FiltersDeletedRows()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!);
+            var schema = new TableSchema(ObjectSchema.Get<TestSoftWidget>());
             var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema);
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
@@ -293,7 +293,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_SoftDeletableType_IncludeDeletedSkipsFilter()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!);
+            var schema = new TableSchema(ObjectSchema.Get<TestSoftWidget>());
             var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema) { IncludeDeleted = true };
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
@@ -304,7 +304,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void HardDeletableType_SelectHasNoFilter()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestDeletableWidget>(), null!);
+            var schema = new TableSchema(ObjectSchema.Get<TestDeletableWidget>());
             var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema);
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());

@@ -8,9 +8,9 @@ namespace TFM.Nucleus.Tests
     {
         private static (SelectQuery Parent, SelectQuery Child) ParentWithChild(Action<SelectQuery>? configure = null)
         {
-            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, new SqlTableSchema(ObjectSchema.Get<TestDeletableWidget>(), null!));
+            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestDeletableWidget>()));
             configure?.Invoke(parent);
-            var child = new SelectQuery(SqlServerQueryRenderer.Instance, new SqlTableSchema(ObjectSchema.Get<TestDeletableChild>(), null!)) { ChildCollectionProperty = "Children" };
+            var child = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestDeletableChild>())) { ChildCollectionProperty = "Children" };
             parent.AddChildQuery(child, "Parent");
             return (parent, child);
         }
@@ -59,8 +59,8 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Child_OfSoftParentIncludingDeleted_IncludesDeletedChildren()
         {
-            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!)) { IncludeDeleted = true };
-            var child = new SelectQuery(SqlServerQueryRenderer.Instance, new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!));
+            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestSoftWidget>())) { IncludeDeleted = true };
+            var child = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestSoftWidget>()));
             parent.AddChildQuery(child, "Parent");
 
             Assert.DoesNotContain("[IsDeleted]", child.BuildQuery());

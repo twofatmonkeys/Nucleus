@@ -11,11 +11,11 @@ namespace TFM.Nucleus.Tests
     /// </summary>
     public static class SqlServerGoldenCorpus
     {
-        private static SqlTableSchema Table<T>() where T : ICoreObject => new(ObjectSchema.Get<T>(), null!);
+        private static TableSchema Table<T>() where T : ICoreObject => new(ObjectSchema.Get<T>());
 
-        private static SqlTableSchema Table(Type type) => new(ObjectSchema.Get(type), null!);
+        private static TableSchema Table(Type type) => new(ObjectSchema.Get(type));
 
-        private static Func<Type, SqlTableSchema?> Tables(params Type[] types)
+        private static Func<Type, TableSchema?> Tables(params Type[] types)
         {
             var tables = types.ToDictionary(t => t, Table);
             return t => tables.GetValueOrDefault(t);
@@ -49,7 +49,7 @@ namespace TFM.Nucleus.Tests
             return parent;
         }
 
-        private static string DeleteWhere<T>(Expression<Func<T, bool>> predicate, Func<Type, SqlTableSchema?> tables)
+        private static string DeleteWhere<T>(Expression<Func<T, bool>> predicate, Func<Type, TableSchema?> tables)
         {
             var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(T))!, tables);
             ExpressionParser.ParseExpressionToQuery(query, predicate.Body);
@@ -57,7 +57,7 @@ namespace TFM.Nucleus.Tests
         }
 
         private static string CreateTable(Type type) =>
-            string.Join("\n--\n", SqlDataSchema.CreateTableStatements(Table(type)));
+            string.Join("\n--\n", SqlServerSchemaDialect.CreateTableStatements(Table(type)));
 
         /// <summary>Every database-enabled entity of the four store packages.</summary>
         public static IEnumerable<Type> StoreEntityTypes() =>
@@ -215,20 +215,20 @@ namespace TFM.Nucleus.Tests
 
                 // ---- Schema scripts
                 ["ddl.rename"] = () => string.Join("\n--\n",
-                    SqlDataSchema.RenameTableSql("tbl_X", "tbl_X_20260101000000"),
-                    SqlDataSchema.RenameDefaultConstraintsSql("p1"),
-                    SqlDataSchema.RenameIndexesSql),
+                    SqlServerSchemaDialect.RenameTableSql("tbl_X", "tbl_X_20260101000000"),
+                    SqlServerSchemaDialect.RenameDefaultConstraintsSql("p1"),
+                    SqlServerSchemaDialect.RenameIndexesSql),
                 ["ddl.copy"] = () => string.Join("\n--\n",
-                    SqlDataSchema.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true),
-                    SqlDataSchema.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false)),
-                ["ddl.drop"] = () => SqlDataSchema.DropTableSql("tbl_X_20260101000000"),
-                ["ddl.backfill"] = () => SqlDataSchema.BackfillTimestampSql("tbl_X"),
-                ["ddl.dropindex"] = () => SqlDataSchema.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X"),
+                    SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true),
+                    SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false)),
+                ["ddl.drop"] = () => SqlServerSchemaDialect.DropTableSql("tbl_X_20260101000000"),
+                ["ddl.backfill"] = () => SqlServerSchemaDialect.BackfillTimestampSql("tbl_X"),
+                ["ddl.dropindex"] = () => SqlServerSchemaDialect.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X"),
                 ["ddl.fulltext"] = () => string.Join("\n--\n",
-                    SqlDataSchema.DropFullTextCatalogSql("ftc_tbl_X"),
-                    SqlDataSchema.DropFullTextIndexSql("tbl_X"),
-                    SqlDataSchema.CreateFullTextIndexSql("tbl_X"),
-                    SqlDataSchema.AddFullTextColumnSql("tbl_X", "Searchable")),
+                    SqlServerSchemaDialect.DropFullTextCatalogSql("ftc_tbl_X"),
+                    SqlServerSchemaDialect.DropFullTextIndexSql("tbl_X"),
+                    SqlServerSchemaDialect.CreateFullTextIndexSql("tbl_X"),
+                    SqlServerSchemaDialect.AddFullTextColumnSql("tbl_X", "Searchable")),
             };
 
             foreach (var type in new[] { typeof(TestWidget), typeof(TestUniqueWidget), typeof(TestSoftWidget), typeof(TestDeletableChild), typeof(TestAllTypesWidget), typeof(TestSoftParent), typeof(NullableWidget) }
