@@ -61,7 +61,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (column.IsEmpty)
                 return string.Empty;
-            return column.IsDescending ? $"{column.Column} DESC" : $"{column.Column} ASC";
+            return column.IsDescending ? $"[{column.Column}] DESC" : $"[{column.Column}] ASC";
         }
 
         /// <summary>The order of the root rows: the one asked for, or [ID] when the query needs one.</summary>
@@ -153,7 +153,7 @@ namespace TFM.Nucleus.Data.SQL
             {
                 var parent = q.ParentSelect
                     ?? throw new InvalidQueryException("A child collection query must hang off a select.");
-                var sb = new StringBuilder($"WHERE {q.LinkedColumn} IN (")
+                var sb = new StringBuilder($"WHERE [{q.LinkedColumn}] IN (")
                     .Append(ParentIdSelect(parent)).Append(')');
                 if (softDeleteFilter != null)
                     sb.Append($" AND {softDeleteFilter}");

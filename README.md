@@ -303,7 +303,7 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 
 | Field | Default | Meaning |
 |---|---|---|
-| `ColumnName` | property name | Physical column name. |
+| `ColumnName` | property name | Physical column name, used by every statement, index name and predicate. Set it as `[DatabaseColumn("code")]` or `[DatabaseColumn(ColumnName = "code")]`. See renaming below. |
 | `DataType` | `NotSpecified` | One of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
 | `DataLength` | inferred | Column length. `-1` maps to `max`. |
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
@@ -316,6 +316,8 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
 | `SetValueOverride` | `NULL` | Has the server compute the value on write, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp, instead of sending the client value. |
 | `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
+
+**Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and rebuilds the table, copying only the columns whose names the old and new tables share, so **the values in the old column are lost**. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
 Each property maps to a column type by its CLR type, or by `DataType` when one is given:
 
@@ -511,7 +513,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 
 ## Unique violations
 
-A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(columnName)` tests for one; all three are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType`, `PropertyName` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property and column whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(name)` tests for one by the property's name or the column's; all of them are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
 
 ```csharp
 catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
@@ -528,6 +530,10 @@ These came in with the fixes for the SQL Server review findings.
   `WITH(NOLOCK)` and read uncommitted rows unless the flag was set, which removed the hint. A
   select now reads committed data, as on PostgreSQL, so it can wait for a row another transaction
   is writing. Set `WithNoLock = true` on a query to read uncommitted rows.
+- **`ColumnName` names the column.** It used to reach predicates only, while the table, every
+  write and every read used the property name, so a property with a different `ColumnName` was
+  filtered on a column that did not exist. A loaded `DataSet` or `StreamingRow` labels its values
+  by property name, which differs from the column name only for such a property.
 
 These came in with the shared provider layer.
 

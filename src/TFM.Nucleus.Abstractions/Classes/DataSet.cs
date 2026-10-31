@@ -12,6 +12,12 @@ namespace TFM.Nucleus
 
         public readonly string Name;
         public readonly int ColumnCount;
+
+        /// <summary>
+        /// The name each value binds to on the entity. A data set read through a table schema is
+        /// labelled by property name, which is the column name unless [DatabaseColumn] names the
+        /// column otherwise.
+        /// </summary>
         public readonly string[] ColumnNames;
         public readonly IDataTableSchema? DataTableSchema = null;
 
@@ -86,7 +92,7 @@ namespace TFM.Nucleus
             if (dataTableSchema == null)
                 throw new ArgumentNullException(nameof(dataTableSchema), "DataTableSchema cannot be null in this constructor");
             Name = dataTableSchema!.TableName;
-            ColumnNames = [.. dataTableSchema!.Columns.Select(x => x.ColumnName)];
+            ColumnNames = [.. dataTableSchema!.Columns.Select(x => x.PropertySchema.Name)];
             ColumnCount = ColumnNames.Length;
             _primaryArray[0] = new object?[10000][];
             DataTableSchema = dataTableSchema;

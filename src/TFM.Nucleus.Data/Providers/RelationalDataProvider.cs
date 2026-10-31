@@ -213,11 +213,11 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
                 return new Exception(message, exception);
-            var (entityType, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
-            return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, columnName, exception);
+            var (entityType, propertyName, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
+            return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, propertyName, columnName, exception);
         }
 
-        private (Type? EntityType, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
+        private (Type? EntityType, string? PropertyName, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
         {
             if (physicalIndexName == null)
                 return default;
@@ -225,7 +225,7 @@ namespace TFM.Nucleus.Data.Providers
             foreach (var table in Schema.TableCache.Values)
                 foreach (var column in table.IndexedColumns.Where(c => c.Unique))
                     if (dialect.IdentifierComparer.Equals(SchemaComparer.PhysicalIndexName(table, column, dialect), physicalIndexName))
-                        return (table.ObjectSchema.Type, column.ColumnName, IndexNaming.ColumnIndexName(table, column));
+                        return (table.ObjectSchema.Type, column.PropertyName, column.ColumnName, IndexNaming.ColumnIndexName(table, column));
             return default;
         }
 

@@ -13,8 +13,16 @@ namespace TFM.Nucleus.Data.Schema
         /// <summary>Length meaning "no limit".</summary>
         public const int MaxLength = -1;
 
+        /// <summary>
+        /// The physical column: [DatabaseColumn]'s ColumnName, which defaults to the property's
+        /// name. Every statement names the column by it; values bind to the entity by
+        /// <see cref="PropertyName"/>.
+        /// </summary>
         public readonly string ColumnName;
         public readonly IPropertySchema PropertySchema;
+
+        /// <summary>The entity property the column stores.</summary>
+        public string PropertyName => PropertySchema.Name;
         public readonly ColumnTypeIntent Intent;
 
         /// <summary>The CLR type a value of this column is written as.</summary>
@@ -74,7 +82,7 @@ namespace TFM.Nucleus.Data.Schema
         {
             var attr = propertySchema.DatabaseColumnAttribute ?? throw new Exception("PropertySchema does not have a DatabaseColumnAttribute defined.");
             PropertySchema = propertySchema;
-            ColumnName = propertySchema.Name;
+            ColumnName = string.IsNullOrWhiteSpace(attr.ColumnName) ? propertySchema.Name : attr.ColumnName;
             Intent = IntentOf(propertySchema);
             DataLength = attr.DataLength ?? DefaultLength(Intent);
             Scale = attr.DecimalPlaces ?? DefaultScale(Intent);

@@ -60,7 +60,7 @@ namespace TFM.Nucleus.Data.Queries
                         var parentProperty = childObjSchema.ParentObjectProperty
                             ?? throw new InvalidQueryException(
                                 $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
-                        AddChildQuery(childQuery, parentProperty.Name);
+                        AddChildQuery(childQuery, childTableSchema.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name);
                     }
                 }
             }
@@ -128,8 +128,10 @@ namespace TFM.Nucleus.Data.Queries
         int ISelectQuery.Take { get => Take; set => Take = value; }
         public bool WithTotalCount { get; set; }
         public bool IncludeDeleted { get; set; }
+        /// <summary>Orders by a property, written as the column the property maps to.</summary>
         public void AddOrderBy(string propertyName, bool descending = false) =>
-            OrderBy.Add(new OrderBy(propertyName, descending ? OrderByType.DESCENDING : OrderByType.ASCENDING));
+            OrderBy.Add(new OrderBy(TableSchema?.FindByPropertyName(propertyName)?.ColumnName ?? propertyName,
+                descending ? OrderByType.DESCENDING : OrderByType.ASCENDING));
 
         public bool ExcludeChildCollection(string propertyName) =>
             LinkedQueries.RemoveAll(q => q.ChildCollectionProperty == propertyName) > 0;

@@ -572,7 +572,7 @@ namespace TFM.Nucleus.Data.Providers
             PrepareCommand(command);
             BindParameters(command, dbQuery.AllQueryParameters);
 
-            var row = new StreamingRow([.. dbQuery.TableSchema!.Columns.Select(x => x.ColumnName)]);
+            var row = new StreamingRow([.. dbQuery.TableSchema!.Columns.Select(x => x.PropertySchema.Name)]);
 
             DbDataReader? reader = null;
             try

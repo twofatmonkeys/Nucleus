@@ -42,7 +42,8 @@ namespace TFM.Nucleus.Data.Schema
                 }
                 foreach (var schemaColumn in table.Columns)
                 {
-                    var dbColumn = tableColumns.FirstOrDefault(c => comparer.Equals(c.Name, schemaColumn.ColumnName));
+                    var physicalColumn = dialect.PhysicalName(schemaColumn.ColumnName);
+                    var dbColumn = tableColumns.FirstOrDefault(c => comparer.Equals(c.Name, physicalColumn));
                     if (dbColumn == null)
                     {
                         schemaColumn.ExistsInDatabase = false;
@@ -83,7 +84,7 @@ namespace TFM.Nucleus.Data.Schema
                 var col = required.FirstOrDefault(c => comparer.Equals(PhysicalIndexName(table, c, dialect), group.Key));
                 // A Nucleus index always has exactly one key column. Anything else with our prefix
                 // is stale and gets rebuilt.
-                if (col == null || group.Count() != 1 || !ColumnIndexMatches(col, group.First(), comparer))
+                if (col == null || group.Count() != 1 || !ColumnIndexMatches(col, group.First(), dialect))
                     drop.Add(group.Key);
             }
             foreach (var col in required)
@@ -101,8 +102,8 @@ namespace TFM.Nucleus.Data.Schema
 
         // A unique index is filtered to non-null keys, so a matching unique index has a filter
         // and a plain one has none.
-        private static bool ColumnIndexMatches(ColumnSchema col, CatalogIndex existing, System.StringComparer comparer) =>
-            comparer.Equals(existing.ColumnName, col.ColumnName) &&
+        private static bool ColumnIndexMatches(ColumnSchema col, CatalogIndex existing, ISchemaDialect dialect) =>
+            dialect.IdentifierComparer.Equals(existing.ColumnName, dialect.PhysicalName(col.ColumnName)) &&
             existing.IsUnique == col.Unique &&
             existing.HasFilter == col.Unique &&
             existing.IsDescending == col.IndexSortDescending;

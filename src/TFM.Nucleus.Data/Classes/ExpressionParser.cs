@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -535,16 +536,18 @@ namespace TFM.Nucleus.Data
         private static Expression ValueSideOf(Expression left, Expression right, MemberExpression member) =>
             ReferenceEquals(StripConversions(left), member) ? right : left;
 
+        /// <summary>
+        /// The column a member maps to. The query's table knows it, inherited properties
+        /// included; a query without a table falls back to the member's own attribute.
+        /// </summary>
         private string GetMemberName(Expression expression)
         {
             if (StripConversions(expression) is MemberExpression member)
             {
-                if (Attribute.IsDefined(member.Member, typeof(DatabaseColumnAttribute)))
-                {
-                    var attr = (DatabaseColumnAttribute[])member.Member.GetCustomAttributes(typeof(DatabaseColumnAttribute), false);
-                    return attr.Length > 0 ? attr[0].ColumnName : member.Member.Name;
-                }
-                return member.Member.Name;
+                if (_query.DataTableSchema?.FindByPropertyName(member.Member.Name) is { } column)
+                    return column.ColumnName;
+                var attr = member.Member.GetCustomAttribute<DatabaseColumnAttribute>(inherit: true);
+                return string.IsNullOrWhiteSpace(attr?.ColumnName) ? member.Member.Name : attr.ColumnName;
             }
             throw new NotSupportedException($"Cannot extract member name from expression type {expression.GetType()}");
         }
