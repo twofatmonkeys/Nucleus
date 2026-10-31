@@ -23,9 +23,15 @@ namespace TFM.Nucleus.Data.SQL
 
         private const string TableNamesQuery = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'";
 
-        internal static string ColumnsQuery(string? tableName) => $@"
+        private const string ColumnsSql = @"
                     SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE
-                    FROM INFORMATION_SCHEMA.COLUMNS{(!string.IsNullOrEmpty(tableName) ? $" WHERE TABLE_NAME = '{tableName}'" : "")}";
+                    FROM INFORMATION_SCHEMA.COLUMNS";
+
+        /// <summary>The columns of every table, or of one table, its name bound as a parameter.</summary>
+        internal static SchemaStatement ColumnsQuery(string? tableName) =>
+            string.IsNullOrEmpty(tableName)
+                ? ColumnsSql
+                : new SchemaStatement($"{ColumnsSql} WHERE TABLE_NAME = @tableName", new ParameterCollection(new Parameter("tableName", tableName, false)));
 
         // Reads the key columns of every Nucleus-named nonclustered index (NCI_* and UQ_*). Only
         // those prefixes are returned so the schema compare and sync never see, drop or recreate
@@ -109,7 +115,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                return await ReadAll(ColumnsQuery(null), ReadColumn, async, cancellationToken);
+                return await ReadAll(ColumnsSql, ReadColumn, async, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -198,15 +204,15 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                var qry = $@"
-                SELECT COUNT(*)
-                FROM sys.fulltext_indexes fti
-                JOIN sys.tables t ON fti.object_id = t.object_id
-                WHERE t.name = '{tableName}'";
                 using var connection = Config.BuildNewSQLConnection(false);
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
-                command.CommandText = qry;
+                command.CommandText = @"
+                SELECT COUNT(*)
+                FROM sys.fulltext_indexes fti
+                JOIN sys.tables t ON fti.object_id = t.object_id
+                WHERE t.name = @tableName";
+                command.Parameters.AddWithValue("@tableName", tableName);
                 var count = (int)(async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar())!;
                 return count > 0;
             }
@@ -221,8 +227,9 @@ namespace TFM.Nucleus.Data.SQL
             TableName = reader.GetString(0),
             Name = reader.GetString(1),
             IsNullable = reader.GetString(2) == "YES",
-            // Parsed here so a type Nucleus does not know fails the read, as it always has.
-            TypeName = SqlServerTypeMapper.Parse(reader.GetString(3)).ToString(),
+            // Kept as the catalog spells it. A type Nucleus does not know only matters when a
+            // Nucleus column has it, which the comparison treats as a mismatch.
+            TypeName = reader.GetString(3),
             DataLength = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
             Precision = reader.IsDBNull(5) ? 0 : reader.GetByte(5),
             Scale = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),

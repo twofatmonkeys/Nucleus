@@ -601,11 +601,11 @@ namespace TFM.Nucleus.Data.Providers
         /// Runs a provider-written read, such as a catalog query, on this context. Null when it
         /// returns no rows.
         /// </summary>
-        protected internal async ValueTask<DbDataReader?> ReadStatementAsync(string commandText, bool async, CancellationToken token)
+        protected internal async ValueTask<DbDataReader?> ReadStatementAsync(SchemaStatement statement, bool async, CancellationToken token)
         {
             try
             {
-                var command = Prepare(commandText, null);
+                var command = Prepare(statement.Text, statement.Parameters);
                 var reader = async ? await command.ExecuteReaderAsync(CommandBehavior.Default, token) : command.ExecuteReader();
                 if (!reader.HasRows)
                 {
@@ -799,7 +799,7 @@ namespace TFM.Nucleus.Data.Providers
     /// disposed unless rolled back. Columns are read through the transaction, so a renamed table
     /// is visible before it commits.
     /// </summary>
-    public sealed class DbSchemaTransaction<TContext>(TContext context, Func<string, string> columnsQuery, Func<DbDataReader, CatalogColumn> readColumn)
+    public sealed class DbSchemaTransaction<TContext>(TContext context, Func<string, SchemaStatement> columnsQuery, Func<DbDataReader, CatalogColumn> readColumn)
         : ISchemaTransaction where TContext : DbDataContext<TContext>
     {
         public ValueTask ExecuteAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken) =>
