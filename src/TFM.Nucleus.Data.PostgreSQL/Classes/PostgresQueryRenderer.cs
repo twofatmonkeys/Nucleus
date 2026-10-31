@@ -118,7 +118,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
             return conditions.Count == 0 ? null : "WHERE " + string.Join(" AND ", conditions);
         }
 
-        private string Condition(Query q) => WhereRenderer.Render(q.Where, new ConditionWriter(q.TableSchema));
+        private static string Condition(Query q) => WhereRenderer.Render(q.Where, ConditionWriter.Instance);
 
         // ---- Insert and update
 
@@ -193,10 +193,12 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         // ---- Terms
 
-        /// <summary>Writes the terms of one query, which can see that query's columns.</summary>
-        private sealed class ConditionWriter(IDataTableSchema? table) : IConditionWriter
+        /// <summary>Writes the terms of a condition.</summary>
+        private sealed class ConditionWriter : IConditionWriter
         {
-            public string Term(Parameter term) => WhereCondition(term, table);
+            public static readonly ConditionWriter Instance = new();
+
+            public string Term(Parameter term) => WhereCondition(term);
             public string And => " AND ";
             public string Or => " OR ";
             public string Group(string condition) => $"({condition})";
@@ -208,15 +210,14 @@ namespace TFM.Nucleus.Data.PostgreSQL
         // a backslash in the value is a backslash rather than an escape.
         private static string Pattern(string column, string op, string pattern) => $"{column} {op} {pattern} ESCAPE ''";
 
-        internal static string WhereCondition(Parameter p, IDataTableSchema? table)
+        internal static string WhereCondition(Parameter p)
         {
             var column = Quote(p.Name!);
             switch (p.Operator)
             {
+                // A full-text search: the parser only produces it for a FullTextSearch column.
                 case Operator.Contains:
-                    return IsFullTextSearch(table, p.Name!)
-                        ? $"to_tsvector('{FullTextConfiguration}', {column}) @@ plainto_tsquery('{FullTextConfiguration}', {Variable(p)})"
-                        : Pattern(column, "ILIKE", $"'%' || {Variable(p)} || '%'");
+                    return $"to_tsvector('{FullTextConfiguration}', {column}) @@ plainto_tsquery('{FullTextConfiguration}', {Variable(p)})";
                 case Operator.ContainsCaseSensitive:
                 case Operator.LikeCaseSensitive:
                     return Pattern(column, "LIKE", $"'%' || {Variable(p)} || '%'");
@@ -252,10 +253,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
             };
             return $"{column} {op} {RightOperand(p)}";
         }
-
-        /// <summary>A column carrying FullTextSearch is searched through its full-text index.</summary>
-        private static bool IsFullTextSearch(IDataTableSchema? table, string columnName) =>
-            table?.FindByColumnName(columnName) is ColumnSchema { FullTextSearch: true };
 
         /// <summary>IN over the term's values, one parameter per element; an empty list matches nothing.</summary>
         private static string InCondition(Parameter p, string column)

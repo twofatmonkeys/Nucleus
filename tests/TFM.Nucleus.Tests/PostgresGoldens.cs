@@ -80,7 +80,7 @@
             ["select.where"] = "SELECT \"Name\", \"Quantity\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestWidget\" WHERE \"Name\" = @p0",
             ["servervalue.insert"] = "INSERT INTO \"public\".\"tbl_TFM_Nucleus_Tests_TestServerValueWidget\" (\"ID\", \"Name\", \"Timestamp\") VALUES (@p0, @p1, clock_timestamp())",
             ["servervalue.update"] = "UPDATE \"public\".\"tbl_TFM_Nucleus_Tests_TestServerValueWidget\" SET \"Name\" = @p0, \"Timestamp\" = clock_timestamp() WHERE \"ID\" = @p1",
-            ["term.contains"] = "SELECT \"Name\", \"Quantity\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestWidget\" WHERE \"Name\" ILIKE '%' || @p0 || '%' ESCAPE ''",
+            ["term.contains"] = "SELECT \"Name\", \"Quantity\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestWidget\" WHERE to_tsvector('english', \"Name\") @@ plainto_tsquery('english', @p0)",
             ["term.contains.fulltext"] = "SELECT \"Ansi\", \"UnicodeSized\", \"UnicodeMax\", \"Count\", \"Big\", \"Ratio\", \"Flag\", \"When\", \"Day\", \"At\", \"Reference\", \"Blob\", \"Money\", \"Kind\", \"Linked\", \"Searchable\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestAllTypesWidget\" WHERE to_tsvector('english', \"Searchable\") @@ plainto_tsquery('english', @p0)",
             ["term.containscasesensitive"] = "SELECT \"Name\", \"Quantity\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestWidget\" WHERE \"Name\" LIKE '%' || @p0 || '%' ESCAPE ''",
             ["term.endswith"] = "SELECT \"Name\", \"Quantity\", \"ID\", \"Timestamp\" FROM \"public\".\"tbl_TFM_Nucleus_Tests_TestWidget\" WHERE \"Name\" ILIKE '%' || @p0 ESCAPE ''",

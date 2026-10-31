@@ -128,9 +128,10 @@ otherwise. These are the differences an application can see:
 - **`DateTimeOffset` is stored as UTC, to the microsecond.** A `timestamptz` keeps the instant but
   not the offset, and no ticks below a microsecond, so a value saved at +10:00 reads back as the
   same instant at +00:00. `DateTimeOffset` equality compares instants, so comparisons hold.
-- **`string.Contains` on a `FullTextSearch` column is a full-text search** (`to_tsvector('english',
-  column) @@ plainto_tsquery(...)`, over a GIN index); on any other column it is a substring match.
-  On SQL Server, `string.Contains` is always `CONTAINS()`, which needs a full-text index.
+- **Full-text search uses each engine's own rules.** `string.Contains` on a `FullTextSearch`
+  column is a full-text search on both providers: `CONTAINS()` on SQL Server, and
+  `to_tsvector('english', column) @@ plainto_tsquery(...)` over a GIN index on PostgreSQL, so which
+  words match can differ. On any other column it is a substring match on both.
 - **Long names are shortened.** PostgreSQL keeps 63 bytes of an identifier. A table, index or
   trigger name longer than that keeps its first 30 and last 23 bytes around eight hex characters
   of its SHA-256, the same way every time, so the schema check finds what it created.
@@ -534,6 +535,10 @@ These came in with the fixes for the SQL Server review findings.
   write and every read used the property name, so a property with a different `ColumnName` was
   filtered on a column that did not exist. A loaded `DataSet` or `StreamingRow` labels its values
   by property name, which differs from the column name only for such a property.
+- **`string.Contains` is a substring match unless the column is `FullTextSearch`.** On SQL Server
+  it was always `CONTAINS()`, which fails on a column without a full-text index. It is now
+  `LIKE '%value%'` on such a column, as on PostgreSQL, and still a full-text search on a
+  `FullTextSearch` column.
 
 These came in with the shared provider layer.
 

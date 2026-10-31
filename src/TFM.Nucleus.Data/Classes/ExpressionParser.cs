@@ -360,10 +360,11 @@ namespace TFM.Nucleus.Data
         {
             if (expression.Object != null && expression.Method.DeclaringType == typeof(string))
             {
-                // String.Contains -> substring match
+                // String.Contains is a full-text search on a FullTextSearch column and a substring
+                // match on any other, so every provider means the same by it.
                 var memberName = GetMemberName(expression.Object);
                 var value = GetExpressionValue(expression.Arguments[0]);
-                return new Parameter(memberName, value, Operator.Contains);
+                return new Parameter(memberName, value, IsFullTextSearch(expression.Object) ? Operator.Contains : Operator.Like);
             }
             else if (expression.Object != null)
             {
@@ -550,6 +551,16 @@ namespace TFM.Nucleus.Data
                 return string.IsNullOrWhiteSpace(attr?.ColumnName) ? member.Member.Name : attr.ColumnName;
             }
             throw new NotSupportedException($"Cannot extract member name from expression type {expression.GetType()}");
+        }
+
+        /// <summary>The member's column carries FullTextSearch, found as <see cref="GetMemberName"/> finds the column.</summary>
+        private bool IsFullTextSearch(Expression expression)
+        {
+            if (StripConversions(expression) is not MemberExpression member)
+                return false;
+            IDatabaseColumnAttribute? attr = _query.DataTableSchema?.FindByPropertyName(member.Member.Name)?.PropertySchema.DatabaseColumnAttribute
+                ?? member.Member.GetCustomAttribute<DatabaseColumnAttribute>(inherit: true);
+            return attr?.FullTextSearch == true;
         }
 
         private object? GetExpressionValue(Expression expression)

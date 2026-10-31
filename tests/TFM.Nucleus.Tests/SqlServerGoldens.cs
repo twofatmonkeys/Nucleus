@@ -102,11 +102,11 @@
             ["update.one"] = "UPDATE tbl_TFM_Nucleus_Tests_TestWidget WITH (ROWLOCK) SET [Name] = @p0,[Timestamp] = SYSDATETIMEOFFSET() WHERE [ID]=@p1",
             ["update.tablename"] = "UPDATE [dbo].[tbl_TestWidget] WITH (ROWLOCK) SET [Name] = @p0 WHERE [ID]=@p1",
             ["where.and.or"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name]=@p0 AND (([Quantity]=@p1) OR ([Quantity]=@p2))",
-            ["where.contains.plain"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE CONTAINS([Name], @p0)",
+            ["where.contains.plain"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE '%' + @p0 + '%'",
             ["where.enum"] = "SELECT [OptionalQuantity] ,[OptionalPrice] ,[Kind] ,[OptionalKind] ,[RestrictedName] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_NullableWidget WHERE [Kind]=@p0 AND [OptionalKind] IS NULL",
             ["where.ignorecase"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE LOWER([Name]) = LOWER(@p0)",
             ["where.in"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [ID] IN (@p0_0,@p0_1)",
-            ["where.methods"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%' AND [Name] LIKE '%' + @p1 AND CONTAINS([Name], @p2)",
+            ["where.methods"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%' AND [Name] LIKE '%' + @p1 AND [Name] LIKE '%' + @p2 + '%'",
             ["where.or.and"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE (([Name]=@p0) OR ([Name]=@p1)) AND [Quantity]>@p2",
             ["where.startswith.wildcard"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%'",
         };

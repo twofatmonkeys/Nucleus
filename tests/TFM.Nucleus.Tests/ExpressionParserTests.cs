@@ -80,11 +80,12 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
-        public void StringContains_RendersParameterizedFullTextContains()
+        public void StringContains_OnAPlainColumn_RendersASubstringMatch()
         {
+            // Full-text search only on a FullTextSearch column; term.contains.fulltext pins that.
             var sql = ParseToSql(w => w.Name!.Contains("bc"));
 
-            Assert.Contains("CONTAINS([Name], @p0)", sql);
+            Assert.Contains("[Name] LIKE '%' + @p0 + '%'", sql);
         }
 
         [Fact]
