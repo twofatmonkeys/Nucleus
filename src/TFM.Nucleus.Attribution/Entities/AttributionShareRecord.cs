@@ -16,11 +16,11 @@ public class AttributionShareRecord : CoreObject<AttributionShareRecord>
     public Guid ShareId { get => GetValue<Guid>(); set => SetValue(value); }
 
     /// <summary>The owning sale's <see cref="AttributionSaleRecord.SaleId"/>. Replacement deletes by it.</summary>
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public Guid SaleId { get => GetValue<Guid>(); set => SetValue(value); }
 
     /// <summary>Null on the single Unattributed share of a sale that had no touches.</summary>
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public Guid? TouchId { get => GetValue<Guid?>(); set => SetValue(value); }
 
     [DatabaseColumn]

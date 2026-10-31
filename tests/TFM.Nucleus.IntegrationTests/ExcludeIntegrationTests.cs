@@ -6,8 +6,7 @@ namespace TFM.Nucleus.IntegrationTests
     /// Loading a parent without a child collection: the child rows are never queried, the
     /// collection says it is unloaded, and it can be loaded later by the parent's ID.
     /// </summary>
-    [Collection("Database")]
-    public class ExcludeIntegrationTests(DatabaseFixture fixture)
+    public abstract class ExcludeIntegrationTests(DatabaseFixture fixture)
     {
         private static string Tag(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 

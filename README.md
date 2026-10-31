@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Eight packages ship from it, all on one version.
+This repository holds the whole family. Nine packages ship from it, all on one version.
 
 ## Packages
 
@@ -10,21 +10,23 @@ This repository holds the whole family. Eight packages ship from it, all on one 
 |---|---|
 | `TFM.Nucleus.Abstractions` | Contracts: `ICoreObject`, `IDataProvider` and `IDataContext`, the neutral query model (`IQuery`, `IQueryParameter`, `Operator`), schema interfaces, the `DataSet` row buffer, `NucleusCollection` and `NucleusChildCollection`, `PagedResult<T>`, `IChangeSubscription`, `INucleusRuntime`, `NucleusOptions`. Zero SQL. |
 | `TFM.Nucleus` | The core: `CoreObject` entity base classes, attribute-driven schema reflection (`ObjectSchema` and `PropertySchema` with IL-emitted materialisers), change tracking, the static convenience API, `NucleusLoggerProvider`, and DI registration. |
-| `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. Contains no SQL, proven by a tripwire test. |
-| `TFM.Nucleus.Data.SQL` | SQL Server provider: query rendering, connection and transaction context trees, the bulk engine, schema create, compare and migrate, and SqlDependency change notifications. |
+| `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](#provider-seam)). Contains no SQL, proven by a tripwire test. |
+| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
+| `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](#postgresql). |
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 | `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
 | `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
 | `TFM.Nucleus.Attribution` | Keeps [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution)'s marketing touches and frozen sales in Nucleus tables: `NucleusAttributionStore` implements `IAttributionStore` over three entities, with touch writes that are safe to retry and sale replacement on one transaction. Provider neutral; see [Attribution](#attribution). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside `Data.SQL` over the same three. The core and neutral layers never reference a concrete provider, so a PostgreSQL or MySQL provider plugs into the same seam, and the Bindery, S3Library, Stencil and Attribution stores work over any provider.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside the providers over the same three. The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and the Bindery, S3Library, Stencil and Attribution stores work over either.
 
 ## Install
 
-The packages are published to GitHub Packages. Add the feed once, then reference the provider package: it pulls the other three transitively.
+The packages are published to GitHub Packages. Add the feed once, then reference the provider package for your database: it pulls the other three transitively.
 
 ```bash
-dotnet add package TFM.Nucleus.Data.SQL
+dotnet add package TFM.Nucleus.Data.SQL          # SQL Server
+dotnet add package TFM.Nucleus.Data.PostgreSQL   # PostgreSQL 16 or later
 ```
 
 The feed is `https://nuget.pkg.github.com/twofatmonkeys/index.json` and requires authentication even for reads. Set `GITHUB_USER` and `GITHUB_TOKEN` (a classic PAT with `read:packages`) in your environment. See [docs/publishing.md](docs/publishing.md).
@@ -52,7 +54,19 @@ var provider = services.BuildServiceProvider();
 await provider.GetRequiredService<IObjectDataManager>().InitializeDataProviderAsync();
 ```
 
-`InitializeDataProviderAsync` connects, then creates or migrates the database, tables, indexes and full-text catalogs to match your entity classes. Set `NucleusOptions.ReadOnlySchema` to `true` to make it verify without writing.
+On PostgreSQL the only change is the registration:
+
+```csharp
+services.AddNucleusPostgresDataProvider(options =>
+{
+    options.Server = "localhost";            // host or host:port
+    options.Database = "myapp";
+    options.Username = "app";                // or ConnectionString
+    options.Password = secret;
+});
+```
+
+`InitializeDataProviderAsync` connects, then creates or migrates the database, tables, indexes and full-text indexes (and, on PostgreSQL, the change notification triggers) to match your entity classes. Set `NucleusOptions.ReadOnlySchema` to `true` to make it verify without writing.
 
 Define entities. Properties are backed by the framework's change-tracking dictionaries through `GetValue`/`SetValue` rather than by fields:
 
@@ -60,7 +74,7 @@ Define entities. Properties are backed by the framework's change-tracking dictio
 [Cacheable(refreshInterval: 120, cacheLifetime: 900)]
 public class Customer : CoreObject<Customer>
 {
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]
@@ -100,6 +114,42 @@ await light[0].Orders.LoadAsync();
 // Delete by predicate: no row is loaded, child rows go too, the count comes back
 var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
 ```
+
+## PostgreSQL
+
+`TFM.Nucleus.Data.PostgreSQL` runs the same entities, queries and store packages on PostgreSQL 16
+or later. Everything in this document applies on both providers, except where a section says
+otherwise. These are the differences an application can see:
+
+- **Equality is case-sensitive.** `x.Code == "abc"` and unique indexes compare exactly, as
+  PostgreSQL always does; on SQL Server's default collation they ignore case. The pattern
+  predicates `StartsWith`, `EndsWith`, `Contains` and `Like` use `ILIKE`, so they ignore case on
+  both. `string.Equals(x, y, StringComparison.OrdinalIgnoreCase)` ignores case on both.
+- **`DateTimeOffset` is stored as UTC, to the microsecond.** A `timestamptz` keeps the instant but
+  not the offset, and no ticks below a microsecond, so a value saved at +10:00 reads back as the
+  same instant at +00:00. `DateTimeOffset` equality compares instants, so comparisons hold.
+- **`string.Contains` on a `FullTextSearch` column is a full-text search** (`to_tsvector('english',
+  column) @@ plainto_tsquery(...)`, over a GIN index); on any other column it is a substring match.
+  On SQL Server, `string.Contains` is always `CONTAINS()`, which needs a full-text index.
+- **Long names are shortened.** PostgreSQL keeps 63 bytes of an identifier. A table, index or
+  trigger name longer than that keeps its first 30 and last 23 bytes around eight hex characters
+  of its SHA-256, the same way every time, so the schema check finds what it created.
+- **Change notifications need no server setup.** Initialisation creates a statement-level trigger
+  per table that notifies the table's channel, and `SubscribeToChangesAsync<T>()` listens on it
+  with a connection of its own, reconnecting after a dropped connection (and reporting one change,
+  since a notification sent while it was down is lost). `ContextOptions.UseDependency` is a SQL
+  Server option and has no effect here.
+- **Bulk writes use COPY.** An oversized insert or update batch is copied into a temp table with
+  COPY BINARY and written with one statement; an update applies each row's own changed columns.
+- **Values the server sets use `clock_timestamp()`**, so each statement stamps its own time rather
+  than the transaction's start.
+- **Paging is `LIMIT`/`OFFSET`**, ordered by ID when the query asks for no order.
+
+The schema is `public` unless `PostgresConfiguration.Schema` says otherwise, and is created when
+missing. Each table carries the Guid `ID` primary key, an identity `ClusterID` that keeps a
+rebuild's copy in insertion order, and a column per `[DatabaseColumn]` property. A table whose
+columns change is rebuilt in one transaction: PostgreSQL's DDL is transactional, so a failed rebuild
+leaves nothing behind.
 
 ## Bindery
 
@@ -145,9 +195,11 @@ contract's two hard rules with unique indexes instead: `S3AssetRecord.LivePath` 
 path while a record is live and null once it is soft-deleted, so the filtered unique index on it
 is exactly "no two live records share a path"; and every save inserts a claim row for the version
 it moves to, in the same transaction as the record write, so two writers racing from one version
-collide on the claim index and exactly one commits. A unique violation on the claim surfaces as
-the library's `S3AssetConcurrencyException`, one on the live path as `S3AssetConflictException`,
-and any other storage failure as `S3LibraryException` with the original attached. Ordering,
+collide on the claim index and exactly one commits. The provider reports a broken unique index as
+a [`UniqueViolationException`](#unique-violations) naming the entity and column, and the store
+turns one on the claim into the library's `S3AssetConcurrencyException`, one on the live path into
+`S3AssetConflictException`, and any other storage failure into `S3LibraryException` with the
+original attached. Ordering,
 paging, the name filter and the count happen in memory over the rows the SQL-side filters select.
 The store passes `S3AssetStoreContract.Cases` from `TFM.S3Library.Testing` against the integration
 test database.
@@ -257,15 +309,35 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
 | `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
-| `Unique` | `false` | Adds a filtered unique nonclustered index on the column. NULLs are not constrained. See below. |
-| `NonClusteredIndex` | `false` | Adds a non-clustered index on the column. Neither this nor `Unique` is allowed on a `max` length or FILESTREAM column. |
-| `IndexSortDESC` | `false` | Sorts that index descending. |
-| `FullTextIndex` | `false` | Includes the column in the table's full-text index, which enables `CONTAINS` predicates. |
-| `Filestream` | `false` | Stores a `byte[]` column as FILESTREAM. |
-| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example a server timestamp, instead of sending the client value. |
+| `Unique` | `false` | Adds a unique index on the column. NULLs are not constrained. See below. |
+| `Indexed` | `false` | Adds an index on the column. Neither this nor `Unique` is allowed on a `max` length or externally stored column. Replaces `NonClusteredIndex`. |
+| `IndexDescending` | `false` | Sorts that index descending. Replaces `IndexSortDESC`. |
+| `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
+| `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
+| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp, instead of sending the client value. |
 | `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
 
-`Unique` creates a filtered unique nonclustered index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `NonClusteredIndex` as well does not add a second index, and `IndexSortDESC` applies to whichever index is created. Because the index is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
+Each property maps to a column type by its CLR type, or by `DataType` when one is given:
+
+| Property | SQL Server | PostgreSQL |
+|---|---|---|
+| `string` | `varchar(255)`, or the given length; `-1` is `varchar(max)` | `varchar(255)`, or the given length; `-1` is `text` |
+| `string` with `DataType.Unicode` | `nvarchar(510)`, or the given length | `varchar(510)`, or the given length |
+| `int`, any enum (stored as its integer) | `int` | `integer` |
+| `long` | `bigint` | `bigint` |
+| `double` | `float` | `double precision` |
+| `bool` | `bit` | `boolean` |
+| `decimal` | `decimal(15,5)`, or as `Scale` and `DataLength` give | `numeric(15,5)`, the same way |
+| `DateTime` | `datetime2(7)` | `timestamp` |
+| `DateTime` with `DataType.Date` | `date` | `date` |
+| `DateTimeOffset` | `datetimeoffset(7)` | `timestamptz` (UTC, microseconds) |
+| `Guid`, or an entity stored by its `ID` | `uniqueidentifier` | `uuid` |
+| `byte[]` | `varbinary(max)` | `bytea` |
+| a type named `TFMJsonString` | `json` | `jsonb` |
+
+The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
+
+`Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
 
 On initialise the provider compares the `NCI_*` and `UQ_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
 
@@ -384,13 +456,17 @@ Override these on an entity to run logic at defined points:
 | `AddNucleusSQLDataProvider(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Configures explicitly. |
 | `AddNucleusSQLDataProvider<TRoot>(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Registers a provider rooted at `TRoot`, for spanning several databases. |
 | `AddNucleusSQLDataProvider(Type rootType, Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | The same for open-generic roots, for example `typeof(AppRoot<>)`. |
+| `AddNucleusPostgresDataProvider()` | `TFM.Nucleus.Data.PostgreSQL` | Configures from the `PG_SERVER`, `PG_DATABASE`, `PG_USERNAME` and `PG_PASSWORD` environment variables, and `PG_PORT` when set. |
+| `AddNucleusPostgresDataProvider(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Configures explicitly. |
+| `AddNucleusPostgresDataProvider<TRoot>(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Registers a provider rooted at `TRoot`. Roots on SQL Server and on PostgreSQL can live in one application. |
+| `AddNucleusPostgresDataProvider(Type rootType, Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | The same for open-generic roots. |
 
 ### NucleusOptions
 
 | Option | Default | Meaning |
 |---|---|---|
 | `ReadOnlySchema` | `true` | When true the schema is verified but never written. The parameterless `AddNucleus()` sets it false. |
-| `AppName` | entry assembly name | Reported to SQL Server as the application name. |
+| `AppName` | entry assembly name | Reported to the database server as the application name. |
 | `AppVersion` | entry assembly version | Recorded with audit entries. |
 | `EnableAuditLogging` | `true` | Writes change summaries such as "Updated Name from A to B" on save and delete. |
 | `AuditLogLevel` | `Information` | The level those summaries are written at. The category is the entity type's full name. |
@@ -407,15 +483,61 @@ Override these on an entity to run logic at defined points:
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
 | `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
 | `SQLPacketSize` | `1500` | Network packet size. |
-| `MaxThreadsForLargeQuery` | `12` | Parallelism for large reads. |
-| `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters. |
-| `CommandTimeoutSeconds` | `10` | Per-command timeout. |
-| `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk operations. |
-| `BulkCopyBatchSize` | `50000` | Rows per bulk copy batch. |
+| `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
+| `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters; a larger insert or update batch goes to the bulk engine. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
+| `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
+| `BulkCopyBatchSize` | `50000` | Not currently applied: bulk statements run in batches of 50,000 rows. |
 
-Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+
+### PostgresConfiguration
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Server` | none | `host` or `host:port`. |
+| `Port` | `5432` | The port, when `Server` does not give one. |
+| `Database` | none | The database. Created on initialise when missing and the schema is writable, through the `postgres` maintenance database. |
+| `Username`, `Password` | none | Credentials. |
+| `Schema` | `public` | The schema the tables live in. Created when missing. |
+| `SslMode` | driver default | `Disable`, `Allow`, `Prefer`, `Require`, `VerifyCA` or `VerifyFull`. |
+| `ConnectionString` | none | A raw Npgsql connection string that bypasses the builder. `Database` still names the database to create and read. |
+| `ConnectRetryCount` | `3` | Attempts at opening a connection when the failure is transient, with an exponential back-off. |
+| `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
+| `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
+| `MaxParametersPerQuery` | `30000` | Batches are split at this many parameters (PostgreSQL allows 65,535); a larger insert or update batch goes to the bulk engine. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. |
+| `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
+
+## Unique violations
+
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(columnName)` tests for one; all three are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+
+```csharp
+catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
+{
+    // another writer took the address first
+}
+```
 
 ## Behaviour changes
+
+These came in with the shared provider layer.
+
+- **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSQLDataProvider`,
+  `SQLConfiguration` and `SqlDataProviderException`. `SQLDataProvider`, `SqlDataContext`, the query
+  classes, the schema classes, `ParameterExtensions`, `ConfigureSQLOptions` and
+  `SqlDataContextException` are gone from the public surface; the query and schema model are in
+  `TFM.Nucleus.Data.Queries` and `TFM.Nucleus.Data.Schema`. `IDataConnection` and `IDataService`,
+  which nothing implemented, are deleted.
+- **A unique violation is a `UniqueViolationException`.** It derives from `Exception`, keeps the old
+  message and carries the SQL Server exception as its inner exception.
+- **A context that fails to open releases its pool slot**, and an async dispose removes the context
+  from the pool, as a sync dispose always did. Before, each held a slot or an entry for the life of
+  the process.
+- **Cancellation propagates as `OperationCanceledException`.** A cancelled read or write used to
+  surface wrapped in a plain `Exception` when the driver threw inside the command; it now
+  propagates as thrown, after a transactional context is marked for rollback.
 
 These came in with delete by predicate and child collection exclusion. Each fixes a defect, but each
 can change what existing code sees.
@@ -436,14 +558,22 @@ can change what existing code sees.
 - **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types automatically gain `IsDeleted` and `DeletedAt` columns.
 - **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
-- **Change notifications.** `IDataProvider.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission.
-- **Paging.** `PagedResult<T>` batches the rows and a `COUNT_BIG(*)` into one round trip, and `ROW_NUMBER()` window paging works at every SQL Server compatibility level.
-- **Bulk writes.** Large batches route through temp-table `SqlBulkCopy` inserts and changed-column bitmask updates.
+- **Change notifications.** `IDataProvider.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates.
+- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL with `LIMIT` and `OFFSET`.
+- **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update.
 - **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.
 
 ## Provider seam
 
-All SQL text lives in the provider assembly. The neutral layers speak `IQuery`, `IQueryParameter`, `Operator` and `ServerFunctionKind` tokens, and a unit test scans the compiled strings of the neutral assemblies for SQL to keep it that way. A new provider implements `IDataProvider` and `IDataContext`, renders the neutral model in its own dialect, maps the server-function tokens and reports its `DataProviderCapabilities`. Nothing in the core or data layers changes.
+Applications code against `TFM.Nucleus.Data` and touch a provider package only to register and configure it, so the same entities run on whichever database a deployment chooses.
+
+`TFM.Nucleus.Data` holds everything that does not depend on the engine:
+
+- **The query model** (`TFM.Nucleus.Data.Queries`): `SelectQuery`, `InsertQuery`, `UpdateQuery` and `DeleteWhereQuery` decide what a query means: its condition tree, order, page, child collection queries, soft-delete filter and the children-first order of a delete cascade. `WhereRenderer` is the one walk of a condition tree; `ParameterBinding` names the parameters an IN term expands to.
+- **The schema model** (`TFM.Nucleus.Data.Schema`): `TableSchema` and `ColumnSchema` describe each entity's table, with what each column stores (`ColumnTypeIntent`) and its size. `SchemaManager` compares them with the database and creates, rebuilds and indexes tables.
+- **The provider SDK** (`TFM.Nucleus.Data.Providers`): `RelationalDataProvider` and `DbDataContext<TSelf>` are the provider and context over System.Data.Common, with pooling, the transaction tree, reads, deletes, the write paths and failure translation. `BulkWritePlanner` stages bulk writes, and `ChangeSubscriptionBase<T>` and `ListenerRefCounter` back change notifications.
+
+A provider package implements the dialect: an `IQueryRenderer` that writes each query, an `ISchemaDialect` that writes DDL and maps column types, an `ICatalogReader` over the engine's catalog and an `ISchemaStore` that ties them together. It derives its provider and context from the SDK base classes, recognises its engine's unique violations, and exposes only its registration and configuration. Unit tests enforce the boundary: one scans the compiled strings of the neutral and store assemblies for SQL and for provider names, one checks they reference no provider, and one holds each provider's public surface to its registration and configuration.
 
 ## Repository layout
 
@@ -452,12 +582,13 @@ src\TFM.Nucleus.Abstractions\    contracts, no SQL
 src\TFM.Nucleus\                 entity core
 src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
+src\TFM.Nucleus.Data.PostgreSQL\ PostgreSQL provider
 src\TFM.Nucleus.Bindery\         TFM.Bindery page store
 src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
 src\TFM.Nucleus.Stencil\          TFM.Stencil template store
 src\TFM.Nucleus.Attribution\      TFM.Attribution touch and sale store
 tests\TFM.Nucleus.Tests\         unit tests, no database
-tests\TFM.Nucleus.IntegrationTests\  live SQL Server tests (Bindery\, S3Library\ and Stencil\ contract suites, Attribution\ store tests)
+tests\TFM.Nucleus.IntegrationTests\  live database tests: every suite runs once per provider (SqlServer\ and Postgres\ hold the subclasses and the engine-only tests)
 ```
 
 ## Build and test
@@ -467,7 +598,13 @@ dotnet build TFM.Nucleus.slnx --configuration Release
 dotnet test  TFM.Nucleus.slnx --configuration Release
 ```
 
-The unit tests need no database and cover golden-SQL snapshots, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwire. The integration tests activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database, and skip cleanly otherwise.
+The unit tests need no database and cover golden-SQL snapshots (raw goldens pin every space of the SQL Server output), the public API snapshot of every package, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwires. The two snapshots regenerate only when `NUCLEUS_ACCEPT_GOLDENS=1` is set, so a change to either is a reviewed diff. The integration tests run every suite once per provider. The SQL Server suites activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database; the PostgreSQL suites when `NUCLEUS_PG_TEST_SERVER`, `NUCLEUS_PG_TEST_DATABASE`, `NUCLEUS_PG_TEST_USERNAME` and `NUCLEUS_PG_TEST_PASSWORD` (or `Nucleus:Postgres:*`) do. A provider without settings skips cleanly. A disposable PostgreSQL is one command away:
+
+```bash
+docker run -d --name nucleus-pg -e POSTGRES_USER=nucleus -e POSTGRES_PASSWORD=<password> -p 15432:5432 postgres:16
+```
+
+with `Nucleus:Postgres:Server` set to `localhost:15432`; the provider creates the database on the first run.
 
 ## Documentation
 

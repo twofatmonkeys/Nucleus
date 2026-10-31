@@ -4,8 +4,7 @@ namespace TFM.Nucleus.IntegrationTests
     /// End-to-end cover for enum columns in a predicate. The unit tests pin the rendered SQL; these
     /// put it in front of SQL Server, which is the only place the bound value's type is proven.
     /// </summary>
-    [Collection("Database")]
-    public class EnumWhereIntegrationTests(DatabaseFixture fixture)
+    public abstract class EnumWhereIntegrationTests(DatabaseFixture fixture)
     {
         /// <summary>
         /// Saves one Premium row carrying a nullable kind and two Standard rows without one, under a

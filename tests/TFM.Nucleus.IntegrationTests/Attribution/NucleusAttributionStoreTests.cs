@@ -10,8 +10,7 @@ namespace TFM.Nucleus.IntegrationTests.Attribution
     /// Every test works on fresh session and sale ids, so no test resets another's rows and no
     /// cross-process lock is needed.
     /// </summary>
-    [Collection("Database")]
-    public sealed class NucleusAttributionStoreTests(DatabaseFixture fixture)
+    public abstract class NucleusAttributionStoreTests(DatabaseFixture fixture)
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
 

@@ -159,15 +159,15 @@ namespace TFM.Nucleus.Tests
 
         // ---- Delete by predicate: the SQL ------------------------------------------------------
 
-        private static Func<Type, SqlTableSchema?> Tables(params Type[] types)
+        private static Func<Type, TableSchema?> Tables(params Type[] types)
         {
-            var tables = types.ToDictionary(t => t, t => new SqlTableSchema(ObjectSchema.Get(t), null!));
+            var tables = types.ToDictionary(t => t, t => new TableSchema(ObjectSchema.Get(t)));
             return t => tables.GetValueOrDefault(t);
         }
 
-        private static string DeleteWhereSql<T>(Expression<Func<T, bool>> predicate, Func<Type, SqlTableSchema?> tables)
+        private static string DeleteWhereSql<T>(Expression<Func<T, bool>> predicate, Func<Type, TableSchema?> tables)
         {
-            var query = new DeleteWhereQuery(tables(typeof(T))!, tables);
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(T))!, tables);
             ExpressionParser.ParseExpressionToQuery(query, predicate.Body);
             return SqlSnapshot.Normalize(query.BuildQuery());
         }
@@ -212,7 +212,7 @@ namespace TFM.Nucleus.Tests
         public void DeleteWhere_ParentWithChildren_DeclaresEachParameterOnce()
         {
             var tables = Tables(typeof(TestDeletableParent), typeof(TestDeletableChild));
-            var query = new DeleteWhereQuery(tables(typeof(TestDeletableParent))!, tables);
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableParent))!, tables);
             ExpressionParser.ParseExpressionToQuery(query, ((Expression<Func<TestDeletableParent, bool>>)(p => p.Name == "old")).Body);
 
             Assert.Single(query.Parameters);
@@ -223,7 +223,7 @@ namespace TFM.Nucleus.Tests
         {
             var tables = Tables(typeof(TestDeletableParent), typeof(TestDeletableChild));
 
-            var query = DeleteWhereQuery.ForIds(tables(typeof(TestDeletableParent))!, tables, [Guid.NewGuid(), Guid.NewGuid()])!;
+            var query = DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableParent))!, tables, [Guid.NewGuid(), Guid.NewGuid()])!;
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
             Assert.Equal(
@@ -240,7 +240,7 @@ namespace TFM.Nucleus.Tests
             var tables = Tables(typeof(TestDeletableWidget));
             var ids = Enumerable.Range(0, DeleteWhereQuery.IdsPerStatement + 1).Select(_ => Guid.NewGuid());
 
-            var query = DeleteWhereQuery.ForIds(tables(typeof(TestDeletableWidget))!, tables, ids)!;
+            var query = DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableWidget))!, tables, ids)!;
 
             Assert.Single(query.LinkedQueries);
             Assert.DoesNotContain("tbl_", query.BuildQuery().Split("SELECT @@ROWCOUNT")[1]);
@@ -251,14 +251,14 @@ namespace TFM.Nucleus.Tests
         {
             var tables = Tables(typeof(TestDeletableWidget));
 
-            Assert.Null(DeleteWhereQuery.ForIds(tables(typeof(TestDeletableWidget))!, tables, []));
+            Assert.Null(DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableWidget))!, tables, []));
         }
 
         [Fact]
         public void DeleteWhere_EmptyCondition_RefusesToRender()
         {
             var tables = Tables(typeof(TestDeletableWidget));
-            var query = new DeleteWhereQuery(tables(typeof(TestDeletableWidget))!, tables);
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableWidget))!, tables);
 
             Assert.Throws<InvalidQueryException>(() => query.BuildQuery());
         }
@@ -268,7 +268,7 @@ namespace TFM.Nucleus.Tests
         {
             var tables = Tables(typeof(TestParentOfUndeletable), typeof(TestUndeletableChild));
 
-            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(tables(typeof(TestParentOfUndeletable))!, tables));
+            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestParentOfUndeletable))!, tables));
         }
 
         [Fact]
@@ -276,40 +276,14 @@ namespace TFM.Nucleus.Tests
         {
             var tables = Tables(typeof(TestDeletableParent));
 
-            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(tables(typeof(TestDeletableParent))!, tables));
-        }
-
-        [Fact]
-        public void HardDelete_Golden()
-        {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestDeletableWidget>(), null!);
-            var widget = Loaded<TestDeletableWidget>(Guid.NewGuid());
-
-            var query = DeleteQuery.Create(schema, [widget])!;
-            var sql = SqlSnapshot.Normalize(query.BuildQuery());
-
-            Assert.Equal("DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableWidget WHERE [ID]=@p0", sql);
-        }
-
-        [Fact]
-        public void SoftDelete_RendersFlagUpdate()
-        {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!);
-            var widget = Loaded<TestSoftWidget>(Guid.NewGuid());
-
-            var query = DeleteQuery.Create(schema, [widget])!;
-            var sql = SqlSnapshot.Normalize(query.BuildQuery());
-
-            Assert.Equal(
-                "UPDATE tbl_TFM_Nucleus_Tests_TestSoftWidget WITH (ROWLOCK) SET [IsDeleted] = @p0,[DeletedAt] = SYSDATETIMEOFFSET() WHERE [ID]=@p1",
-                sql);
+            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableParent))!, tables));
         }
 
         [Fact]
         public void Select_SoftDeletableType_FiltersDeletedRows()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!);
-            var query = new SelectQuery(schema);
+            var schema = new TableSchema(ObjectSchema.Get<TestSoftWidget>());
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema);
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
@@ -319,8 +293,8 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_SoftDeletableType_IncludeDeletedSkipsFilter()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestSoftWidget>(), null!);
-            var query = new SelectQuery(schema) { IncludeDeleted = true };
+            var schema = new TableSchema(ObjectSchema.Get<TestSoftWidget>());
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema) { IncludeDeleted = true };
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
@@ -330,8 +304,8 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void HardDeletableType_SelectHasNoFilter()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestDeletableWidget>(), null!);
-            var query = new SelectQuery(schema);
+            var schema = new TableSchema(ObjectSchema.Get<TestDeletableWidget>());
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, schema);
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 

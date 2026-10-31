@@ -14,7 +14,7 @@ namespace TFM.Nucleus.S3Library;
 [Deletable(DeleteBehavior.Hard)]
 public class S3AssetVersionClaim : CoreObject<S3AssetVersionClaim>
 {
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public Guid AssetId { get => GetValue<Guid>(); set => SetValue(value); }
 
     /// <summary><c>{AssetId:N}:{version}</c>. ASCII, so the default varchar is enough.</summary>

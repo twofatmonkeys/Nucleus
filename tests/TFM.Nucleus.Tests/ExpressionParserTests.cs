@@ -10,7 +10,7 @@ namespace TFM.Nucleus.Tests
     public class ExpressionParserTests
     {
         private static SelectQuery NewSelect() =>
-            new("[dbo].[tbl_TestWidget]", ["ID", "Name", "Quantity"], typeof(TestWidget));
+            new(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", ["ID", "Name", "Quantity"], typeof(TestWidget));
 
         private static string ParseToSql(Expression<Func<TestWidget, bool>> predicate) =>
             SqlSnapshot.Normalize(NewSelect().Parse(predicate.Body).BuildQuery());
@@ -18,7 +18,7 @@ namespace TFM.Nucleus.Tests
         // NullableWidget carries the enum and nullable-enum columns. The constraint list must name
         // every column a predicate touches, or SelectQuery rejects the term.
         private static SelectQuery NewNullableSelect() =>
-            new("[dbo].[tbl_NullableWidget]",
+            new(SqlServerQueryRenderer.Instance, "[dbo].[tbl_NullableWidget]",
                 ["ID", "RestrictedName", "Kind", "OptionalKind", "OptionalQuantity", "OptionalPrice"],
                 typeof(NullableWidget));
 
@@ -219,7 +219,7 @@ namespace TFM.Nucleus.Tests
         // delete it removes them, so every one of these must translate or throw.
 
         private static SelectQuery NewFlagSelect() =>
-            new("[dbo].[tbl_FlagWidget]", ["ID", "Name", "Quantity", "IsArchived"], typeof(FlagWidget));
+            new(SqlServerQueryRenderer.Instance, "[dbo].[tbl_FlagWidget]", ["ID", "Name", "Quantity", "IsArchived"], typeof(FlagWidget));
 
         private static (string Sql, ParameterCollection Parameters) ParseFlag(Expression expression)
         {

@@ -36,8 +36,8 @@
     <!-- TFM.Stencil's store contract as framework-neutral cases. Pinned to the same version as
          the store's TFM.Stencil.Abstractions reference: a newer Testing package would lift
          Abstractions underneath the store without anyone noticing. -->
-    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.273.1" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.273.1" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net10.0'" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,6 +45,7 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus\TFM.Nucleus.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Bindery\TFM.Nucleus.Bindery.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.S3Library\TFM.Nucleus.S3Library.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Stencil\TFM.Nucleus.Stencil.csproj" />

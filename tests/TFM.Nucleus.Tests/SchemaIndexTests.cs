@@ -9,14 +9,16 @@ namespace TFM.Nucleus.Tests
     {
         private const string Table = "tbl_TFM_Nucleus_Tests_TestUniqueWidget";
 
-        private static SqlTableSchema UniqueSchema() => new(ObjectSchema.Get<TestUniqueWidget>(), null!);
+        private static TableSchema UniqueSchema() => new(ObjectSchema.Get<TestUniqueWidget>());
+
+        private static readonly SqlServerSchemaDialect Dialect = new(null);
 
         [Fact]
         public void Unique_RendersFilteredUniqueIndex_Golden()
         {
             var schema = UniqueSchema();
 
-            var sql = SqlSnapshot.Normalize(SqlDataSchema.ColumnIndexSql(schema, schema["Code"]));
+            var sql = SqlSnapshot.Normalize(SqlServerSchemaDialect.ColumnIndexSql(schema, schema["Code"]));
 
             Assert.Equal(
                 $"CREATE UNIQUE NONCLUSTERED INDEX [UQ_{Table}_Code] ON [dbo].[{Table}]([Code] ASC) WHERE [Code] IS NOT NULL " +
@@ -30,7 +32,7 @@ namespace TFM.Nucleus.Tests
         {
             var schema = UniqueSchema();
 
-            var sql = SqlSnapshot.Normalize(SqlDataSchema.ColumnIndexSql(schema, schema["Timestamp"]));
+            var sql = SqlSnapshot.Normalize(SqlServerSchemaDialect.ColumnIndexSql(schema, schema["Timestamp"]));
 
             Assert.Equal(
                 $"CREATE NONCLUSTERED INDEX [NCI_{Table}_Timestamp] ON [dbo].[{Table}]([Timestamp] DESC) " +
@@ -45,12 +47,12 @@ namespace TFM.Nucleus.Tests
             var schema = UniqueSchema();
             var sku = schema["Sku"];
 
-            var sql = SqlSnapshot.Normalize(SqlDataSchema.ColumnIndexSql(schema, sku));
+            var sql = SqlSnapshot.Normalize(SqlServerSchemaDialect.ColumnIndexSql(schema, sku));
 
             Assert.StartsWith($"CREATE UNIQUE NONCLUSTERED INDEX [UQ_{Table}_Sku]", sql);
             Assert.Contains("([Sku] DESC) WHERE [Sku] IS NOT NULL", sql);
             Assert.True(sku.Unique);
-            Assert.True(sku.NonClusteredIndex);
+            Assert.True(sku.Indexed);
             // One index per column: Code, Sku and the inherited Timestamp.
             Assert.Equal(3, schema.Columns.Count(c => c.HasColumnIndex));
         }
@@ -71,13 +73,13 @@ namespace TFM.Nucleus.Tests
         {
             var schema = UniqueSchema();
 
-            Assert.Throws<ArgumentException>(() => SqlDataSchema.ColumnIndexSql(schema, schema["ID"]));
+            Assert.Throws<ArgumentException>(() => SqlServerSchemaDialect.ColumnIndexSql(schema, schema["ID"]));
         }
 
         [Fact]
         public void Unique_OnMaxLengthColumn_ThrowsAtSchemaBuild()
         {
-            var ex = Assert.Throws<InvalidOperationException>(() => new SqlTableSchema(ObjectSchema.Get<TestUniqueMaxWidget>(), null!));
+            var ex = Assert.Throws<InvalidOperationException>(() => new TableSchema(ObjectSchema.Get<TestUniqueMaxWidget>()));
 
             Assert.Contains("Body", ex.Message);
         }
@@ -85,7 +87,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void PrimaryKey_OnSecondProperty_ThrowsAtSchemaBuild()
         {
-            var ex = Assert.Throws<InvalidOperationException>(() => new SqlTableSchema(ObjectSchema.Get<TestDoublePrimaryKeyWidget>(), null!));
+            var ex = Assert.Throws<InvalidOperationException>(() => new TableSchema(ObjectSchema.Get<TestDoublePrimaryKeyWidget>()));
 
             Assert.Contains("Code", ex.Message);
             Assert.Contains("ID", ex.Message);
@@ -94,13 +96,13 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void PrimaryKey_IsTheInheritedIdColumn()
         {
-            var schema = new SqlTableSchema(ObjectSchema.Get<TestWidget>(), null!);
+            var schema = new TableSchema(ObjectSchema.Get<TestWidget>());
 
             Assert.Equal("ID", schema.IdentityColumn.ColumnName);
             Assert.True(schema.IdentityColumn.PrimaryKey);
         }
 
-        private static SqlColumnIndex Existing(string index, string column, bool unique, bool desc, bool filter) => new()
+        private static CatalogIndex Existing(string index, string column, bool unique, bool desc, bool filter) => new()
         {
             TableName = Table,
             IndexName = index,
@@ -110,7 +112,7 @@ namespace TFM.Nucleus.Tests
             HasFilter = filter,
         };
 
-        private static List<SqlColumnIndex> MatchingIndexes() =>
+        private static List<CatalogIndex> MatchingIndexes() =>
         [
             Existing($"UQ_{Table}_Code", "Code", unique: true, desc: false, filter: true),
             Existing($"UQ_{Table}_Sku", "Sku", unique: true, desc: true, filter: true),
@@ -120,7 +122,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Diff_EmptyDatabase_CreatesEveryIndex()
         {
-            var (drop, create) = SqlDataSchema.DiffColumnIndexes(UniqueSchema(), []);
+            var (drop, create) = SchemaComparer.DiffColumnIndexes(UniqueSchema(), [], Dialect);
 
             Assert.Empty(drop);
             Assert.Equal(["Code", "Sku", "Timestamp"], create.Select(c => c.ColumnName).Order());
@@ -129,7 +131,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Diff_MatchingDatabase_DoesNothing()
         {
-            var (drop, create) = SqlDataSchema.DiffColumnIndexes(UniqueSchema(), MatchingIndexes());
+            var (drop, create) = SchemaComparer.DiffColumnIndexes(UniqueSchema(), MatchingIndexes(), Dialect);
 
             Assert.Empty(drop);
             Assert.Empty(create);
@@ -142,7 +144,7 @@ namespace TFM.Nucleus.Tests
             existing[0].IsUnique = false;
             existing[0].HasFilter = false;
 
-            var (drop, create) = SqlDataSchema.DiffColumnIndexes(UniqueSchema(), existing);
+            var (drop, create) = SchemaComparer.DiffColumnIndexes(UniqueSchema(), existing, Dialect);
 
             Assert.Equal([$"UQ_{Table}_Code"], drop);
             Assert.Equal(["Code"], create.Select(c => c.ColumnName));
@@ -154,7 +156,7 @@ namespace TFM.Nucleus.Tests
             var existing = MatchingIndexes();
             existing.Add(Existing($"NCI_{Table}_Removed", "Removed", unique: false, desc: false, filter: false));
 
-            var (drop, create) = SqlDataSchema.DiffColumnIndexes(UniqueSchema(), existing);
+            var (drop, create) = SchemaComparer.DiffColumnIndexes(UniqueSchema(), existing, Dialect);
 
             Assert.Equal([$"NCI_{Table}_Removed"], drop);
             Assert.Empty(create);
@@ -164,9 +166,9 @@ namespace TFM.Nucleus.Tests
         public void Diff_OtherTable_IsIgnored()
         {
             var existing = MatchingIndexes();
-            existing.Add(new SqlColumnIndex { TableName = "tbl_Other", IndexName = "NCI_tbl_Other_X", ColumnName = "X" });
+            existing.Add(new CatalogIndex { TableName = "tbl_Other", IndexName = "NCI_tbl_Other_X", ColumnName = "X" });
 
-            var (drop, create) = SqlDataSchema.DiffColumnIndexes(UniqueSchema(), existing);
+            var (drop, create) = SchemaComparer.DiffColumnIndexes(UniqueSchema(), existing, Dialect);
 
             Assert.Empty(drop);
             Assert.Empty(create);

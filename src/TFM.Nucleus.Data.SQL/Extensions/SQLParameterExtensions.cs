@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus.Data.SQL
 {
-    public static class SQLParameterExtensions
+    internal static class SQLParameterExtensions
     {
         public static void TryAddRange(this SqlParameterCollection coll, SqlParameter[]? values)
         {

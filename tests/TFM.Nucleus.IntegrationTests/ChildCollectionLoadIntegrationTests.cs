@@ -7,8 +7,7 @@ namespace TFM.Nucleus.IntegrationTests
     /// non-streaming paths read the parent rows and discarded the child result sets, and the
     /// streaming path attached children through the collection, which staged a change on each.
     /// </summary>
-    [Collection("Database")]
-    public class ChildCollectionLoadIntegrationTests(DatabaseFixture fixture)
+    public abstract class ChildCollectionLoadIntegrationTests(DatabaseFixture fixture)
     {
         private static string Tag(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 

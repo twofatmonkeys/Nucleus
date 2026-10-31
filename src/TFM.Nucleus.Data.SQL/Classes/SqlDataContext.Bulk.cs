@@ -7,116 +7,62 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using static TFM.Nucleus.Data.SQL.SqlColumnSchema;
+using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Queries;
 
 namespace TFM.Nucleus.Data.SQL
 {
-    public partial class SqlDataContext
+    /// <summary>
+    /// SQL Server's bulk engine. <see cref="BulkWritePlanner"/> decides the tables, columns and
+    /// staged rows; this writes them with a #temp table, SqlBulkCopy and one set-based statement
+    /// per batch of rows.
+    /// </summary>
+    internal partial class SqlDataContext
     {
         /// <summary>
         /// Default batch size for bulk INSERT/UPDATE operations.
         /// Prevents transaction log pressure and lock escalation at high row counts.
-        /// Configurable via SqlConfig.BulkBatchSize if available, otherwise defaults to 50000.
         /// </summary>
         private const int DefaultBulkBatchSize = 50000;
 
         /// <summary>
-        /// Column metadata for bulk temp table construction.
-        /// SqlTypeDef is the exact SQL type from schema (e.g. "VarChar(255) NULL").
-        /// ClrType is the matching CLR type for the DataTable column.
-        /// </summary>
-        private readonly record struct BulkColumn(string Name, string SqlTypeDef, Type ClrType);
-
-        /// <summary>
-        /// Must be called BEFORE NeedsSplitting (which mutates LinkedQueries).
-        /// Only checks that there are linked queries and the root has schema.
-        /// Per-table type validation happens inside ExecuteBulkAsync.
-        /// </summary>
-        private static bool CanUseBulkPath(Query query)
-        {
-            return query.CountLinkedQueries() > 0
-                && (query.Type == QueryType.INSERT || query.Type == QueryType.UPDATE)
-                && query.TableSchema is SqlTableSchema;
-        }
-
-        /// <summary>
-        /// Returns true if the parameter is a server function (e.g. SYSDATETIMEOFFSET()).
-        /// In SET context, UsesVariable==false with non-null Value is always a server function.
-        /// </summary>
-        private static bool IsServerFunction(IQueryParameter p) => !p.UsesVariable && p.Value != null;
-
-        /// <summary>
-        /// Routes to the appropriate bulk strategy:
-        /// - INSERT: grouping by column signature (preserves DB defaults for unset columns)
+        /// Routes each table of the batch to the insert or the update strategy:
+        /// - INSERT: grouped by column signature (preserves DB defaults for unset columns)
         /// - UPDATE: VARBINARY bitmask (single statement, no grouping, handles varying ChangedProperties)
-        /// 
-        /// LinkedQueries can reference different tables/types, so queries are first
-        /// grouped by TableName before dispatching to single-table bulk operations.
         /// Both use #temp table + SqlBulkCopy for maximum throughput at high row counts.
         /// </summary>
-        private async Task ExecuteBulkAsync(Query rootQuery, CancellationToken token)
+        protected override async Task ExecuteBulkAsync(Query rootQuery, CancellationToken token)
         {
             var timer = Stopwatch.StartNew();
             var executionId = Guid.NewGuid();
+            var writes = BulkWritePlanner.GroupByTable(rootQuery);
+            var totalRows = writes.Sum(w => w.Queries.Count);
 
-            var allQueries = new List<Query>(rootQuery.LinkedQueries.Count + 1) { rootQuery };
-            allQueries.AddRange(rootQuery.LinkedQueries);
-
-            // Safety: all queries must have schema for the bulk path
-            var queriesWithoutSchema = allQueries.Count(q => q.TableSchema is not SqlTableSchema || q.TableName == null);
-            if (queriesWithoutSchema > 0)
-                throw new InvalidOperationException(
-                    $"{queriesWithoutSchema} of {allQueries.Count} queries are missing TableSchema or TableName. " +
-                    $"All queries in a bulk batch must have SqlTableSchema set.");
-
-            var tableGroups = allQueries
-                .GroupBy(q => q.TableName!, StringComparer.OrdinalIgnoreCase);
-
-            Debug.WriteLine($"{DateTime.Now} Starting bulk execution {executionId} on context:{_ID} " +
-                $"({allQueries.Count} total rows)");
+            Debug.WriteLine($"{DateTime.Now} Starting bulk execution {executionId} on context:{ContextId} " +
+                $"({totalRows} total rows)");
 
             int tableGroupIndex = 0;
-            foreach (var tableGroup in tableGroups)
+            foreach (var write in writes)
             {
-                var queries = tableGroup.ToList();
-                var schema = (SqlTableSchema)queries[0].TableSchema!;
-                var tableName = tableGroup.Key;
-                var isUpdate = queries[0].Type == QueryType.UPDATE;
-                var groupId = Guid.NewGuid();
+                Debug.WriteLine($"  Table group {tableGroupIndex}: {write.TableName} - {write.Queries.Count} {(write.IsUpdate ? "UPDATE" : "INSERT")} rows");
 
-                // Validate all queries in the group are the same operation type
-                if (queries.Any(q => q.Type != queries[0].Type))
-                    throw new InvalidOperationException(
-                        $"Mixed INSERT/UPDATE operations for table '{tableName}' in a single bulk batch. " +
-                        $"Split inserts and updates into separate queries.");
-
-                Debug.WriteLine($"  Table group {tableGroupIndex}: {tableName} - {queries.Count} {(isUpdate ? "UPDATE" : "INSERT")} rows");
-
-                if (isUpdate)
-                    await ExecuteBulkUpdateAsync(queries, schema, tableName, groupId, token);
+                if (write.IsUpdate)
+                    await ExecuteBulkUpdateAsync(write, Guid.NewGuid(), token);
                 else
-                    await ExecuteBulkInsertAsync(queries, schema, tableName, groupId, token);
+                    await ExecuteBulkInsertAsync(write, Guid.NewGuid(), token);
 
                 tableGroupIndex++;
             }
 
             Debug.WriteLine($"{DateTime.Now} Finished bulk execution {executionId} " +
-                $"in {timer.ElapsedMilliseconds} ms ({allQueries.Count} total rows)");
+                $"in {timer.ElapsedMilliseconds} ms ({totalRows} total rows)");
         }
-
-        // ─────────────────────────────────────────────────────────────────────
-        //  INSERT: grouped by column signature
-        //  Each group gets its own temp table + INSERT...SELECT so that
-        //  omitted columns receive DB defaults (not NULL).
-        // ─────────────────────────────────────────────────────────────────────
 
         #region Bulk INSERT
 
-        private async Task ExecuteBulkInsertAsync(
-            List<Query> allQueries, SqlTableSchema schema,
-            string tableName, Guid executionId, CancellationToken token)
+        private async Task ExecuteBulkInsertAsync(BulkTableWrite write, Guid executionId, CancellationToken token)
         {
-            var groups = GroupByColumnSignature(allQueries);
+            var groups = BulkWritePlanner.GroupByColumnSignature(write.Queries);
 
             Debug.WriteLine($"  Bulk INSERT: {groups.Count} column group{(groups.Count > 1 ? "s" : "")}");
 
@@ -127,89 +73,26 @@ namespace TFM.Nucleus.Data.SQL
                 var group = groups[gi];
                 var tempTable = groups.Count == 1 ? baseTempName : $"{baseTempName}_{gi}";
 
-                var dataColumns = new List<BulkColumn>();
-                var serverFunctionColumns = new Dictionary<string, string>();
-
-                ScanSetColumns(group, schema, dataColumns, serverFunctionColumns);
+                var (dataColumns, serverFunctionColumns) = BulkWritePlanner.ScanSetColumns(group, write.Schema);
 
                 if (dataColumns.Count == 0 && serverFunctionColumns.Count == 0)
                     continue;
 
-                var dt = BuildInsertDataTable(group, dataColumns, serverFunctionColumns);
+                var dt = ToDataTable(dataColumns.Select(c => (c.Name, c.ClrType)), BulkWritePlanner.InsertRows(group, dataColumns));
 
                 try
                 {
                     await CreateTempTableAsync(tempTable, dataColumns, null, 0, token);
                     await BulkCopyToTempTableAsync(tempTable, dt, token);
 
-                    var baseSql = BuildBulkInsertSql(tableName, tempTable, dataColumns, serverFunctionColumns);
-                    int totalRows = dt.Rows.Count;
-                    int batchSize = DefaultBulkBatchSize;
-
-                    await ExecuteInBatchesAsync(baseSql, tempTable, totalRows, batchSize, "INSERT", token);
+                    var baseSql = BuildBulkInsertSql(write.TableName, tempTable, dataColumns, serverFunctionColumns);
+                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "INSERT", token);
                 }
                 finally
                 {
                     await TryDropTempTableAsync(tempTable);
                 }
             }
-        }
-
-        /// <summary>
-        /// Groups queries by their SET column signature (sorted set of data column names,
-        /// excluding server functions). Queries in the same group have identical columns.
-        /// </summary>
-        private static List<List<Query>> GroupByColumnSignature(List<Query> queries)
-        {
-            var groups = new Dictionary<string, List<Query>>(StringComparer.Ordinal);
-
-            foreach (var q in queries)
-            {
-                var names = q.SetParameters
-                    .Where(p => p != null && p.Name != null && !IsServerFunction(p))
-                    .Select(p => p!.Name!)
-                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
-
-                var signature = string.Join("|", names);
-
-                if (!groups.TryGetValue(signature, out var group))
-                {
-                    group = [];
-                    groups[signature] = group;
-                }
-                group.Add(q);
-            }
-
-            return [.. groups.Values];
-        }
-
-        private static DataTable BuildInsertDataTable(
-            List<Query> queryGroup,
-            List<BulkColumn> dataColumns,
-            Dictionary<string, string> serverFunctionColumns)
-        {
-            var dt = new DataTable();
-            foreach (var col in dataColumns)
-                dt.Columns.Add(col.Name, col.ClrType).AllowDBNull = true;
-
-            foreach (var q in queryGroup)
-            {
-                var row = dt.NewRow();
-                foreach (DataColumn dc in dt.Columns)
-                    row[dc] = DBNull.Value;
-
-                foreach (var p in q.SetParameters)
-                {
-                    if (p?.Name == null) continue;
-                    if (serverFunctionColumns.ContainsKey(p.Name)) continue;
-                    if (!dt.Columns.Contains(p.Name)) continue;
-                    row[p.Name] = CoerceValueForDataTable(p.Value);
-                }
-
-                dt.Rows.Add(row);
-            }
-
-            return dt;
         }
 
         /// <summary>
@@ -220,7 +103,7 @@ namespace TFM.Nucleus.Data.SQL
         private static string BuildBulkInsertSql(
             string tableName, string tempTable,
             List<BulkColumn> dataColumns,
-            Dictionary<string, string> serverFunctionColumns)
+            Dictionary<string, Parameter> serverFunctionColumns)
         {
             var insertCols = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
             var selectExprs = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
@@ -233,7 +116,7 @@ namespace TFM.Nucleus.Data.SQL
             foreach (var kvp in serverFunctionColumns)
             {
                 insertCols.Add($"[{kvp.Key}]");
-                selectExprs.Add(kvp.Value);
+                selectExprs.Add(SqlServerQueryRenderer.SetValue(kvp.Value));
             }
 
             return $"INSERT INTO {tableName} ({string.Join(",", insertCols)}) " +
@@ -252,37 +135,27 @@ namespace TFM.Nucleus.Data.SQL
 
         #region Bulk UPDATE
 
-        private async Task ExecuteBulkUpdateAsync(
-            List<Query> allQueries, SqlTableSchema schema,
-            string tableName, Guid executionId, CancellationToken token)
+        private async Task ExecuteBulkUpdateAsync(BulkTableWrite write, Guid executionId, CancellationToken token)
         {
-            var dataColumns = new List<BulkColumn>();
-            var serverFunctionColumns = new Dictionary<string, string>();
-            var whereColumns = new List<BulkColumn>();
-
-            // Scan ALL queries to build the union of changed columns.
-            // Each column gets a stable index for the bitmask.
-            ScanSetColumns(allQueries, schema, dataColumns, serverFunctionColumns);
-            ScanWhereColumns(allQueries, schema, whereColumns);
+            // The union of changed columns across every query; each gets a stable bit index.
+            var (dataColumns, serverFunctionColumns) = BulkWritePlanner.ScanSetColumns(write.Queries, write.Schema);
+            var whereColumns = BulkWritePlanner.ScanWhereColumns(write.Queries, write.Schema);
 
             if (dataColumns.Count == 0 && serverFunctionColumns.Count == 0)
                 throw new InvalidOperationException("Bulk UPDATE resolved zero columns to process.");
             if (whereColumns.Count == 0)
                 throw new InvalidOperationException("Bulk UPDATE resolved zero JOIN/WHERE columns.");
 
-            // Build column name → bit index lookup
-            var columnIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < dataColumns.Count; i++)
-                columnIndex[dataColumns[i].Name] = i;
-
-            int bitmaskByteCount = (dataColumns.Count + 7) / 8;
+            int bitmaskByteCount = BulkWritePlanner.BitmaskBytes(dataColumns.Count);
 
             Debug.WriteLine($"  Bulk UPDATE: {dataColumns.Count} data columns, " +
                 $"{bitmaskByteCount} bitmask byte{(bitmaskByteCount > 1 ? "s" : "")}, " +
                 $"{serverFunctionColumns.Count} server function column{(serverFunctionColumns.Count != 1 ? "s" : "")}");
 
-            var dt = BuildUpdateDataTable(allQueries, dataColumns, whereColumns,
-                serverFunctionColumns, columnIndex, bitmaskByteCount);
+            var columns = dataColumns.Select(c => (c.Name, c.ClrType))
+                .Concat(whereColumns.Select(c => (BulkWritePlanner.WhereColumnAlias(c.Name), c.ClrType)))
+                .Append(("_changed", typeof(byte[])));
+            var dt = ToDataTable(columns, BulkWritePlanner.UpdateRows(write.Queries, dataColumns, whereColumns));
 
             var tempTable = $"#BulkU_{executionId.ToString("N")[..8]}";
             try
@@ -291,72 +164,13 @@ namespace TFM.Nucleus.Data.SQL
                 await BulkCopyToTempTableAsync(tempTable, dt, token);
 
                 var baseSql = BuildBitmaskUpdateSql(
-                    tableName, tempTable, dataColumns, whereColumns, serverFunctionColumns);
-                int totalRows = dt.Rows.Count;
-                int batchSize = DefaultBulkBatchSize;
-
-                await ExecuteInBatchesAsync(baseSql, tempTable, totalRows, batchSize, "UPDATE", token);
+                    write.TableName, tempTable, dataColumns, whereColumns, serverFunctionColumns);
+                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "UPDATE", token);
             }
             finally
             {
                 await TryDropTempTableAsync(tempTable);
             }
-        }
-
-        private static DataTable BuildUpdateDataTable(
-            List<Query> allQueries,
-            List<BulkColumn> dataColumns,
-            List<BulkColumn> whereColumns,
-            Dictionary<string, string> serverFunctionColumns,
-            Dictionary<string, int> columnIndex,
-            int bitmaskByteCount)
-        {
-            var dt = new DataTable();
-
-            foreach (var col in dataColumns)
-                dt.Columns.Add(col.Name, col.ClrType).AllowDBNull = true;
-            foreach (var col in whereColumns)
-                dt.Columns.Add(WhereColumnAlias(col.Name), col.ClrType).AllowDBNull = true;
-            dt.Columns.Add("_changed", typeof(byte[]));
-
-            foreach (var q in allQueries)
-            {
-                var row = dt.NewRow();
-                foreach (DataColumn dc in dt.Columns)
-                    row[dc] = DBNull.Value;
-
-                var bitmask = new byte[bitmaskByteCount];
-
-                foreach (var p in q.SetParameters)
-                {
-                    if (p?.Name == null) continue;
-                    if (serverFunctionColumns.ContainsKey(p.Name)) continue;
-                    if (!columnIndex.TryGetValue(p.Name, out int bitIdx)) continue;
-
-                    // Set the bit for this column
-                    bitmask[bitIdx / 8] |= (byte)(1 << (bitIdx % 8));
-                    // Set the value (works for both normal values and explicit NULLs)
-                    row[p.Name] = CoerceValueForDataTable(p.Value);
-                }
-
-                // WHERE columns
-                var whereParams = q.Where.AllParameters();
-                if (whereParams != null)
-                {
-                    foreach (var p in whereParams)
-                    {
-                        if (p?.Name == null) continue;
-                        var alias = WhereColumnAlias(p.Name);
-                        if (!dt.Columns.Contains(alias)) continue;
-                        row[alias] = CoerceValueForDataTable(p.Value);
-                    }
-                }
-
-                row["_changed"] = bitmask;
-                dt.Rows.Add(row);
-            }
-
-            return dt;
         }
 
         /// <summary>
@@ -366,7 +180,7 @@ namespace TFM.Nucleus.Data.SQL
         ///     t.[Timestamp] = SYSDATETIMEOFFSET()
         /// FROM Target t
         /// INNER JOIN [#BulkU_xxx] s ON t.[ID] = s.[_w_ID]
-        /// 
+        ///
         /// SQL Server 2008 R2 compatible. SUBSTRING on VARBINARY returns a single byte,
         /// CAST to INT for bitwise AND.
         /// Storage engine skips log writes when ELSE evaluates to the existing value.
@@ -375,7 +189,7 @@ namespace TFM.Nucleus.Data.SQL
             string tableName, string tempTable,
             List<BulkColumn> dataColumns,
             List<BulkColumn> whereColumns,
-            Dictionary<string, string> serverFunctionColumns)
+            Dictionary<string, Parameter> serverFunctionColumns)
         {
             var setClauses = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
 
@@ -392,11 +206,11 @@ namespace TFM.Nucleus.Data.SQL
 
             // Server functions apply unconditionally to every row
             foreach (var kvp in serverFunctionColumns)
-                setClauses.Add($"t.[{kvp.Key}]={kvp.Value}");
+                setClauses.Add($"t.[{kvp.Key}]={SqlServerQueryRenderer.SetValue(kvp.Value)}");
 
             var joinClauses = new List<string>(whereColumns.Count);
             foreach (var col in whereColumns)
-                joinClauses.Add($"t.[{col.Name}]=s.[{WhereColumnAlias(col.Name)}]");
+                joinClauses.Add($"t.[{col.Name}]=s.[{BulkWritePlanner.WhereColumnAlias(col.Name)}]");
 
             return $"UPDATE t WITH (ROWLOCK) SET {string.Join(",", setClauses)} " +
                    $"FROM {tableName} t INNER JOIN [{tempTable}] s ON {string.Join(" AND ", joinClauses)}";
@@ -404,82 +218,17 @@ namespace TFM.Nucleus.Data.SQL
 
         #endregion
 
-        // ─────────────────────────────────────────────────────────────────────
-        //  Shared infrastructure
-        // ─────────────────────────────────────────────────────────────────────
-
-        #region Bulk - Column Scanning
-
-        /// <summary>
-        /// Scans queries for the union of SET columns, split into data columns
-        /// and server function columns. Uses SqlColumnSchema for exact SQL type mapping.
-        /// </summary>
-        private static void ScanSetColumns(
-            List<Query> queries, SqlTableSchema schema,
-            List<BulkColumn> dataColumns,
-            Dictionary<string, string> serverFunctionColumns)
-        {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var q in queries)
-            {
-                foreach (var p in q.SetParameters)
-                {
-                    if (p?.Name == null) continue;
-
-                    if (IsServerFunction(p))
-                    {
-                        serverFunctionColumns.TryAdd(p.Name, p.SQLSetValue());
-                        continue;
-                    }
-
-                    if (!seen.Add(p.Name)) continue;
-
-                    var schemaCol = schema.FindByColumnName(p.Name)
-                        ?? throw new InvalidOperationException(
-                            $"Column '{p.Name}' not found in schema for table '{schema.TableName}'.");
-
-                    dataColumns.Add(new BulkColumn(
-                        p.Name,
-                        BuildTempTableTypeDef(schemaCol),
-                        GetClrTypeForBulkColumn(schemaCol)));
-                }
-            }
-        }
-
-        /// <summary>
-        /// Scans queries for WHERE columns (typically the identity column for UPDATE).
-        /// </summary>
-        private static void ScanWhereColumns(
-            List<Query> queries, SqlTableSchema schema,
-            List<BulkColumn> whereColumns)
-        {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var q in queries)
-            {
-                var whereParams = q.Where.AllParameters();
-                if (whereParams == null) continue;
-                foreach (var p in whereParams)
-                {
-                    if (p?.Name == null) continue;
-                    if (!seen.Add(p.Name)) continue;
-
-                    var schemaCol = schema.FindByColumnName(p.Name)
-                        ?? throw new InvalidOperationException(
-                            $"WHERE column '{p.Name}' not found in schema for table '{schema.TableName}'.");
-
-                    whereColumns.Add(new BulkColumn(
-                        p.Name,
-                        BuildTempTableTypeDef(schemaCol),
-                        GetClrTypeForBulkColumn(schemaCol)));
-                }
-            }
-        }
-
-        #endregion
-
         #region Bulk - SQL Execution Helpers
+
+        private static DataTable ToDataTable(IEnumerable<(string Name, Type ClrType)> columns, List<object?[]> rows)
+        {
+            var dt = new DataTable();
+            foreach (var (name, clrType) in columns)
+                dt.Columns.Add(name, clrType).AllowDBNull = true;
+            foreach (var row in rows)
+                dt.Rows.Add(row);
+            return dt;
+        }
 
         /// <summary>
         /// Creates a temp table with a [_rowid] IDENTITY column for batch processing.
@@ -495,12 +244,12 @@ namespace TFM.Nucleus.Data.SQL
             var sb = new StringBuilder($"CREATE TABLE [{tempTable}] ([_rowid] INT IDENTITY(1,1) NOT NULL");
 
             foreach (var col in dataColumns)
-                sb.Append($",[{col.Name}] {col.SqlTypeDef}");
+                sb.Append($",[{col.Name}] {SqlServerTypeMapper.TempTableTypeDef(col.Column)}");
 
             if (whereColumns != null)
             {
                 foreach (var col in whereColumns)
-                    sb.Append($",[{WhereColumnAlias(col.Name)}] {col.SqlTypeDef}");
+                    sb.Append($",[{BulkWritePlanner.WhereColumnAlias(col.Name)}] {SqlServerTypeMapper.TempTableTypeDef(col.Column)}");
             }
 
             if (bitmaskByteCount > 0)
@@ -508,17 +257,14 @@ namespace TFM.Nucleus.Data.SQL
 
             sb.Append(')');
 
-            _CurrentCommand!.Parameters.Clear();
-            _CurrentCommand.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
-            _CurrentCommand.CommandText = sb.ToString();
-            await _CurrentCommand.ExecuteNonQueryAsync(token);
+            await ExecuteBulkStatementAsync(sb.ToString(), token);
 
             Debug.WriteLine($"  Created Bulk {(bitmaskByteCount > 0 ? "UPDATE" : "INSERT")} temp table: {tempTable}");
         }
 
         private async Task BulkCopyToTempTableAsync(string tempTable, DataTable dt, CancellationToken token)
         {
-            using var bulkCopy = new SqlBulkCopy(_CurrentConnection!, SqlBulkCopyOptions.Default, _CurrentTransaction);
+            using var bulkCopy = new SqlBulkCopy(SqlConnection!, SqlBulkCopyOptions.Default, SqlTransaction);
             bulkCopy.DestinationTableName = tempTable;
             bulkCopy.BulkCopyTimeout = SqlConfig.BulkCopyTimeoutSeconds;
             // Map only data columns - _rowid is IDENTITY and auto-populated
@@ -531,28 +277,25 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>
         /// Executes the bulk SQL in batches using the [_rowid] IDENTITY column.
-        /// Appends WHERE s.[_rowid] BETWEEN @start AND @end to each execution.
-        /// 
+        /// Appends WHERE s.[_rowid] BETWEEN start AND end to each execution.
+        ///
         /// Batching prevents:
         /// - Transaction log pressure (each batch generates its own log records)
         /// - Lock escalation to table locks (stays at row/page level)
         /// - Command timeouts on large datasets
-        /// 
+        ///
         /// All batches execute on the same connection/transaction, so atomicity
         /// is preserved - a failure on any batch rolls back the entire transaction.
         /// </summary>
         private async Task ExecuteInBatchesAsync(
-            string baseSql, string tempTable,
+            string baseSql,
             int totalRows, int batchSize,
             string operationName, CancellationToken token)
         {
             if (totalRows <= batchSize)
             {
                 // Small enough for a single pass - append WHERE to constrain to all rows
-                _CurrentCommand!.Parameters.Clear();
-                _CurrentCommand.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
-                _CurrentCommand.CommandText = $"{baseSql} WHERE s.[_rowid] BETWEEN 1 AND {totalRows}";
-                await _CurrentCommand.ExecuteNonQueryAsync(token);
+                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN 1 AND {totalRows}", token);
 
                 Debug.WriteLine($"  Bulk {operationName}: {totalRows} rows in single batch");
                 return;
@@ -567,10 +310,7 @@ namespace TFM.Nucleus.Data.SQL
                 int batchEnd = Math.Min(batchStart + batchSize - 1, totalRows);
                 batchNumber++;
 
-                _CurrentCommand!.Parameters.Clear();
-                _CurrentCommand.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
-                _CurrentCommand.CommandText = $"{baseSql} WHERE s.[_rowid] BETWEEN {batchStart} AND {batchEnd}";
-                await _CurrentCommand.ExecuteNonQueryAsync(token);
+                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN {batchStart} AND {batchEnd}", token);
 
                 Debug.WriteLine($"  Bulk {operationName} batch {batchNumber}: " +
                     $"rows {batchStart}-{batchEnd} ({batchEnd - batchStart + 1} rows) " +
@@ -583,69 +323,26 @@ namespace TFM.Nucleus.Data.SQL
             Debug.WriteLine($"  Bulk {operationName}: {totalRows} rows in {batchNumber} batches");
         }
 
+        private async Task ExecuteBulkStatementAsync(string commandText, CancellationToken token)
+        {
+            var command = SqlCommand;
+            command.Parameters.Clear();
+            command.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
+            command.CommandText = commandText;
+            await command.ExecuteNonQueryAsync(token);
+        }
+
         private async Task TryDropTempTableAsync(string tempTable)
         {
             try
             {
                 Debug.WriteLine($"  Dropping temp table: {tempTable}");
-                _CurrentCommand!.Parameters.Clear();
-                _CurrentCommand.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
-                _CurrentCommand.CommandText = $"IF OBJECT_ID('tempdb..[{tempTable}]') IS NOT NULL DROP TABLE [{tempTable}]";
-                await _CurrentCommand.ExecuteNonQueryAsync(CancellationToken.None);
+                await ExecuteBulkStatementAsync($"IF OBJECT_ID('tempdb..[{tempTable}]') IS NOT NULL DROP TABLE [{tempTable}]", CancellationToken.None);
             }
             catch
             {
                 // Temp tables auto-drop on session end
             }
-        }
-
-        #endregion
-
-        #region Bulk - Shared Utilities
-
-        private static object CoerceValueForDataTable(object? value)
-        {
-            if (value == null)
-                return DBNull.Value;
-            if (value.GetType().IsEnum)
-                return Convert.ToInt32(value);
-            return value;
-        }
-
-        private static string WhereColumnAlias(string columnName) => $"_w_{columnName}";
-
-        /// <summary>
-        /// SQL type definition from schema. Mirrors SqlColumnSchema.MSSQLConstructor()
-        /// but omits FILESTREAM (invalid on temp tables) and trailing comma.
-        /// </summary>
-        private static string BuildTempTableTypeDef(SqlColumnSchema col)
-        {
-            var sb = new StringBuilder();
-            sb.Append(col.DataType);
-
-            if (col.DataType is ESqlDataType.Decimal or ESqlDataType.Numeric)
-                sb.Append($"({col.Precision},{col.Scale})");
-            else if (!string.IsNullOrEmpty(col.SqlDataSize))
-                sb.Append($"({col.SqlDataSize})");
-
-            sb.Append(" NULL");
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// CLR type for DataTable columns. Uses PropertySchema.Type directly,
-        /// with overrides for types that SQL maps differently to their CLR representation
-        /// (enums → int, ICoreObject → Guid, IDatabaseStringValue → string).
-        /// </summary>
-        private static Type GetClrTypeForBulkColumn(SqlColumnSchema col)
-        {
-            var type = col.PropertySchema.Type;
-
-            if (type.IsEnum) return typeof(int);
-            if (typeof(ICoreObject).IsAssignableFrom(type)) return typeof(Guid);
-            if (typeof(IDatabaseStringValue).IsAssignableFrom(type)) return typeof(string);
-
-            return Nullable.GetUnderlyingType(type) ?? type;
         }
 
         #endregion

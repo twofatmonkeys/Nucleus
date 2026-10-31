@@ -139,8 +139,8 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void SelectQuery_ExcludeChildCollection_DropsItsSelect()
         {
-            var parent = new SelectQuery(new SqlTableSchema(ObjectSchema.Get<TestDeletableWidget>(), null!));
-            var child = new SelectQuery(new SqlTableSchema(ObjectSchema.Get<TestDeletableChild>(), null!)) { ChildCollectionProperty = "Children" };
+            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestDeletableWidget>()));
+            var child = new SelectQuery(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<TestDeletableChild>())) { ChildCollectionProperty = "Children" };
             parent.AddChildQuery(child, "Parent");
 
             Assert.True(parent.ExcludeChildCollection("Children"));

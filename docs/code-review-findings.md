@@ -8,6 +8,52 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
+### Found during the provider refactor (October 2026)
+
+The SQL Server output was pinned byte for byte before the query and schema model moved into
+`TFM.Nucleus.Data`, so these were kept exactly as they were and are recorded here instead. Each
+is a separate change, with a golden update that shows exactly what moves.
+
+- **Every SQL Server select is a dirty read by default.** `Query.WithNoLock` defaults to false and
+  `SqlServerQueryRenderer` writes `WITH(NOLOCK)` when it is false, so the flag is inverted: every
+  root, paged and count select reads uncommitted rows unless a caller sets `WithNoLock = true`,
+  which removes the hint. Nothing in the repo sets it. Fixing it changes what both production
+  sites read under concurrent writes.
+- **Chained updates are joined with a space.** `SqlServerQueryRenderer.Update` appends each linked
+  query with a space rather than `;`. T-SQL accepts it; it is still wrong, and the raw golden
+  `update.many` pins it.
+- **The OUTPUT clauses are dead.** Nothing constructs an `OutputParameter`, so the insert and
+  update OUTPUT branches never render, `ReturnOutputToProperty` has no effect, and `Timestamp` is
+  never read back (the entity keeps the client's `DateTimeOffset.Now`). The update branch is also
+  malformed. Remove both, or implement read-back, as one change.
+- **TEXTIMAGE_ON never fires.** `SqlServerSchemaDialect.CreateTableStatements` looks for
+  `nvarchar(max)`, `varchar(max)` and `varbinary(max)` case-sensitively, but the type mapper
+  writes `[NVarChar](max)`. The clause is optional, so tables are correct; the check is dead.
+- **`DatabaseColumn.ColumnName` is half implemented.** `ExpressionParser` uses it for a predicate's
+  column, but the schema names every column after its property, so a property with a different
+  `ColumnName` produces predicates on a column that does not exist. Either honour it in
+  `TableSchema` or remove it.
+- **LIKE wildcards in values are not escaped on SQL Server.** `StartsWith("50%")` matches every
+  value starting `50`. The value is bound, so this is a correctness issue, not an injection.
+- **`SQLConfiguration.BulkCopyBatchSize` is not applied.** Bulk statements run in fixed batches of
+  50,000 rows. The README says so.
+- **A catalog column of a type Nucleus does not know fails the whole schema check**, in any table
+  of the database, including tables Nucleus does not own (a `sql_variant` column, say). The type
+  is parsed when the catalog is read rather than when a Nucleus column is compared.
+- **The SQL Server catalog queries interpolate a table name** (`ColumnsQuery`, the full-text
+  check) instead of binding it. The names are Nucleus's own, so this is hygiene rather than an
+  injection.
+- **Some neutral names still carry SQL Server vocabulary**: `IPropertySchema.HasFullTextIndex` and
+  `IsNonClusteredIndex`, and the `ServerFunctionKind` and `ServerFunction` tokens `SysDateTime`
+  and `SysDateTimeOffset`. Alias them by meaning, as the attribute fields were.
+
+### Found with the PostgreSQL provider (October 2026)
+
+- **Every PostgreSQL table carries a notification trigger**, created at initialise so a
+  subscription needs no DDL rights at run time. Each statement that writes a table queues one
+  `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
+  but a write-heavy table pays it on every statement.
+
 ### The parameterless AddNucleus() enables schema migration
 
 `NucleusOptions.ReadOnlySchema` defaults to `true`, but the convenience `AddNucleus()` overload sets
@@ -72,7 +118,9 @@ the child's row in place.
 `NucleusBinderyStore.DeletePageAsync` deletes versions with `PageId = @pageId`, and `VersionsOf`
 reads them the same way. Under a case-insensitive collation that also matches a page id differing
 only in case. The document lookup filters ordinally; the version paths do not. This predates the
-switch to delete by predicate, which kept the same condition.
+switch to delete by predicate, which kept the same condition. It is now provider dependent: SQL
+Server's default collation matches without regard to case, PostgreSQL's equality does not, so the
+same store deletes different rows for such a page id on the two engines.
 
 ### Pruning versions still loads their content
 
@@ -81,6 +129,31 @@ them and choose which to delete. Ordering happens in memory because the provider
 so avoiding the load needs column projection, which Nucleus does not have.
 
 ## Fixed
+
+### Context and store defects fixed by the provider refactor (October 2026)
+
+- **A context that failed to open kept its pool slot.** The context entered the process-wide pool
+  before its connection opened, and stayed there when the open threw, so each failed open shrank
+  `MaxConnectionPoolSize` for the life of the process. `DbDataContext` now leaves the pool when
+  opening fails.
+- **An async dispose left the context in the pool cache.** Only the sync dispose removed it, so an
+  application that disposed asynchronously grew the cache without bound. Both paths now share one
+  implementation.
+- **A raw statement kept the previous statement's parameters.** The schema rebuild ran its rename
+  scripts on one command without clearing parameters. SQL Server ignored the extras; a stricter
+  driver would not. Every statement now clears them.
+- **S3Library sniffed for SQL Server.** It recognised a unique violation by reflecting on a type
+  named `SqlException` and reading the index name out of its message, so it could not work on any
+  other engine. Providers now report `UniqueViolationException`, and the store matches its entity
+  and column.
+- **Cancellation was wrapped in a plain exception** when the driver threw it inside a command, so
+  a caller catching `OperationCanceledException` missed it (on SQL Server it depended on where
+  SqlClient happened to throw). Cancellation now propagates as thrown, after a transactional
+  context is marked for rollback.
+- **TFM.Stencil's round-trip case could not pass on PostgreSQL.** `Save_ThenGet_RoundTripsEveryField`
+  compared `CreatedUtc` and `UpdatedUtc` to the tick, and `timestamptz` keeps microseconds, so the
+  case failed by the 100 ns a value carries below a microsecond. TFM.Stencil 1.26.304.1 compares
+  them as the same instant to the microsecond; the Stencil pins moved to it together.
 
 ### The predicate parser dropped terms it could not place
 

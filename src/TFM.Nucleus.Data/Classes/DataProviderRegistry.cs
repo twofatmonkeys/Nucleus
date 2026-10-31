@@ -20,7 +20,7 @@ namespace TFM.Nucleus.Data
         {
             _providers = [.. providers];
             if (_providers.Count == 0)
-                throw new InvalidOperationException("No data providers are registered. Call AddNucleusSQLDataProvider (or another provider registration) before building the service provider.");
+                throw new InvalidOperationException("No data providers are registered. Register a provider package (its Add...DataProvider extension) before building the service provider.");
         }
 
         public IReadOnlyList<IDataProvider> AllProviders => _providers;

@@ -4,15 +4,16 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as eight packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as nine packages that version and
 release together.
 
 | Package | Source | Role |
 |---|---|---|
-| `TFM.Nucleus.Abstractions` | `src\TFM.Nucleus.Abstractions` | Contracts and the neutral query model. Zero SQL. |
+| `TFM.Nucleus.Abstractions` | `src\TFM.Nucleus.Abstractions` | Contracts and the neutral query interfaces. Zero SQL. |
 | `TFM.Nucleus` | `src\TFM.Nucleus` | Entity core: `CoreObject`, schema reflection, change tracking. |
-| `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer. Zero SQL. |
+| `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer, the shared query and schema model, and the provider SDK. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
+| `TFM.Nucleus.Data.PostgreSQL` | `src\TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql). |
 | `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
 | `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
 | `TFM.Nucleus.Stencil` | `src\TFM.Nucleus.Stencil` | TFM.Stencil's template bundle store (used by TFM.Mailroom and TFM.Paperwork) over Nucleus entities. Provider neutral; depends on `TFM.Stencil.Abstractions` from the feed. |
@@ -31,10 +32,12 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery`,
-`S3Library`, `Stencil` and `Attribution` sit beside `Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
-the neutral layers" rule is enforced by `ProviderSeamTests`, which scans the compiled string
-literals of the neutral assemblies.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), and
+`Bindery`, `S3Library`, `Stencil` and `Attribution` sit beside the providers over the same three.
+Neither provider references the other. Direction is enforced by project references and by
+`ProviderSeamTests`, which also scans the compiled string literals of the neutral and store
+assemblies for SQL and provider names; `ProviderSurfaceTests` holds each provider's public surface
+to its registration and configuration.
 
 `TFM.Nucleus.Bindery` is the first package here that serves another library: `NucleusBinderyStore`
 implements TFM.Bindery's `IBinderyStore` and its three optional capabilities over four
@@ -58,11 +61,11 @@ is soft-deleted. The version rule is the claim table: every save inserts a row
 racing from one version collide on `UQ_..._S3AssetVersionClaim_Claim` and exactly one commits;
 the previous claim is deleted in the same transaction, leaving one row per asset. Reads run
 outside a transaction and writes inside one, because a transactional context closes its
-connection after a read. A unique violation is recognised by walking the inner-exception chain
-for a type named `SqlException` with `Number` 2601 or 2627 and reading the index name from its
-message, so the package never references SqlClient; the claim or asset-id index means
-`S3AssetConcurrencyException`, the live-path index means `S3AssetConflictException`, anything
-else is rethrown as `S3LibraryException` with the original attached. Ordering, paging, the name
+connection after a read. A unique violation is the provider-neutral `UniqueViolationException`
+found in the inner-exception chain, matched by the entity and column it names, so the package
+knows no engine; the claim or asset-id index means `S3AssetConcurrencyException`, the live-path
+index means `S3AssetConflictException`, anything else is rethrown as `S3LibraryException` with
+the original attached. Ordering, paging, the name
 filter and the count run in memory over the rows the SQL-side equalities select, since the
 provider translates none of them. Tests run `S3AssetStoreContract.Cases` from
 `TFM.S3Library.Testing` against the integration database
@@ -113,7 +116,21 @@ dictionaries rather than fields, which is what makes change tracking and partial
 materialisers that construct entities without running constructors. The static API on `CoreObject`
 is a thin forwarder over `NucleusRuntime.Current`, which `AddNucleusData()` publishes.
 
-`TFM.Nucleus.Data` orchestrates. `ObjectDataManager` implements both `IObjectDataManager` and
+`TFM.Nucleus.Data` orchestrates, and holds everything a provider shares, so a provider package is
+only a dialect. The query model (`Queries`: Select, Insert, Update and DeleteWhere queries, the
+condition tree, `WhereRenderer`, `ParameterBinding`, `SoftDelete`) decides what a query means, and
+a query carries the provider's `IQueryRenderer`, which only writes it. The schema model (`Schema`:
+`TableSchema`, `ColumnSchema` with a `ColumnTypeIntent` and size facets, `SchemaComparer`,
+`SchemaManager`) builds, compares, creates and rebuilds tables through a provider's
+`ISchemaStore` (an `ISchemaDialect`, an `ICatalogReader` and a rebuild transaction). The provider
+SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
+`BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
+runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
+over System.Data.Common. I/O in the dialect interfaces takes an async flag and returns ValueTask,
+so one implementation serves the sync and async paths. A provider turns its engine's unique
+violation into `UniqueViolationException` (Abstractions) naming the entity and column.
+
+`ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. `ObjectDataAdaptor<T>`
 is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
@@ -129,16 +146,37 @@ child's parent as a stored value, so loaded children are never dirty. A load can
 collection by property name, which drops its query and marks the collection unloaded
 (`INucleusChildCollection.IsLoaded`); reading an unloaded collection throws, adding does not.
 
-`TFM.Nucleus.Data.SQL` renders the neutral model as T-SQL and owns every SQL string in the
-solution, along with schema create, compare and migrate, the bulk engine, and SqlDependency
-notifications. A select batches its child collection queries after its own rows, and
+`TFM.Nucleus.Data.SQL` is SQL Server's dialect over that SDK: `SqlServerQueryRenderer` (every
+T-SQL query string), `SqlServerSchemaDialect` and `SqlServerTypeMapper` (every DDL string),
+`SqlServerCatalogReader`, the full-text extras, the #temp and SqlBulkCopy bulk engine and
+SqlDependency notifications. Everything but its registration, `SQLConfiguration` and
+`SqlDataProviderException` is internal. Its output is pinned byte for byte by the raw goldens in
+`SqlServerGoldens.cs`. A select batches its child collection queries after its own rows, and
 `GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
 parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
 Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
 collection rows deepest first through the parent's condition, then the root, then
 `SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
-`SqlDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
+`DbDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
 detach the subqueries from their parents. The soft-delete rule lives once, in `SoftDelete`.
+
+`TFM.Nucleus.Data.PostgreSQL` is PostgreSQL's dialect over the same SDK: `PostgresQueryRenderer`,
+`PostgresSchemaDialect` with `PostgresTypes`, `PostgresCatalogReader` (information_schema and
+pg_catalog), the extras (a GIN full-text index per FullTextSearch column, and a statement-level
+trigger per table that runs `nucleus_notify()` to `pg_notify` the table's channel), the COPY
+BINARY bulk engine and `PostgresChangeSubscription` (one LISTEN connection per subscription).
+Identifiers are double-quoted so PascalCase survives; a name over 63 bytes goes through
+`IdentifierShortener` (Data) before it is written or compared, or PostgreSQL would silently
+truncate it and the schema check would rebuild it on every start. Index, constraint and sequence
+names are schema-wide in PostgreSQL, so a rebuild renames the old table's indexes and identity
+sequence before it creates the new table. Values are bound as their column's type: a
+`DateTimeOffset` as `timestamptz` in UTC (PostgreSQL keeps no offset and nothing below a
+microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `jsonb`; a `timestamptz`
+reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
+A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
+unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
+retries a transient failure (`ConnectRetryCount`). Its output is pinned by `PostgresGoldens.cs`,
+built from the same query corpus as the SQL Server goldens.
 
 ## Build and test
 
@@ -159,10 +197,14 @@ Warnings become errors only when `ContinuousIntegrationBuild=true`. To reproduce
 dotnet build TFM.Nucleus.slnx --configuration Release -p:ContinuousIntegrationBuild=true
 ```
 
-The integration tests need a disposable SQL Server database, configured through the
-`NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and
-`NUCLEUS_TEST_PASSWORD` environment variables or the matching `Nucleus:*` user secrets. They skip
-cleanly when none is configured, which is what happens in CI.
+The integration tests run every suite once per provider: each neutral suite is an abstract class
+with a sealed subclass per provider under `SqlServer\` and `Postgres\`, next to that engine's own
+tests. SQL Server needs a disposable database configured through the `NUCLEUS_TEST_SERVER`,
+`NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` environment variables
+or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
+`Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
+A provider with no settings skips cleanly, which is what happens in CI. A fixture whose
+initialisation fails includes the stack's warnings and errors in its message.
 
 ## Deviations from the scaffold
 
@@ -179,11 +221,33 @@ warning in new code fails CI.
 
 - **Do not put SQL in `Abstractions`, `TFM.Nucleus` or `Data`.** The provider seam is the whole
   reason a second database engine is possible. `ProviderSeamTests` will fail if you do.
+- **Consumers code against `Abstractions` and `Data` only.** An application, and every store
+  package, touches a provider package only to register and configure it, so a deployment picks
+  its database by picking a package. A provider package's public types are its `Add...` extensions,
+  its configuration class and the exception its registration throws; everything else is
+  `internal`. `ProviderSurfaceTests` holds each provider to that list, so widening it is a
+  deliberate review decision.
+- **No engine names in neutral or store assemblies.** No provider type name, error number or
+  registration name, in code or in a message. `ProviderSeamTests` scans the compiled strings of
+  `Abstractions`, `TFM.Nucleus`, `Data` and the store packages for SQL keywords and provider
+  names, and checks none of them references a provider or its client. When a store needs to know
+  what an engine did (a unique violation, say), add a neutral type to `Abstractions` or `Data` and
+  have every provider produce it.
+- **Shared logic lives once, in `Data`.** A provider implements the dialect interfaces and derives
+  from the SDK base classes; it never re-implements a query rule, a tree walk, the schema compare
+  or the execution paths. If a second provider needs something the first one has privately, move
+  it into `Data` behind a neutral name, not into the second provider as a copy.
+- **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
+  `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
+  SQL Server names stay, obsolete, because entities in production use them.
+- **Change the SQL Server goldens or the API snapshot deliberately.** `SqlServerGoldens.cs` and
+  `PublicApiSnapshot.cs` are written only by their accept tests, with `NUCLEUS_ACCEPT_GOLDENS=1`;
+  the diff is the review.
 - **Do not move a shared property into a csproj.** The three level props split (repo, `src`,
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The eight packages
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The nine packages
   share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version,
   `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version, `TFM.Nucleus.Stencil` a
   `TFM.Stencil.Abstractions` version and `TFM.Nucleus.Attribution` a `TFM.Attribution` version (two identical per-TFM lines in each csproj); a release of
@@ -204,5 +268,5 @@ warning in new code fails CI.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all eight packages and is the reference documentation consumers see on the feed.
+  all nine packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.

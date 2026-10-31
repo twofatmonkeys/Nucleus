@@ -10,7 +10,7 @@
     <PackageId>TFM.Nucleus.Data.SQL</PackageId>
     <Title>TFM.Nucleus.Data.SQL</Title>
     <RootNamespace>TFM.Nucleus.Data.SQL</RootNamespace>
-    <Description>SQL Server provider for the Nucleus ORM: query rendering, connection and transaction context trees, the bulk engine, automatic schema create, compare and migrate, SqlDependency change notifications and AddNucleusSQLDataProvider registration.</Description>
+    <Description>SQL Server provider for the Nucleus ORM: T-SQL rendering, the SQL Server schema dialect and catalog for automatic schema create, compare and migrate, the SqlBulkCopy bulk engine, SqlDependency change notifications and AddNucleusSQLDataProvider registration.</Description>
     <PackageTags>tfm;nucleus;orm;sql-server;sqlclient;provider</PackageTags>
   </PropertyGroup>
 

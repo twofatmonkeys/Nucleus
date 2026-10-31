@@ -52,7 +52,7 @@ namespace TFM.Nucleus.Tests
             set => SetValue(value);
         }
 
-        [DatabaseColumn(Unique = true, NonClusteredIndex = true, IndexSortDESC = true)]
+        [DatabaseColumn(Unique = true, Indexed = true, IndexDescending = true)]
         public string? Sku
         {
             get => GetValue<string>();

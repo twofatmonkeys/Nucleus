@@ -1,9 +1,6 @@
-using Microsoft.Data.SqlClient;
-
 namespace TFM.Nucleus.IntegrationTests
 {
-    [Collection("Database")]
-    public class UniqueIndexIntegrationTests(DatabaseFixture fixture)
+    public abstract class UniqueIndexIntegrationTests(DatabaseFixture fixture)
     {
         [Fact]
         public async Task DuplicateValue_SecondSaveFails()
@@ -14,11 +11,12 @@ namespace TFM.Nucleus.IntegrationTests
 
             var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
 
-            // The context wraps provider errors; the SqlException is somewhere in the chain.
-            var sql = FindSqlException(ex);
-            Assert.NotNull(sql);
-            Assert.Equal(2601, sql!.Number);
-            Assert.Contains("UQ_", sql.Message);
+            // Every provider reports the broken index as the neutral exception, naming its column.
+            var violation = FindInChain<UniqueViolationException>(ex);
+            Assert.NotNull(violation);
+            Assert.True(violation!.Is<IntUniqueItem>(nameof(IntUniqueItem.Code)));
+            Assert.Equal("UQ_tbl_TFM_Nucleus_IntegrationTests_IntUniqueItem_Code", violation.IndexName);
+            Assert.NotNull(violation.InnerException);
         }
 
         [Fact]
@@ -50,11 +48,12 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Equal(2, loaded.Count);
         }
 
-        private static SqlException? FindSqlException(Exception ex)
+        /// <summary>The first exception of type <typeparamref name="T"/> in the inner-exception chain.</summary>
+        protected static T? FindInChain<T>(Exception ex) where T : Exception
         {
             for (Exception? e = ex; e != null; e = e.InnerException)
-                if (e is SqlException sql)
-                    return sql;
+                if (e is T found)
+                    return found;
             return null;
         }
     }

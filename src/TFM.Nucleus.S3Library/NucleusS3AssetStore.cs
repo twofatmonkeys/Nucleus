@@ -351,38 +351,34 @@ public sealed class NucleusS3AssetStore : IS3AssetStore
     }
 
     /// <summary>
-    /// The message of a SQL Server unique violation (error 2601 or 2627) anywhere in the chain,
-    /// or null. Found by type name and an int <c>Number</c> property rather than a type, so the
-    /// package stays provider neutral and never references SqlClient.
+    /// The unique violation anywhere in the chain, or null. Every provider reports one as a
+    /// <see cref="UniqueViolationException"/> naming the entity and column of the broken index,
+    /// so the package stays provider neutral.
     /// </summary>
-    internal static string? FindUniqueViolation(Exception exception)
+    internal static UniqueViolationException? FindUniqueViolation(Exception exception)
     {
         for (var current = exception; current is not null; current = current.InnerException)
-        {
-            if (!string.Equals(current.GetType().Name, "SqlException", StringComparison.Ordinal))
-                continue;
-            if (current.GetType().GetProperty("Number")?.GetValue(current) is int number && number is 2601 or 2627)
-                return current.Message;
-        }
+            if (current is UniqueViolationException violation)
+                return violation;
         return null;
     }
 
     /// <summary>
-    /// Which rule the index in the violation message guards: the claim or the asset id means a
-    /// racing writer won the version, the live path means a racing writer won the path. Null for
-    /// any other index, which is then an ordinary storage failure.
+    /// Which rule the broken index guards: the claim or the asset id means a racing writer won
+    /// the version, the live path means a racing writer won the path. Null for any other index,
+    /// which is then an ordinary storage failure.
     /// </summary>
-    internal static Exception? ClassifyUniqueViolation(string violation, Guid id, long expected, long actual, string fullPath)
+    internal static Exception? ClassifyUniqueViolation(UniqueViolationException violation, Guid id, long expected, long actual, string fullPath)
     {
-        if (violation.Contains($"{nameof(S3AssetVersionClaim)}_{nameof(S3AssetVersionClaim.Claim)}", StringComparison.OrdinalIgnoreCase) ||
-            violation.Contains($"{nameof(S3AssetRecord)}_{nameof(S3AssetRecord.AssetId)}", StringComparison.OrdinalIgnoreCase))
+        if (violation.Is<S3AssetVersionClaim>(nameof(S3AssetVersionClaim.Claim)) ||
+            violation.Is<S3AssetRecord>(nameof(S3AssetRecord.AssetId)))
             return new S3AssetConcurrencyException(id, expected, actual);
-        if (violation.Contains($"{nameof(S3AssetRecord)}_{nameof(S3AssetRecord.LivePath)}", StringComparison.OrdinalIgnoreCase))
+        if (violation.Is<S3AssetRecord>(nameof(S3AssetRecord.LivePath)))
             return new S3AssetConflictException(fullPath);
         return null;
     }
 
-    private async Task<Exception?> TranslateUniqueViolationAsync(string violation, Guid id, long expected, string fullPath, CancellationToken ct)
+    private async Task<Exception?> TranslateUniqueViolationAsync(UniqueViolationException violation, Guid id, long expected, string fullPath, CancellationToken ct)
     {
         // The stored version is re-read after the failed transaction has been disposed, so the
         // number in the exception is what the winner left behind.

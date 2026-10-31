@@ -42,8 +42,8 @@ namespace TFM.Nucleus
         {
             get { return GetValue<Guid>(); }
         }
-        [DatabaseColumnAttribute(NonClusteredIndex = true, IndexSortDESC = true,
-            SetValueOverride = eServerFunction.SYSDATETIMEOFFSET, ReturnOutputToProperty = true)]
+        [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
+            SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset Timestamp
         {
             get { return GetValue<DateTimeOffset>(); }

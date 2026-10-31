@@ -11,8 +11,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
     /// process, and the lock keeps the net8.0 and net10.0 runs, which <c>dotnet test</c> starts
     /// together, from resetting each other's rows.
     /// </summary>
-    [Collection("Database")]
-    public class NucleusBinderyStoreContractTests(DatabaseFixture fixture)
+    public abstract class NucleusBinderyStoreContractTests(DatabaseFixture fixture)
     {
         public static IEnumerable<object[]> Names => BinderyStoreContract.Cases.Select(c => new object[] { c.Name });
 
@@ -21,7 +20,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task Contract(string name)
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
+            using var _ = await fixture.LockAsync("bindery");
             var store = new NucleusBinderyStore(manager);
             var contractCase = BinderyStoreContract.Find(name);
             Assert.True(contractCase.AppliesTo(store), "the Nucleus store implements every optional capability");
@@ -34,7 +33,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task Publish_SnapshotsUnderTheRowsOwnId_AndMovesTheToken()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
+            using var _ = await fixture.LockAsync("bindery");
             await ResetAsync(manager);
             var store = new NucleusBinderyStore(manager);
             await store.SaveDraftAsync(BinderyStoreContract.NewPage("pub-1"));
@@ -52,7 +51,7 @@ namespace TFM.Nucleus.IntegrationTests.Bindery
         public async Task DiscardingANeverPublishedDraft_RemovesTheRow()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync("bindery");
+            using var _ = await fixture.LockAsync("bindery");
             await ResetAsync(manager);
             var store = new NucleusBinderyStore(manager);
             await store.SaveDraftAsync(BinderyStoreContract.NewPage("gone-1"));

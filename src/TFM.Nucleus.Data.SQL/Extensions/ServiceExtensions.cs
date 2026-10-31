@@ -1,6 +1,8 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TFM.Nucleus;
+using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Schema;
 using TFM.Nucleus.Data.SQL;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -30,7 +32,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IServiceCollection AddNucleusSQLDataProvider(this IServiceCollection services, Action<SQLConfiguration> config)
         {
             services.Configure(config);
-            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureSQLOptions>();
+            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureAppName<SQLConfiguration>>();
             services.AddSingleton<IDataProvider, SQLDataProvider>();
             return services;
         }
@@ -52,25 +54,17 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             var optionsName = rootType.FullName ?? rootType.Name;
             services.Configure(optionsName, config);
-            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureSQLOptions>();
+            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureAppName<SQLConfiguration>>();
             services.AddSingleton<IDataProvider>(sp => new SQLDataProvider(
                 sp.GetRequiredService<IObjectSchemaProvider>(),
                 sp.GetRequiredService<IOptionsMonitor<NucleusOptions>>(),
                 new NamedOptionsMonitor<SQLConfiguration>(sp.GetRequiredService<IOptionsMonitor<SQLConfiguration>>(), optionsName),
                 sp.GetService<ILogger<SQLDataProvider>>(),
-                sp.GetService<ILogger<SqlDataSchema>>())
+                sp.GetService<ILogger<SchemaManager>>())
             {
                 RootType = rootType,
             });
             return services;
         }
-    }
-
-    /// <summary>Presents one named options instance as an IOptionsMonitor's current value.</summary>
-    internal sealed class NamedOptionsMonitor<TOptions>(IOptionsMonitor<TOptions> inner, string name) : IOptionsMonitor<TOptions>
-    {
-        public TOptions CurrentValue => inner.Get(name);
-        public TOptions Get(string? optionsName) => inner.Get(optionsName ?? name);
-        public IDisposable? OnChange(Action<TOptions, string?> listener) => inner.OnChange(listener);
     }
 }

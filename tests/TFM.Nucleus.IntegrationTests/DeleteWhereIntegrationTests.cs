@@ -6,8 +6,7 @@ namespace TFM.Nucleus.IntegrationTests
     /// Delete by predicate and the child-row cascade, against the live database. Every row a
     /// test creates carries a unique tag, so tests never see each other's rows.
     /// </summary>
-    [Collection("Database")]
-    public class DeleteWhereIntegrationTests(DatabaseFixture fixture)
+    public abstract class DeleteWhereIntegrationTests(DatabaseFixture fixture)
     {
         private static string Tag(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 

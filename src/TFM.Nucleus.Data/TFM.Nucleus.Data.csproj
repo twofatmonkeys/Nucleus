@@ -10,7 +10,7 @@
     <PackageId>TFM.Nucleus.Data</PackageId>
     <Title>TFM.Nucleus.Data</Title>
     <RootNamespace>TFM.Nucleus.Data</RootNamespace>
-    <Description>Provider-neutral data layer for the Nucleus ORM: ObjectDataManager save, load and delete orchestration, a LINQ provider with async operators, expression parsing, multi-provider routing, the layered cache and AddNucleusData registration. Contains no SQL.</Description>
+    <Description>Provider-neutral data layer for the Nucleus ORM: ObjectDataManager save, load and delete orchestration, a LINQ provider with async operators, expression parsing, multi-provider routing, the layered cache and AddNucleusData registration, plus the query model, schema model and provider SDK every provider package builds on. Contains no SQL.</Description>
     <PackageTags>tfm;nucleus;orm;data;linq;provider</PackageTags>
   </PropertyGroup>
 

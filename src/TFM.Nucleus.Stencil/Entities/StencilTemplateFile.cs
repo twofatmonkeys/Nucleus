@@ -12,7 +12,7 @@ namespace TFM.Nucleus.Stencil;
 public class StencilTemplateFile : CoreObject<StencilTemplateFile>
 {
     /// <summary>The owning record's <see cref="StencilTemplateRecord.RecordKey"/>. Deletes sweep by it.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? RecordKey { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>The bundle-relative path as the caller gave it.</summary>

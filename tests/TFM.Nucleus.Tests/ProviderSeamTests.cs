@@ -55,17 +55,70 @@ namespace TFM.Nucleus.Tests
             Assert.False(widget.HasChanges);
         }
 
+        /// <summary>
+        /// The assemblies that must not know which database stores the data: the three core
+        /// layers and the four store packages.
+        /// </summary>
+        public static IEnumerable<System.Reflection.Assembly> NeutralAssemblies() =>
+            new[]
+            {
+                typeof(IQueryParameter),                                    // TFM.Nucleus.Abstractions
+                typeof(CoreObject),                                         // TFM.Nucleus
+                typeof(Parameter),                                          // TFM.Nucleus.Data
+                typeof(TFM.Nucleus.Bindery.NucleusBinderyStore),
+                typeof(TFM.Nucleus.S3Library.NucleusS3AssetStore),
+                typeof(TFM.Nucleus.Stencil.NucleusTemplateStore),
+                typeof(TFM.Nucleus.Attribution.NucleusAttributionStore),
+            }.Select(t => t.Assembly).Distinct();
+
+        /// <summary>Every provider package's assembly name, and the engine client it is built on.</summary>
+        public static readonly string[] ProviderAssemblyNames =
+            ["TFM.Nucleus.Data.SQL", "Microsoft.Data.SqlClient", "TFM.Nucleus.Data.PostgreSQL", "Npgsql"];
+
+        [Fact]
+        public void NeutralAssemblies_ReferenceNoProvider()
+        {
+            var offenders = NeutralAssemblies()
+                .SelectMany(a => a.GetReferencedAssemblies().Select(r => (Assembly: a.GetName().Name, Reference: r.Name)))
+                .Where(x => ProviderAssemblyNames.Contains(x.Reference))
+                .Select(x => $"{x.Assembly} references {x.Reference}")
+                .ToList();
+
+            Assert.True(offenders.Count == 0, string.Join(Environment.NewLine, offenders));
+        }
+
+        [Fact]
+        public void ProviderAssemblies_DoNotReferenceEachOther()
+        {
+            var sqlReferences = typeof(SQLConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
+            var postgresReferences = typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
+
+            Assert.DoesNotContain("TFM.Nucleus.Data.PostgreSQL", sqlReferences);
+            Assert.DoesNotContain("Npgsql", sqlReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.SQL", postgresReferences);
+            Assert.DoesNotContain("Microsoft.Data.SqlClient", postgresReferences);
+        }
+
         [Fact]
         public void NeutralAssemblies_ContainNoSqlText()
         {
             // Tripwire: string literals are compiled into the #US heap as UTF-16, so a raw byte
             // scan of the neutral assemblies finds any SQL-flavoured literal. Rendering belongs
-            // exclusively to provider assemblies.
-            string[] sqlMarkers = ["SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM", "[dbo]", "IS NULL", "WITH(NOLOCK)", "SCOPE_IDENTITY"];
-            Type[] anchors = [typeof(Parameter), typeof(IQueryParameter)]; // TFM.Nucleus.Data + TFM.Nucleus.Abstractions
+            // exclusively to provider assemblies. The query model lives in TFM.Nucleus.Data, so
+            // the keywords a renderer writes around it (joiners, ordering, paging, locking hints
+            // and catalog names of either dialect) are markers too, and so are the names of a
+            // provider's types and registration, which a neutral assembly has no reason to spell.
+            string[] sqlMarkers =
+            [
+                "SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM", "[dbo]", "IS NULL", "WITH(NOLOCK)", "SCOPE_IDENTITY",
+                " AND ", " OR ", "WHERE ", " FROM ", "ORDER BY", " ASC", " DESC", "LIKE", "ROWLOCK", "NOLOCK",
+                "@@ROWCOUNT", "COUNT_BIG", "ROW_NUMBER", "COLLATE", "CONTAINS(", "OFFSET ", "LIMIT ", "RETURNING",
+                "CREATE ", "DROP ", "ALTER ", "VALUES", "pg_", "information_schema", "INFORMATION_SCHEMA", "sys.", "::",
+                "SqlException", "SqlClient", "PostgresException", "Npgsql", "AddNucleusSQLDataProvider", "AddNucleusPostgres",
+            ];
 
             var offenders = new List<string>();
-            foreach (var assembly in anchors.Select(t => t.Assembly).Distinct())
+            foreach (var assembly in NeutralAssemblies())
             {
                 var bytes = System.IO.File.ReadAllBytes(assembly.Location);
                 foreach (var marker in sqlMarkers)

@@ -18,8 +18,8 @@
     <!-- TFM.Stencil.Abstractions multi-targets the same two frameworks from one version, so the
          two lines name the same version on purpose: pinned per target framework like every other
          reference in the repo. Bump both together; the store follows the library's store contract. -->
-    <PackageReference Include="TFM.Stencil.Abstractions" Version="1.26.273.1" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="TFM.Stencil.Abstractions" Version="1.26.273.1" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="TFM.Stencil.Abstractions" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="TFM.Stencil.Abstractions" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net10.0'" />
 
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
