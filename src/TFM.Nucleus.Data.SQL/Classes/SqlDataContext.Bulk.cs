@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using static TFM.Nucleus.Data.SQL.SqlColumnSchema;
 
+using TFM.Nucleus.Data.Queries;
+
 namespace TFM.Nucleus.Data.SQL
 {
     public partial class SqlDataContext
@@ -429,7 +431,7 @@ namespace TFM.Nucleus.Data.SQL
 
                     if (IsServerFunction(p))
                     {
-                        serverFunctionColumns.TryAdd(p.Name, p.SQLSetValue());
+                        serverFunctionColumns.TryAdd(p.Name, SqlServerQueryRenderer.SetValue(p));
                         continue;
                     }
 

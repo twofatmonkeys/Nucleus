@@ -21,6 +21,8 @@ using System.Threading.Tasks;
 using TFM.Nucleus;
 
 
+using TFM.Nucleus.Data.Queries;
+
 namespace TFM.Nucleus.Data.SQL
 {
     public partial class SqlDataContext : IDataContext, IDisposable, IAsyncDisposable
@@ -272,7 +274,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
             var tableSchema = Provider.GetTableSchema(obj.GetType());
-            return obj.IsNew ? new InsertQuery(tableSchema, obj) : new UpdateQuery(tableSchema, obj);
+            return obj.IsNew ? new InsertQuery(SqlServerQueryRenderer.Instance, tableSchema, obj) : new UpdateQuery(SqlServerQueryRenderer.Instance, tableSchema, obj);
         }
 
         /// <summary>The object's row and every row of its child collections, loaded or not.</summary>
@@ -334,7 +336,7 @@ namespace TFM.Nucleus.Data.SQL
                     Query? root = null;
                     foreach (var obj in operationGroup)
                     {
-                        Query query = operationGroup.Key ? new InsertQuery(tableSchema, obj) : new UpdateQuery(tableSchema, obj);
+                        Query query = operationGroup.Key ? new InsertQuery(SqlServerQueryRenderer.Instance, tableSchema, obj) : new UpdateQuery(SqlServerQueryRenderer.Instance, tableSchema, obj);
                         if (root == null)
                             root = query;
                         else
@@ -540,14 +542,21 @@ namespace TFM.Nucleus.Data.SQL
 
 
         public Task<DbDataReader?> GetObjectDataAsync(IQuery query) =>
-            _GetObjectDataAsync(query, CancellationToken.None);
+            _GetObjectDataAsync(query.ToString()!, query.GetSQLParams(), CancellationToken.None);
         public Task<DbDataReader?> GetObjectDataAsync(IQuery query, CancellationToken token) =>
-            _GetObjectDataAsync(query, token);
-        private async Task<DbDataReader?> _GetObjectDataAsync(IQuery query, CancellationToken token)
+            _GetObjectDataAsync(query.ToString()!, query.GetSQLParams(), token);
+
+        /// <summary>Reads a provider-written statement, such as a catalog query, on this context.</summary>
+        internal Task<DbDataReader?> GetObjectDataAsync(string commandText) =>
+            _GetObjectDataAsync(commandText, null, CancellationToken.None);
+        internal Task<DbDataReader?> GetObjectDataAsync(string commandText, CancellationToken token) =>
+            _GetObjectDataAsync(commandText, null, token);
+
+        private async Task<DbDataReader?> _GetObjectDataAsync(string commandText, SqlParameter[]? parameters, CancellationToken token)
         {
             try
             {
-                _CurrentCommand!.CommandText = query.ToString();
+                _CurrentCommand!.CommandText = commandText;
                 _CurrentCommand.Parameters.Clear();
                 if (_UseDependency)
                 {
@@ -555,7 +564,7 @@ namespace TFM.Nucleus.Data.SQL
                     SqlDependency dependency = new SqlDependency(_CurrentCommand);
                     dependency.OnChange += new OnChangeEventHandler(OnChange);
                 }
-                _CurrentCommand.Parameters.TryAddRange(query.GetSQLParams());
+                _CurrentCommand.Parameters.TryAddRange(parameters);
                 var reader = await _CurrentCommand.ExecuteReaderAsync(CommandBehavior.Default, token);
                 if (reader == null || !reader.HasRows)
                 {
@@ -1166,7 +1175,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 var sb = new StringBuilder($"{query} WHERE ");
                 for (int i = 0; i < parameters.Count(); i++)
-                    sb.Append($"{(i > 0 ? " AND " : "")}{((Parameter)parameters[i]).SQLWhereCondition()}");
+                    sb.Append($"{(i > 0 ? " AND " : "")}{SqlServerQueryRenderer.WhereCondition((Parameter)parameters[i])}");
                 sb.Append($" {append ?? ""}");
                 newQuery = sb.ToString();
             }

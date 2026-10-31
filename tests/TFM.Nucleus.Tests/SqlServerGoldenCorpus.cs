@@ -26,13 +26,13 @@ namespace TFM.Nucleus.Tests
 
         private static string Select<T>(Action<SelectQuery>? configure = null) where T : ICoreObject
         {
-            var query = new SelectQuery(Table<T>());
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, Table<T>());
             configure?.Invoke(query);
             return query.BuildQuery();
         }
 
         private static string Where<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject =>
-            new SelectQuery(Table<T>()).Parse(predicate.Body).BuildQuery();
+            new SelectQuery(SqlServerQueryRenderer.Instance, Table<T>()).Parse(predicate.Body).BuildQuery();
 
         private static string Term(Parameter parameter) =>
             Select<TestWidget>(q => q.Where.And(parameter));
@@ -41,9 +41,9 @@ namespace TFM.Nucleus.Tests
         private static SelectQuery ParentWithChild<TParent, TChild>(Action<SelectQuery>? configureParent = null, Action<SelectQuery>? configureChild = null)
             where TParent : ICoreObject where TChild : ICoreObject
         {
-            var parent = new SelectQuery(Table<TParent>());
+            var parent = new SelectQuery(SqlServerQueryRenderer.Instance, Table<TParent>());
             configureParent?.Invoke(parent);
-            var child = new SelectQuery(Table<TChild>()) { ChildCollectionProperty = "Children" };
+            var child = new SelectQuery(SqlServerQueryRenderer.Instance, Table<TChild>()) { ChildCollectionProperty = "Children" };
             configureChild?.Invoke(child);
             parent.AddChildQuery(child, "Parent");
             return parent;
@@ -51,7 +51,7 @@ namespace TFM.Nucleus.Tests
 
         private static string DeleteWhere<T>(Expression<Func<T, bool>> predicate, Func<Type, SqlTableSchema?> tables)
         {
-            var query = new DeleteWhereQuery(tables(typeof(T))!, tables);
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(T))!, tables);
             ExpressionParser.ParseExpressionToQuery(query, predicate.Body);
             return query.BuildQuery();
         }
@@ -89,10 +89,10 @@ namespace TFM.Nucleus.Tests
                 ["select.count"] = () => Select<TestWidget>(q => q.WithTotalCount = true),
                 ["select.count.where"] = () => Select<TestWidget>(q => { q.WithTotalCount = true; q.Where.And("Quantity", 3); }),
                 ["select.nolockflag"] = () => Select<TestWidget>(q => { q.WithNoLock = true; q.WithTotalCount = true; }),
-                ["select.empty"] = () => new SelectQuery("[dbo].[tbl_TestWidget]", typeof(TestWidget)).BuildQuery(),
+                ["select.empty"] = () => new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", typeof(TestWidget)).BuildQuery(),
                 ["select.tablename"] = () =>
                 {
-                    var q = new SelectQuery("[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget));
+                    var q = new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget));
                     q.Where.And("Name", "abc");
                     return q.BuildQuery();
                 },
@@ -105,7 +105,7 @@ namespace TFM.Nucleus.Tests
                 ["select.grandchildren"] = () =>
                 {
                     var parent = ParentWithChild<TestDeletableWidget, TestDeletableChild>(p => p.Take = 3);
-                    var grandchild = new SelectQuery(Table<TestDeletableChild>()) { ChildCollectionProperty = "Children" };
+                    var grandchild = new SelectQuery(SqlServerQueryRenderer.Instance, Table<TestDeletableChild>()) { ChildCollectionProperty = "Children" };
                     parent.LinkedQueries[0].AddChildQuery(grandchild, "Parent");
                     return parent.BuildQuery();
                 },
@@ -148,11 +148,11 @@ namespace TFM.Nucleus.Tests
                 ["where.enum"] = () => Where<NullableWidget>(w => w.Kind == WidgetKind.Premium && w.OptionalKind == null),
 
                 // ---- Inserts and updates
-                ["insert.one"] = () => new InsertQuery(Table<TestWidget>(), new TestWidget { Name = "A", Quantity = 5 }).BuildQuery(),
-                ["insert.null"] = () => new InsertQuery(Table<TestWidget>(), new TestWidget { Name = null, Quantity = 1 }).BuildQuery(),
-                ["insert.many"] = () => InsertQuery.Create(Table<TestWidget>(),
+                ["insert.one"] = () => new InsertQuery(SqlServerQueryRenderer.Instance, Table<TestWidget>(), new TestWidget { Name = "A", Quantity = 5 }).BuildQuery(),
+                ["insert.null"] = () => new InsertQuery(SqlServerQueryRenderer.Instance, Table<TestWidget>(), new TestWidget { Name = null, Quantity = 1 }).BuildQuery(),
+                ["insert.many"] = () => InsertQuery.Create(SqlServerQueryRenderer.Instance, Table<TestWidget>(),
                     new[] { new TestWidget { Name = "A" }, new TestWidget { Name = "B" }, new TestWidget { Name = "C" } })!.BuildQuery(),
-                ["insert.alltypes"] = () => new InsertQuery(Table<TestAllTypesWidget>(), new TestAllTypesWidget
+                ["insert.alltypes"] = () => new InsertQuery(SqlServerQueryRenderer.Instance, Table<TestAllTypesWidget>(), new TestAllTypesWidget
                 {
                     Ansi = "a", UnicodeSized = "u", UnicodeMax = "m", Count = 1, Big = 2, Ratio = 0.5, Flag = true,
                     When = new DateTime(2026, 1, 2), Day = new DateTime(2026, 1, 3), At = new DateTimeOffset(2026, 1, 4, 0, 0, 0, TimeSpan.FromHours(10)),
@@ -160,7 +160,7 @@ namespace TFM.Nucleus.Tests
                 }).BuildQuery(),
                 ["insert.tablename"] = () =>
                 {
-                    var q = new InsertQuery("[dbo].[tbl_TestWidget]");
+                    var q = new InsertQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]");
                     q.SetParameters.Add(new Parameter("Name", "Widget A"));
                     q.SetParameters.Add(new Parameter("Quantity", 5));
                     return q.BuildQuery();
@@ -169,13 +169,13 @@ namespace TFM.Nucleus.Tests
                 {
                     var w = Loaded<TestWidget>(Guid.NewGuid());
                     w.Name = "B";
-                    return new UpdateQuery(Table<TestWidget>(), w).BuildQuery();
+                    return new UpdateQuery(SqlServerQueryRenderer.Instance, Table<TestWidget>(), w).BuildQuery();
                 },
                 ["update.null"] = () =>
                 {
                     var w = Loaded<TestWidget>(Guid.NewGuid());
                     w.Name = null;
-                    return new UpdateQuery(Table<TestWidget>(), w).BuildQuery();
+                    return new UpdateQuery(SqlServerQueryRenderer.Instance, Table<TestWidget>(), w).BuildQuery();
                 },
                 ["update.many"] = () =>
                 {
@@ -185,11 +185,11 @@ namespace TFM.Nucleus.Tests
                         w.Quantity = i;
                         return w;
                     }).ToList();
-                    return UpdateQuery.Create(Table<TestWidget>(), widgets)!.BuildQuery();
+                    return UpdateQuery.Create(SqlServerQueryRenderer.Instance, Table<TestWidget>(), widgets)!.BuildQuery();
                 },
                 ["update.tablename"] = () =>
                 {
-                    var q = new UpdateQuery("[dbo].[tbl_TestWidget]", "ID", Guid.NewGuid());
+                    var q = new UpdateQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", "ID", Guid.NewGuid());
                     q.SetParameters.Add(new Parameter("Name", "Widget B"));
                     return q.BuildQuery();
                 },
@@ -204,13 +204,13 @@ namespace TFM.Nucleus.Tests
                 ["delete.ids"] = () =>
                 {
                     var tables = Tables(typeof(TestDeletableParent), typeof(TestDeletableChild));
-                    return DeleteWhereQuery.ForIds(tables(typeof(TestDeletableParent))!, tables, [Guid.NewGuid(), Guid.NewGuid()])!.BuildQuery();
+                    return DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableParent))!, tables, [Guid.NewGuid(), Guid.NewGuid()])!.BuildQuery();
                 },
                 ["delete.ids.secondchunk"] = () =>
                 {
                     var tables = Tables(typeof(TestSoftWidget));
                     var ids = Enumerable.Range(0, DeleteWhereQuery.IdsPerStatement + 1).Select(_ => Guid.NewGuid());
-                    return DeleteWhereQuery.ForIds(tables(typeof(TestSoftWidget))!, tables, ids)!.LinkedQueries.Single().BuildQuery();
+                    return DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestSoftWidget))!, tables, ids)!.LinkedQueries.Single().BuildQuery();
                 },
 
                 // ---- Schema scripts

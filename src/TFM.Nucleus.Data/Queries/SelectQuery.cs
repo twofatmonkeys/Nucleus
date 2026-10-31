@@ -1,0 +1,137 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using TFM.Nucleus.Data.Providers;
+
+namespace TFM.Nucleus.Data.Queries
+{
+    public class SelectQuery : Query, IQuery, ISelectQuery
+    {
+        public SelectQuery(IQueryRenderer renderer, Type objectType) : base(renderer)
+        {
+            if (!typeof(ICoreObject).IsAssignableFrom(objectType))
+                throw new Exception("Object type must implement ICoreObject");
+            Type = QueryType.SELECT;
+            ObjectType = objectType;
+
+        }
+        public SelectQuery(IQueryRenderer renderer, string tablename, Type objectType) : this(renderer, tablename, null, objectType)
+        {
+        }
+        public SelectQuery(IQueryRenderer renderer, string tablename, string[]? columnConstraints, Type objectType) : base(renderer)
+        {
+            Type = QueryType.SELECT;
+            TableName = tablename;
+            if (columnConstraints != null)
+                Constraints = columnConstraints;
+            Columns = columnConstraints?.ToList() ?? [];
+            ObjectType = objectType;
+        }
+
+        /// <summary>
+        /// Selects every column of a table, with a child query per child collection of its type.
+        /// </summary>
+        /// <param name="renderer">The provider's renderer.</param>
+        /// <param name="tableSchema">The table to select from.</param>
+        /// <param name="resolveTable">
+        /// Finds the table of a child collection's type, or null when the provider does not store
+        /// it, in which case that collection is left out. Required when the type has child collections.
+        /// </param>
+        public SelectQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?>? resolveTable = null) : base(renderer)
+        {
+            Type = QueryType.SELECT;
+            TableName = tableSchema.TableName;
+            Columns = [.. tableSchema.Columns.Select(c => c.ColumnName)];
+            ObjectType = tableSchema.ObjectSchema.Type;
+            TableSchema = tableSchema;
+            if(tableSchema.ObjectSchema.HasNucleusChildCollections)
+            {
+                if (resolveTable == null)
+                    throw new InvalidOperationException(
+                        $"{tableSchema.ObjectSchema.Name} has child collections; a table resolver is needed to build their queries.");
+                foreach(var childColl in tableSchema.ObjectSchema.NucleusChildCollectionProperties!)
+                {
+                    var childTableSchema = resolveTable(childColl.Type.GetGenericArguments()[0]);
+                    var childObjSchema = tableSchema.ObjectSchema.GetObjectSchema(childColl.Type.GetGenericArguments()[0]);
+                    if (childTableSchema != null)
+                    {
+                        var childQuery = new SelectQuery(renderer, childTableSchema, resolveTable) { ChildCollectionProperty = childColl.Name };
+                        var parentProperty = childObjSchema.ParentObjectProperty
+                            ?? throw new InvalidQueryException(
+                                $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
+                        AddChildQuery(childQuery, parentProperty.Name);
+                    }
+                }
+            }
+        }
+
+        public SelectQuery Parse(Expression expression)
+        {
+            return (SelectQuery)ExpressionParser.ParseExpressionToQuery(this, expression);
+        }
+
+        public override string BuildQuery() => BuildQuery(includeChildQueries: true);
+
+        /// <summary>
+        /// The batch: this query's rows, the unpaged count when requested, then, when
+        /// <paramref name="includeChildQueries"/> is set, each child collection query in
+        /// LinkedQueries pre-order, which is the order a reader meets their result sets. A
+        /// streamed read leaves the children out and fetches them itself.
+        /// </summary>
+        public string BuildQuery(bool includeChildQueries) => Renderer.Select(this, includeChildQueries);
+
+        // ---- The rules every renderer applies. They decide what a select means; the renderer
+        // ---- only writes it.
+
+        /// <summary>No columns to select: the query returns no rows and no result sets follow.</summary>
+        public bool IsEmptyProjection => Columns.Count == 0;
+
+        /// <summary>The root of a select batch, as opposed to a child collection query.</summary>
+        public bool IsRoot => ParentQuery == null;
+
+        /// <summary>Rows are skipped, so the query pages through an order.</summary>
+        public bool IsPaged => Skip > 0;
+
+        /// <summary>The parent of a child collection query.</summary>
+        public SelectQuery? ParentSelect => ParentQuery as SelectQuery;
+
+        /// <summary>
+        /// The root rows need an order by ID: a limit without an order would let the server pick
+        /// one set of parents for the rows and another for the children's subquery, so a root
+        /// with child queries and a Take is ordered by ID when no order was asked for.
+        /// </summary>
+        public bool NeedsIdentityOrder => OrderBy.IsEmpty && Take > 0 && LinkedQueries.Count > 0;
+
+        /// <summary>Paging applies to a root query only; throws for a child query.</summary>
+        public void EnsurePageable()
+        {
+            if (ParentQuery != null)
+                throw new InvalidQueryException("Paging is not supported on child queries.");
+        }
+
+        /// <summary>
+        /// Soft-deletable types are filtered to live rows unless IncludeDeleted is set on this
+        /// query or any query above it: a read that includes deleted parents includes their
+        /// deleted children too.
+        /// </summary>
+        public bool AppliesLiveRowFilter => !IncludesDeleted && TableSchema != null && SoftDelete.Applies(TableSchema);
+
+        /// <summary>IncludeDeleted is set on this query or on any query above it.</summary>
+        public bool IncludesDeleted => IncludeDeleted || ParentSelect?.IncludesDeleted == true;
+
+        ISelectQuery ISelectQuery.Create(string tablename, Type objectType) => new SelectQuery(Renderer, tablename, objectType);
+
+        ISelectQuery ISelectQuery.Create(string tablename, string[]? columnConstraints, Type objectType) => new SelectQuery(Renderer, tablename, columnConstraints, objectType);
+
+        int ISelectQuery.Skip { get => Skip; set => Skip = value; }
+        int ISelectQuery.Take { get => Take; set => Take = value; }
+        public bool WithTotalCount { get; set; }
+        public bool IncludeDeleted { get; set; }
+        public void AddOrderBy(string propertyName, bool descending = false) =>
+            OrderBy.Add(new OrderBy(propertyName, descending ? OrderByType.DESCENDING : OrderByType.ASCENDING));
+
+        public bool ExcludeChildCollection(string propertyName) =>
+            LinkedQueries.RemoveAll(q => q.ChildCollectionProperty == propertyName) > 0;
+    }
+}

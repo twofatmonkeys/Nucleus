@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 using TFM.Nucleus;
 using TFM.Nucleus.Data;
 
+using TFM.Nucleus.Data.Queries;
+
 namespace TFM.Nucleus.Data.SQL
 {
     public class SqlDataSchema(SQLDataProvider sqlDataProvider, IObjectSchemaProvider objectSchemaProvider, ILogger<SqlDataSchema>? logger) : IDataSchema

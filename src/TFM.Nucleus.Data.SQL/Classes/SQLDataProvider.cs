@@ -14,6 +14,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Schema;
 
+using TFM.Nucleus.Data.Queries;
+
 namespace TFM.Nucleus.Data.SQL
 {
     public class SQLDataProvider(
@@ -171,18 +173,18 @@ namespace TFM.Nucleus.Data.SQL
         public SelectQuery ParseSelectExpression<T>(Expression expression)
         {
             var tblSchema = SqlDataSchema.GetTableSchema<T>() ?? throw new Exception($"Error retreiving Sql Table schema for type: {typeof(T).FullName}, not found.");
-            var query = new SelectQuery(tblSchema);
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, tblSchema, SqlDataSchema.GetTableSchema);
             return query.Parse(expression);
         }
 
         public UpdateQuery? CreateUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
         {
-            return UpdateQuery.Create(GetTableSchema<T>(), objs);
+            return UpdateQuery.Create(SqlServerQueryRenderer.Instance, GetTableSchema<T>(), objs);
         }
 
         public InsertQuery? CreateInsertQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
         {
-            return InsertQuery.Create(GetTableSchema<T>(), objs);
+            return InsertQuery.Create(SqlServerQueryRenderer.Instance, GetTableSchema<T>(), objs);
         }
 
         /// <summary>
@@ -198,7 +200,7 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>Deletes rows of one table by ID, cascading to child collection rows.</summary>
         public DeleteWhereQuery? CreateDeleteByIdQuery(SqlTableSchema tableSchema, IEnumerable<Guid> ids) =>
-            DeleteWhereQuery.ForIds(tableSchema, SqlDataSchema.GetTableSchema, ids);
+            DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tableSchema, SqlDataSchema.GetTableSchema, ids);
 
         /// <summary>
         /// Deletes the rows of <typeparamref name="T"/> matching a predicate body, cascading to
@@ -207,7 +209,7 @@ namespace TFM.Nucleus.Data.SQL
         /// </summary>
         public DeleteWhereQuery CreateDeleteWhereQuery<T>(Expression predicate) where T : ICoreObject<T>, new()
         {
-            var query = new DeleteWhereQuery(GetTableSchema<T>(), SqlDataSchema.GetTableSchema);
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, GetTableSchema<T>(), SqlDataSchema.GetTableSchema);
             return (DeleteWhereQuery)ExpressionParser.ParseExpressionToQuery(query, predicate);
         }
 
@@ -215,8 +217,8 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (objs == null || !objs.Any()) return null;
             var schema = GetTableSchema<T>();
-            var update = UpdateQuery.Create(schema, objs.Where(x => !x.IsNew));
-            var insert = InsertQuery.Create(schema, objs.Where(x => x.IsNew));
+            var update = UpdateQuery.Create(SqlServerQueryRenderer.Instance, schema, objs.Where(x => !x.IsNew));
+            var insert = InsertQuery.Create(SqlServerQueryRenderer.Instance, schema, objs.Where(x => x.IsNew));
             if (insert != null) { if (update != null) insert.LinkedQueries.Add(update); return insert; }
             return update;
         }

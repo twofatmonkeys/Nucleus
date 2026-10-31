@@ -1,15 +1,18 @@
 ﻿using System;
-using System.Collections.Concurrent;
+using System.Collections;
 using System.Collections.Generic;
-using System.Data.Common;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
+using TFM.Nucleus.Data.Providers;
 
-namespace TFM.Nucleus.Data.SQL
+namespace TFM.Nucleus.Data.Queries
 {
+    /// <summary>
+    /// The neutral query model every provider shares: the table, columns, conditions, order,
+    /// page and linked queries of one statement. It holds no dialect; <see cref="BuildQuery"/>
+    /// asks the provider's <see cref="IQueryRenderer"/>, which the provider attached when it
+    /// built the query.
+    /// </summary>
     public abstract class Query : IQuery
     {
         public string? TableName;
@@ -20,12 +23,18 @@ namespace TFM.Nucleus.Data.SQL
         public List<string> Columns = [];
         public OrderByCollection OrderBy = new();
         public WhereCollection Where = new();
-        //public string? WhereClause;
         public ParameterCollection SetParameters { get; set; } = [];
         public bool WithNoLock = false;
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
         private readonly List<Query> _linkedQueries = [];
+
+        /// <summary>The provider's renderer, which writes this query in its dialect.</summary>
+        public IQueryRenderer Renderer { get; }
+
+        /// <summary>The table this query reads or writes, when it was built from a schema.</summary>
+        public IDataTableSchema? TableSchema;
+
         public void AddLinkedQuery(IQuery? query)
         {
             if (query == null) return;
@@ -33,9 +42,9 @@ namespace TFM.Nucleus.Data.SQL
                 throw new InvalidQueryException("Child query must be of type Query");
             _linkedQueries.Add(q);
         }
-        public IEnumerable<SqlTableSchema> DistinctTableSchemas()
+        public IEnumerable<IDataTableSchema> DistinctTableSchemas()
         {
-            var schemas = new HashSet<SqlTableSchema>();
+            var schemas = new HashSet<IDataTableSchema>();
             var stack = new Stack<Query>();
             stack.Push(this);
             while (stack.Count > 0)
@@ -86,7 +95,7 @@ namespace TFM.Nucleus.Data.SQL
         public List<Query> GroupByTableSchema()
         {
             var detached = FlattenAndDetach();
-            var groups = new Dictionary<SqlTableSchema, Query>();
+            var groups = new Dictionary<IDataTableSchema, Query>();
             var result = new List<Query>();
 
             foreach (var q in detached)
@@ -114,7 +123,6 @@ namespace TFM.Nucleus.Data.SQL
         public string? ChildCollectionProperty;
         string? IQuery.ChildCollectionProperty => ChildCollectionProperty;
         public bool UseConstraints => Constraints.Length > 0;
-        internal SqlTableSchema? TableSchema;
 
 
         #region IQuery Implementation
@@ -127,9 +135,9 @@ namespace TFM.Nucleus.Data.SQL
         IDataTableSchema? IQuery.DataTableSchema => TableSchema;
         #endregion
 
-        protected internal Query()
+        protected Query(IQueryRenderer renderer)
         {
-
+            Renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
         }
         public bool TryAddWhere(Parameter parameter)
         {
@@ -180,24 +188,9 @@ namespace TFM.Nucleus.Data.SQL
             LinkedQueries.Add(childQuery);
         }
 
-        //public virtual Task ExecuteAsync()
-        //{
-        //    throw new NotImplementedException();
-        //    //using(var dc = await DataContext.InitializeAsync(true)) 
-        //    //    await ExecuteAsync(dc);
-        //}
-        //public virtual Task ExecuteAsync(Context dataContext) => ExecuteAsync(dataContext, CancellationToken.None);
-        //public virtual Task ExecuteAsync(Context dataContext, CancellationToken token) => _ExecuteAsync(dataContext, token);
-
-        //internal virtual async Task _ExecuteAsync(Context dataContext, CancellationToken token)
-        //{
-        //    await dataContext.SetObjectDataAsync(this, token);
-        //    foreach (var op in AllQueryOutputParameters)
-        //        op.SetReceivedOutput(op.ReceivedObject);
-        //}
-
         public override string ToString() => BuildQuery();
 
+        /// <summary>The command text of this query in the attached renderer's dialect.</summary>
         public abstract string BuildQuery();
 
         public List<Query> Split(int paramLimit)
@@ -270,7 +263,6 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
         public ParameterCollection Parameters => SetParameters + Where.AllParameters();
-        //public ParameterCollection ChildQueryParameters => new(LinkedQueries.SelectMany(p => p.AllQueryParameters));
         public IEnumerable<OutputParameter> AllQueryOutputParameters =>
             AllQueryParameters.Where(x => x != null && x.IsOutputParameter).Cast<OutputParameter>();
 
@@ -340,11 +332,14 @@ namespace TFM.Nucleus.Data.SQL
         ASCENDING = 0,
         DESCENDING = 1,
     }
+
+    /// <summary>One column of an order, by name and direction. Renderers write it.</summary>
     public class OrderBy
     {
         public readonly OrderByType Type = OrderByType.ASCENDING;
         public readonly string Column;
         public bool IsEmpty { get => (Column == null || Column == string.Empty); }
+        public bool IsDescending => Type == OrderByType.DESCENDING;
 
         public OrderBy(System.Reflection.PropertyInfo property) : this(property, OrderByType.ASCENDING)
         { }
@@ -357,42 +352,18 @@ namespace TFM.Nucleus.Data.SQL
             Column = column;
             Type = type;
         }
-        public string GetOrderByClause()
-        {
-            if (IsEmpty)
-                return string.Empty;
-            if (Type == OrderByType.ASCENDING)
-                return $"{Column} ASC";
-            else
-                return $"{Column} DESC";
-        }
-        public override string ToString()
-        {
-            return GetOrderByClause();
-        }
+        public override string ToString() => $"{Column} {Type}";
     }
-    public class OrderByCollection
+
+    /// <summary>The columns a query orders by, in order.</summary>
+    public class OrderByCollection : IReadOnlyCollection<OrderBy>
     {
-        private List<OrderBy> _properties = new List<OrderBy>();
+        private readonly List<OrderBy> _properties = new List<OrderBy>();
         public OrderByCollection()
         { }
 
         public bool IsEmpty => _properties.Count == 0;
-
-        public StringBuilder? BuildOrderByStatement()
-        {
-            if (IsEmpty)
-                return null;
-            else
-            {
-                var sb = new StringBuilder("ORDER BY ");
-                for (int i = 0; i < _properties.Count; i++)
-                {
-                    sb.Append($"{(i == 0 ? string.Empty : " ,")}{_properties[i]}");
-                }
-                return sb;
-            }
-        }
+        public int Count => _properties.Count;
 
         public void Add(OrderBy property) => _properties.Add(property);
         public void Add(string column) => _properties.Add(new OrderBy(column));
@@ -400,9 +371,16 @@ namespace TFM.Nucleus.Data.SQL
         public void Add(PropertyInfo propertyInfo) => _properties.Add(new OrderBy(propertyInfo));
         public void Add(PropertyInfo propertyInfo, OrderByType type) => _properties.Add(new OrderBy(propertyInfo, type));
 
-        public override string ToString() => $"ORDER BY {BuildOrderByStatement()}";
+        public IEnumerator<OrderBy> GetEnumerator() => _properties.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public override string ToString() => string.Join(", ", _properties);
     }
 
+    /// <summary>
+    /// A condition tree: empty, one term, or an AND or OR group of subtrees. Renderers walk it
+    /// through <see cref="WhereRenderer"/>.
+    /// </summary>
     public class WhereCollection : IWhereCollection
     {
         private List<WhereCollection> _andCollection = [];
@@ -420,7 +398,18 @@ namespace TFM.Nucleus.Data.SQL
             (false, true) => Type.Or,
             (false, false) => Type.Empty,
             _ => throw new InvalidOperationException(
-                $"WhereCollection has both AND ({_andCollection.Count}) and OR ({_orCollection.Count}) collections")
+                $"WhereCollection has both and-terms ({_andCollection.Count}) and or-terms ({_orCollection.Count})")
+        };
+
+        /// <summary>The term of a <see cref="Type.Parameter"/> node; null otherwise.</summary>
+        public Parameter? Term => _parameter;
+
+        /// <summary>The operands of an <see cref="Type.And"/> or <see cref="Type.Or"/> node; empty otherwise.</summary>
+        public IReadOnlyList<WhereCollection> Terms => ExpressionType switch
+        {
+            Type.And => _andCollection,
+            Type.Or => _orCollection,
+            _ => [],
         };
 
         public WhereCollection() { }
@@ -525,19 +514,6 @@ namespace TFM.Nucleus.Data.SQL
             _orCollection.Add(collection);
         }
 
-        /// <summary>
-        /// Renders the clause. An OR group inside an AND is parenthesised, because AND binds
-        /// tighter than OR in SQL: without it (A OR B) AND C rendered as A OR B AND C.
-        /// </summary>
-        public string WhereClause() => ExpressionType switch
-        {
-            Type.Parameter => _parameter!.SQLWhereCondition(),
-            Type.And => string.Join(" AND ", _andCollection.Select(c => c.ExpressionType == Type.Or ? $"({c.WhereClause()})" : c.WhereClause())),
-            Type.Or => string.Join(" OR ", _orCollection.Select(c => $"({c.WhereClause()})")),
-            Type.Empty => "",
-            _ => throw new InvalidOperationException("Bad WhereParameter")
-        };
-
         public ParameterCollection AllParameters() => ExpressionType switch
         {
             Type.Parameter => (ParameterCollection?)_parameter ?? [],
@@ -547,10 +523,14 @@ namespace TFM.Nucleus.Data.SQL
             _ => throw new InvalidOperationException("Bad WhereParameter")
         };
 
-        public (ParameterCollection Parameters, string WhereClause) GetWhereClause()
-            => (AllParameters(), WhereClause());
-
-        public override string ToString() => WhereClause();
+        /// <summary>Diagnostic only, in C# notation; renderers write the dialect.</summary>
+        public override string ToString() => ExpressionType switch
+        {
+            Type.Parameter => _parameter!.ToString(),
+            Type.And => string.Join(" && ", _andCollection.Select(c => $"({c})")),
+            Type.Or => string.Join(" || ", _orCollection.Select(c => $"({c})")),
+            _ => "",
+        };
 
         private void WrapCurrentAs(bool isOr)
         {

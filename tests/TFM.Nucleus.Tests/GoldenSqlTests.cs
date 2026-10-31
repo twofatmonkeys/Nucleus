@@ -10,7 +10,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_NoWhere_Golden()
         {
-            var query = new SelectQuery("[dbo].[tbl_TestWidget]", ["ID", "Name", "Quantity"], typeof(TestWidget));
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", ["ID", "Name", "Quantity"], typeof(TestWidget));
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
@@ -20,7 +20,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_NoColumns_Golden()
         {
-            var query = new SelectQuery("[dbo].[tbl_TestWidget]", typeof(TestWidget));
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", typeof(TestWidget));
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
@@ -30,7 +30,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_WithWhere_Golden()
         {
-            var query = new SelectQuery("[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget));
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget));
             query.Where.And("Name", "abc");
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
@@ -41,7 +41,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Select_OffsetPagingWithTotalCount_Golden()
         {
-            var query = new SelectQuery("[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget))
+            var query = new SelectQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", ["ID", "Name"], typeof(TestWidget))
             {
                 Skip = 10,
                 Take = 5,
@@ -59,7 +59,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Insert_Golden()
         {
-            var query = new InsertQuery("[dbo].[tbl_TestWidget]");
+            var query = new InsertQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]");
             query.SetParameters.Add(new Parameter("Name", "Widget A"));
             query.SetParameters.Add(new Parameter("Quantity", 5));
 
@@ -72,7 +72,7 @@ namespace TFM.Nucleus.Tests
         public void Update_Golden()
         {
             var id = Guid.NewGuid();
-            var query = new UpdateQuery("[dbo].[tbl_TestWidget]", "ID", id);
+            var query = new UpdateQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", "ID", id);
             query.SetParameters.Add(new Parameter("Name", "Widget B"));
 
             var sql = SqlSnapshot.Normalize(query.BuildQuery());

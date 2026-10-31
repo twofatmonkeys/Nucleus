@@ -1,51 +1,42 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using TFM.Nucleus.Data.Providers;
 
-namespace TFM.Nucleus.Data.SQL
+namespace TFM.Nucleus.Data.Queries
 {
     /// <summary>
     /// Deletes every row of a [Deletable] type that matches a WHERE, without loading any of them,
     /// and cascades to the rows of its child collections by parent ID. The batch deletes the
-    /// deepest children first, so each child statement still finds the parent rows it selects
-    /// by, and ends with <c>SELECT @@ROWCOUNT</c> straight after the root statement, which is how
-    /// the caller learns how many rows of the root type were affected.
+    /// deepest children first (<see cref="TargetsChildrenFirst"/>), so each child statement still
+    /// finds the parent rows it selects by, and ends with the root statement and a result that
+    /// tells the caller how many rows of the root type were affected.
     /// <para>
     /// Each type keeps its own delete behaviour: a hard type is deleted, a soft type is flagged.
     /// A child selects by the same condition its parent's statement uses, soft filter included,
     /// so it is removed with exactly the parents this batch removes.
     /// </para>
     /// <para>
-    /// The batch runs as one command through <see cref="SqlDataContext"/>'s dedicated path, never
-    /// the generic one: that path regroups queries by table and detaches parents, which would
-    /// break the subqueries and the order. Further chunks of an ID list hang off
+    /// The batch runs as one command through the provider's dedicated delete path, never the
+    /// generic one: that path regroups queries by table and detaches parents, which would break
+    /// the subqueries and the order. Further chunks of an ID list hang off
     /// <see cref="Query.LinkedQueries"/> and run as their own commands in the same context.
     /// </para>
     /// </summary>
     public class DeleteWhereQuery : Query, IDeleteQuery
     {
         /// <summary>IDs per statement when deleting a list of objects, well under the parameter limit.</summary>
-        internal const int IdsPerStatement = 1000;
+        public const int IdsPerStatement = 1000;
 
-        private readonly Target _root;
+        /// <summary>The table being deleted from, with the cascade below it.</summary>
+        public DeleteTarget Root { get; }
 
-        /// <summary>One table in the cascade, with the column that links it to its parent.</summary>
-        private sealed class Target(SqlTableSchema table, Target? parent, string? parentColumn)
-        {
-            public SqlTableSchema Table { get; } = table;
-            public Target? Parent { get; } = parent;
-            public string? ParentColumn { get; } = parentColumn;
-            public List<Target> Children { get; } = [];
-            public Parameter[] SetParameters { get; } = SoftDelete.Applies(table) ? SoftDelete.NewSetParameters() : [];
-            public bool IsSoft => SetParameters.Length > 0;
-        }
-
+        /// <param name="renderer">The provider's renderer.</param>
         /// <param name="tableSchema">The table of the type being deleted.</param>
         /// <param name="resolveTable">
         /// Finds the table of a child type, or null when this provider does not own it.
         /// </param>
-        public DeleteWhereQuery(SqlTableSchema tableSchema, Func<Type, SqlTableSchema?> resolveTable)
+        public DeleteWhereQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable) : base(renderer)
         {
             ArgumentNullException.ThrowIfNull(tableSchema);
             ArgumentNullException.ThrowIfNull(resolveTable);
@@ -55,9 +46,9 @@ namespace TFM.Nucleus.Data.SQL
             TableName = tableSchema.TableName;
             TableSchema = tableSchema;
             ObjectType = tableSchema.ObjectSchema.Type;
-            _root = new Target(tableSchema, null, null);
-            AddChildren(_root, resolveTable, [tableSchema.ObjectSchema.Type]);
-            foreach (var target in Targets(_root))
+            Root = new DeleteTarget(tableSchema, null, null);
+            AddChildren(Root, resolveTable, [tableSchema.ObjectSchema.Type]);
+            foreach (var target in Targets(Root))
                 SetParameters.AddRange(target.SetParameters);
         }
 
@@ -65,13 +56,15 @@ namespace TFM.Nucleus.Data.SQL
         /// Deletes the given IDs of one type with their child rows: one query per
         /// <see cref="IdsPerStatement"/> IDs, the rest linked. Null when there are no IDs.
         /// </summary>
-        public static DeleteWhereQuery? ForIds(SqlTableSchema tableSchema, Func<Type, SqlTableSchema?> resolveTable, IEnumerable<Guid> ids)
+        public static DeleteWhereQuery? ForIds(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, IEnumerable<Guid> ids)
         {
+            var identity = tableSchema.IdentityColumn
+                ?? throw new InvalidQueryException($"Table {tableSchema.TableName} has no identity column.");
             DeleteWhereQuery? root = null;
             foreach (var chunk in ids.Distinct().Chunk(IdsPerStatement))
             {
-                var query = new DeleteWhereQuery(tableSchema, resolveTable);
-                query.Where.And(new Parameter(tableSchema.IdentityColumn.ColumnName, chunk.ToList(), Operator.In));
+                var query = new DeleteWhereQuery(renderer, tableSchema, resolveTable);
+                query.Where.And(new Parameter(identity.ColumnName, chunk.ToList(), Operator.In));
                 if (root == null)
                     root = query;
                 else
@@ -84,7 +77,7 @@ namespace TFM.Nucleus.Data.SQL
         /// Adds a target per child collection, recursively. Throws before anything runs when a
         /// child type cannot be deleted here, since deleting the parent alone would orphan it.
         /// </summary>
-        private static void AddChildren(Target parent, Func<Type, SqlTableSchema?> resolveTable, HashSet<Type> path)
+        private static void AddChildren(DeleteTarget parent, Func<Type, IDataTableSchema?> resolveTable, HashSet<Type> path)
         {
             var parentSchema = parent.Table.ObjectSchema;
             if (!parentSchema.HasNucleusChildCollections)
@@ -105,7 +98,7 @@ namespace TFM.Nucleus.Data.SQL
                     ?? throw new InvalidQueryException($"{childSchema.Name} has no column for its [ParentObject] property {parentProperty.Name}.");
                 if (!path.Add(childType))
                     throw new InvalidQueryException($"{childSchema.Name} is its own ancestor through child collections.");
-                var child = new Target(childTable, parent, parentColumn);
+                var child = new DeleteTarget(childTable, parent, parentColumn);
                 parent.Children.Add(child);
                 AddChildren(child, resolveTable, path);
                 path.Remove(childType);
@@ -113,7 +106,7 @@ namespace TFM.Nucleus.Data.SQL
         }
 
         /// <summary>Every target, root first.</summary>
-        private static IEnumerable<Target> Targets(Target target)
+        private static IEnumerable<DeleteTarget> Targets(DeleteTarget target)
         {
             yield return target;
             foreach (var child in target.Children)
@@ -121,50 +114,61 @@ namespace TFM.Nucleus.Data.SQL
                     yield return descendant;
         }
 
-        /// <summary>The condition selecting a target's rows; a child selects by its parent's.</summary>
-        private string Filter(Target target)
-        {
-            string condition;
-            if (target.Parent == null)
-            {
-                if (Where.IsEmpty)
-                    throw new InvalidQueryException(
-                        $"A delete of {target.Table.ObjectSchema.Name} has no condition and would remove every row.");
-                condition = $"({Where.WhereClause()})";
-            }
-            else
-            {
-                var parentId = target.Parent.Table.IdentityColumn.ColumnName;
-                condition = $"[{target.ParentColumn}] IN (SELECT [{parentId}] FROM {target.Parent.Table.TableName} WHERE {Filter(target.Parent)})";
-            }
-            return target.IsSoft ? $"{condition} AND {SoftDelete.LiveRowFilter}" : condition;
-        }
+        /// <summary>
+        /// The child targets in the order their statements run: each child's own children first,
+        /// then the child, so the deepest rows go first. The root is not included; it runs last.
+        /// </summary>
+        public IEnumerable<DeleteTarget> TargetsChildrenFirst() => ChildrenFirst(Root);
 
-        private string Statement(Target target) => target.IsSoft
-            ? $"UPDATE {target.Table.TableName} WITH (ROWLOCK) SET {string.Join(",", target.SetParameters.Select(p => p.SQLSetCondition()))} WHERE {Filter(target)}"
-            : $"DELETE FROM {target.Table.TableName} WHERE {Filter(target)}";
-
-        /// <summary>Children of a target, deepest first, then the target itself.</summary>
-        private void AppendChildrenFirst(StringBuilder sb, Target target)
+        private static IEnumerable<DeleteTarget> ChildrenFirst(DeleteTarget target)
         {
             foreach (var child in target.Children)
             {
-                AppendChildrenFirst(sb, child);
-                sb.Append(Statement(child)).Append(';').Append(Environment.NewLine);
+                foreach (var descendant in ChildrenFirst(child))
+                    yield return descendant;
+                yield return child;
             }
+        }
+
+        /// <summary>Throws when the delete has no condition and would remove every row.</summary>
+        public void EnsureHasCondition()
+        {
+            if (Where.IsEmpty)
+                throw new InvalidQueryException(
+                    $"A delete of {Root.Table.ObjectSchema.Name} has no condition and would remove every row.");
         }
 
         /// <summary>
         /// This chunk's batch only. Linked chunks are separate commands, so unlike the other
         /// queries this never appends them.
         /// </summary>
-        public override string BuildQuery()
+        public override string BuildQuery() => Renderer.DeleteWhere(this);
+    }
+
+    /// <summary>One table in a delete cascade, with the column that links it to its parent.</summary>
+    public sealed class DeleteTarget
+    {
+        internal DeleteTarget(IDataTableSchema table, DeleteTarget? parent, string? parentColumn)
         {
-            var sb = new StringBuilder();
-            AppendChildrenFirst(sb, _root);
-            sb.Append(Statement(_root)).Append(';').Append(Environment.NewLine);
-            sb.Append("SELECT @@ROWCOUNT");
-            return sb.ToString();
+            Table = table;
+            Parent = parent;
+            ParentColumn = parentColumn;
+            SetParameters = SoftDelete.Applies(table) ? SoftDelete.NewSetParameters() : [];
         }
+
+        public IDataTableSchema Table { get; }
+
+        /// <summary>The target whose rows this one's rows belong to; null for the root.</summary>
+        public DeleteTarget? Parent { get; }
+
+        /// <summary>The column of this table holding the parent's ID; null for the root.</summary>
+        public string? ParentColumn { get; }
+
+        public List<DeleteTarget> Children { get; } = [];
+
+        /// <summary>The SET terms of a soft delete; empty for a hard delete.</summary>
+        public Parameter[] SetParameters { get; }
+
+        public bool IsSoft => SetParameters.Length > 0;
     }
 }

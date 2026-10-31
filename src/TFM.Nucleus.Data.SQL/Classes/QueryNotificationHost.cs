@@ -1,6 +1,8 @@
 using Microsoft.Data.SqlClient;
 using System.Diagnostics;
 
+using TFM.Nucleus.Data.Queries;
+
 namespace TFM.Nucleus.Data.SQL
 {
     /// <summary>

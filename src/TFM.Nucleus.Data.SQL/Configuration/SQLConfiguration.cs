@@ -233,7 +233,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 { 
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult() 
                         ?? throw new Exception("Sql Datareader was null");
                     return ReadColumnsFromReader(reader);
@@ -263,7 +263,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 { 
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None) 
                         ?? throw new Exception("Sql Datareader was null");
                     return await ReadColumnsFromReaderAsync(reader, cancellationToken);
@@ -332,7 +332,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult() 
                         ?? throw new Exception("Sql Datareader was null");
                     if (reader.Read())
@@ -367,7 +367,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None)
                         ?? throw new Exception("Sql Datareader was null");
                     if (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))
@@ -403,7 +403,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult() 
                         ?? throw new Exception("Sql Datareader was null");
                     while (reader.Read())
@@ -438,7 +438,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None)
                         ?? throw new Exception("Sql Datareader was null");
                     while (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))
@@ -561,7 +561,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult() 
                         ?? throw new Exception("Sql Datareader was null");
                     while (reader.Read())
@@ -604,7 +604,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(qry);
+                    var sqlQry = qry;
                     using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None)
                         ?? throw new Exception("Sql Datareader was null");
                     while (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))
@@ -659,7 +659,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(ColumnIndexQuery);
+                    var sqlQry = ColumnIndexQuery;
                     using var reader = context.GetObjectDataAsync(sqlQry).GetAwaiter().GetResult()
                         ?? throw new Exception("Sql Datareader was null");
                     while (reader.Read())
@@ -689,7 +689,7 @@ namespace TFM.Nucleus.Data.SQL
                 }
                 else
                 {
-                    var sqlQry = new SelectQuery(ColumnIndexQuery);
+                    var sqlQry = ColumnIndexQuery;
                     using var reader = await context.GetObjectDataAsync(sqlQry, cancellationToken ?? CancellationToken.None)
                         ?? throw new Exception("Sql Datareader was null");
                     while (await reader.ReadAsync(cancellationToken ?? CancellationToken.None))

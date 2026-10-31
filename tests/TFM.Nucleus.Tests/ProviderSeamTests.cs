@@ -60,9 +60,17 @@ namespace TFM.Nucleus.Tests
         {
             // Tripwire: string literals are compiled into the #US heap as UTF-16, so a raw byte
             // scan of the neutral assemblies finds any SQL-flavoured literal. Rendering belongs
-            // exclusively to provider assemblies.
-            string[] sqlMarkers = ["SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM", "[dbo]", "IS NULL", "WITH(NOLOCK)", "SCOPE_IDENTITY"];
-            Type[] anchors = [typeof(Parameter), typeof(IQueryParameter)]; // TFM.Nucleus.Data + TFM.Nucleus.Abstractions
+            // exclusively to provider assemblies. The query model lives in TFM.Nucleus.Data, so
+            // the keywords a renderer writes around it (joiners, ordering, paging, locking hints
+            // and catalog names of either dialect) are markers too.
+            string[] sqlMarkers =
+            [
+                "SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM", "[dbo]", "IS NULL", "WITH(NOLOCK)", "SCOPE_IDENTITY",
+                " AND ", " OR ", "WHERE ", " FROM ", "ORDER BY", " ASC", " DESC", "LIKE", "ROWLOCK", "NOLOCK",
+                "@@ROWCOUNT", "COUNT_BIG", "ROW_NUMBER", "COLLATE", "CONTAINS(", "OFFSET ", "LIMIT ", "RETURNING",
+                "CREATE ", "DROP ", "ALTER ", "VALUES", "pg_", "information_schema", "INFORMATION_SCHEMA", "sys.", "::",
+            ];
+            Type[] anchors = [typeof(Parameter), typeof(IQueryParameter), typeof(CoreObject)]; // TFM.Nucleus.Data, TFM.Nucleus.Abstractions, TFM.Nucleus
 
             var offenders = new List<string>();
             foreach (var assembly in anchors.Select(t => t.Assembly).Distinct())
