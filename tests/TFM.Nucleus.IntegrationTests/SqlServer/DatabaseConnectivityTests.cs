@@ -1,9 +1,10 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 
-namespace TFM.Nucleus.IntegrationTests
+namespace TFM.Nucleus.IntegrationTests.SqlServer
 {
-    [Collection("Database")]
-    public class DatabaseConnectivityTests(DatabaseFixture fixture)
+    /// <summary>The SQL Server test database is reachable with the configured credentials, outside Nucleus.</summary>
+    [Collection(SqlServerCollection.Name)]
+    public class DatabaseConnectivityTests(SqlServerFixture fixture)
     {
         [Fact]
         public async Task CanConnectAndQueryServer()

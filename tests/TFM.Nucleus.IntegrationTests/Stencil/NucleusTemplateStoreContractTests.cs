@@ -11,8 +11,7 @@ namespace TFM.Nucleus.IntegrationTests.Stencil
     /// and each instance works in a collection of its own, so every case starts with an empty store
     /// and no test resets another's rows: no table reset and no cross-process lock are needed.
     /// </summary>
-    [Collection("Database")]
-    public sealed class NucleusTemplateStoreContractTests(DatabaseFixture fixture) : IAsyncLifetime
+    public abstract class NucleusTemplateStoreContractTests(DatabaseFixture fixture) : IAsyncLifetime
     {
         private readonly string _collection = $"t{Guid.NewGuid():N}";
         private readonly List<string> _collections = [];

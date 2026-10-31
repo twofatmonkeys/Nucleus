@@ -1,7 +1,6 @@
 namespace TFM.Nucleus.IntegrationTests
 {
-    [Collection("Database")]
-    public class CrudIntegrationTests(DatabaseFixture fixture)
+    public abstract class CrudIntegrationTests(DatabaseFixture fixture)
     {
         [Fact]
         public void SchemaIsCurrentAfterInitialization()

@@ -3,22 +3,33 @@ using Microsoft.Extensions.DependencyInjection;
 namespace TFM.Nucleus.IntegrationTests
 {
     /// <summary>
-    /// Boots the full stack (AddNucleus + AddNucleusSQLDataProvider) against the live test
-    /// database and initializes the schema once for the collection. When no credentials are
+    /// Boots the full stack (AddNucleus plus one provider) against that provider's test database
+    /// and initializes the schema once for the collection. When the provider's database is not
     /// configured the fixture stays unconfigured and each test skips instead of failing, so
-    /// `dotnet test` passes on machines without a test database (CI included).
+    /// `dotnet test` passes on machines without a test database (CI included). Every neutral
+    /// suite is an abstract class run once per provider by a sealed subclass in that provider's
+    /// collection.
     /// </summary>
-    public sealed class DatabaseFixture : IAsyncLifetime
+    public abstract class DatabaseFixture : IAsyncLifetime
     {
         public TestConfig.DatabaseSettings? Settings { get; }
         public IDataProvider? Provider { get; private set; }
         public ObjectDataManager? Manager { get; private set; }
         private ServiceProvider? _services;
 
-        public DatabaseFixture()
+        protected DatabaseFixture(TestConfig.DatabaseSettings? settings)
         {
-            Settings = TestConfig.TryGetSettings();
+            Settings = settings;
         }
+
+        /// <summary>The provider, in skip messages and lock names.</summary>
+        public abstract string ProviderName { get; }
+
+        /// <summary>How to configure this provider's test database, for the skip message.</summary>
+        protected abstract string ConfigurationHint { get; }
+
+        /// <summary>Registers this provider against the test database.</summary>
+        protected abstract void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings);
 
         public async ValueTask InitializeAsync()
         {
@@ -28,33 +39,27 @@ namespace TFM.Nucleus.IntegrationTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddNucleus();
-            services.AddNucleusSQLDataProvider(options =>
-            {
-                options.Server = Settings.Server;
-                options.Database = Settings.Database;
-                options.Username = Settings.Username;
-                options.Password = Settings.Password;
-            });
+            AddProvider(services, Settings);
             _services = services.BuildServiceProvider();
 
             Provider = _services.GetRequiredService<IDataProvider>();
             var status = await Provider.InitializeAsync();
             if (status != DataProviderStatus.Ok)
-                throw new InvalidOperationException($"Test schema initialization failed: {status}");
+                throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}");
             Manager = new ObjectDataManager(Provider, _services.GetRequiredService<IObjectSchemaProvider>(), null);
         }
 
         public ValueTask DisposeAsync()
         {
             _services?.Dispose();
+            GC.SuppressFinalize(this);
             return ValueTask.CompletedTask;
         }
 
         /// <summary>Returns the settings, or dynamically skips the calling test when unconfigured.</summary>
         public TestConfig.DatabaseSettings RequireSettings()
         {
-            Assert.SkipWhen(Settings == null,
-                "Test database not configured - set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.");
+            Assert.SkipWhen(Settings == null, $"{ProviderName} test database not configured - {ConfigurationHint}");
             return Settings!;
         }
 
@@ -64,10 +69,34 @@ namespace TFM.Nucleus.IntegrationTests
             RequireSettings();
             return Manager!;
         }
+
+        /// <summary>
+        /// The cross-process lock of a suite that resets its tables, per provider: the net8.0 and
+        /// net10.0 runs share a database, but two providers never do.
+        /// </summary>
+        internal Task<TestDatabaseLock> LockAsync(string suite) => TestDatabaseLock.AcquireAsync($"{suite}-{ProviderName}");
     }
 
-    [CollectionDefinition("Database")]
-    public sealed class DatabaseCollection : ICollectionFixture<DatabaseFixture>
+    /// <summary>SQL Server, configured by the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.</summary>
+    public sealed class SqlServerFixture() : DatabaseFixture(TestConfig.TryGetSettings())
     {
+        public override string ProviderName => "sqlserver";
+
+        protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
+
+        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings) =>
+            services.AddNucleusSQLDataProvider(options =>
+            {
+                options.Server = settings.Server;
+                options.Database = settings.Database;
+                options.Username = settings.Username;
+                options.Password = settings.Password;
+            });
+    }
+
+    [CollectionDefinition(Name)]
+    public sealed class SqlServerCollection : ICollectionFixture<SqlServerFixture>
+    {
+        public const string Name = "SqlServer";
     }
 }

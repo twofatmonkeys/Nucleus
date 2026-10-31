@@ -12,8 +12,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
     /// rows. The facts below cover what the contract cannot see from the outside: the claim row,
     /// the live-path column, and how a real unique violation is reported.
     /// </summary>
-    [Collection("Database")]
-    public class NucleusS3AssetStoreContractTests(DatabaseFixture fixture)
+    public abstract class NucleusS3AssetStoreContractTests(DatabaseFixture fixture)
     {
         private const string Suite = "s3library";
 
@@ -24,7 +23,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
         public async Task Contract(string name)
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync(Suite);
+            using var _ = await fixture.LockAsync(Suite);
             await ResetAsync(manager);
 
             await S3AssetStoreContract.Find(name).Run(new NucleusS3AssetStore(manager), TestContext.Current.CancellationToken);
@@ -34,7 +33,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
         public async Task EverySave_LeavesOneClaimRowPerAsset_AndDeleteRemovesIt()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync(Suite);
+            using var _ = await fixture.LockAsync(Suite);
             await ResetAsync(manager);
             var store = new NucleusS3AssetStore(manager);
             var asset = S3AssetStoreContract.NewAsset();
@@ -57,7 +56,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
         public async Task SoftDelete_ClearsTheLivePath_AndKeepsTheFullPath()
         {
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync(Suite);
+            using var _ = await fixture.LockAsync(Suite);
             await ResetAsync(manager);
             var store = new NucleusS3AssetStore(manager);
             var asset = S3AssetStoreContract.NewAsset("photos", "tree.jpg");
@@ -86,7 +85,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
             // Proves the real path: the read-phase check passes, the claim insert hits the unique
             // index, and the provider reports it as a UniqueViolationException the store classifies.
             var manager = fixture.RequireManager();
-            using var _ = await TestDatabaseLock.AcquireAsync(Suite);
+            using var _ = await fixture.LockAsync(Suite);
             await ResetAsync(manager);
             var store = new NucleusS3AssetStore(manager);
             var asset = S3AssetStoreContract.NewAsset();
