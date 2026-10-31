@@ -206,9 +206,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         private static string Variable(Parameter p) => $"@{p.Variable}";
 
-        // Wildcards in the value are literal on SQL Server; ESCAPE '' makes PostgreSQL agree, so
-        // a backslash in the value is a backslash rather than an escape.
-        private static string Pattern(string column, string op, string pattern) => $"{column} {op} {pattern} ESCAPE ''";
+        // A pattern term's value is bound escaped by LikePattern, so its wildcards are literal.
+        private static string Pattern(string column, string op, string pattern) => $"{column} {op} {pattern} ESCAPE '{LikePattern.EscapeCharacter}'";
 
         internal static string WhereCondition(Parameter p)
         {

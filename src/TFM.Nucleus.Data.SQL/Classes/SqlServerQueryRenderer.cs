@@ -285,6 +285,9 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        // A pattern term's value is bound escaped by LikePattern, so its wildcards are literal.
+        private static readonly string PatternEscape = $" ESCAPE '{LikePattern.EscapeCharacter}'";
+
         internal static string WhereCondition(Parameter p)
         {
             switch (p.Operator)
@@ -292,15 +295,15 @@ namespace TFM.Nucleus.Data.SQL
                 case Operator.Contains:
                     return $"CONTAINS({LeftOperand(p)}, {VariableReference(p)})";
                 case Operator.ContainsCaseSensitive:
-                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} LIKE '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} LIKE '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.Like:
-                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.LikeCaseSensitive:
-                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} {OperatorString(p)} '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} {OperatorString(p)} '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.StartsWith:
-                    return $"{LeftOperand(p)} {OperatorString(p)} {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} {OperatorString(p)} {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.EndsWith:
-                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)}";
+                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)}{PatternEscape}";
                 case Operator.EqualsIgnoreCase:
                     return $"LOWER({LeftOperand(p)}) {OperatorString(p)} LOWER({VariableReference(p)})";
                 case Operator.In:

@@ -539,6 +539,10 @@ These came in with the fixes for the SQL Server review findings.
   it was always `CONTAINS()`, which fails on a column without a full-text index. It is now
   `LIKE '%value%'` on such a column, as on PostgreSQL, and still a full-text search on a
   `FullTextSearch` column.
+- **Wildcards in a value match literally.** `StartsWith("50%")` used to match every value
+  starting `50` on both providers, because `%`, `_` and (on SQL Server) `[` in the value acted as
+  wildcards. A pattern predicate's value is now bound with those characters escaped, so it matches
+  only `50%...`.
 
 These came in with the shared provider layer.
 

@@ -28,6 +28,7 @@ namespace TFM.Nucleus.Data.Queries
         /// <summary>
         /// The (variable name, value) pairs a term binds, without the provider's prefix. A
         /// multi-valued term binds each element, with a null element bound as <see cref="DBNull"/>.
+        /// A pattern term binds its value escaped by <see cref="LikePattern"/>.
         /// </summary>
         public static IEnumerable<KeyValuePair<string, object?>> Bind(IQueryParameter p)
         {
@@ -39,7 +40,7 @@ namespace TFM.Nucleus.Data.Queries
             }
             else
             {
-                yield return new(p.Variable!, p.Value);
+                yield return new(p.Variable!, LikePattern.Applies(p.Operator) && p.Value is string pattern ? LikePattern.Escape(pattern) : p.Value);
             }
         }
 
