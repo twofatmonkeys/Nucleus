@@ -91,9 +91,12 @@ namespace TFM.Nucleus.Tests
         public void ProviderAssemblies_DoNotReferenceEachOther()
         {
             var sqlReferences = typeof(SQLConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
+            var postgresReferences = typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
 
             Assert.DoesNotContain("TFM.Nucleus.Data.PostgreSQL", sqlReferences);
             Assert.DoesNotContain("Npgsql", sqlReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.SQL", postgresReferences);
+            Assert.DoesNotContain("Microsoft.Data.SqlClient", postgresReferences);
         }
 
         [Fact]

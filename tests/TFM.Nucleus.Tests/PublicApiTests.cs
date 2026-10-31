@@ -15,7 +15,8 @@ namespace TFM.Nucleus.Tests
             typeof(IDataProvider).Assembly,                              // TFM.Nucleus.Abstractions
             typeof(CoreObject).Assembly,                                 // TFM.Nucleus
             typeof(ObjectDataManager).Assembly,                          // TFM.Nucleus.Data
-            typeof(SQLDataProvider).Assembly,                            // TFM.Nucleus.Data.SQL
+            typeof(SQLConfiguration).Assembly,                           // TFM.Nucleus.Data.SQL
+            typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly,
             typeof(TFM.Nucleus.Bindery.NucleusBinderyStore).Assembly,
             typeof(TFM.Nucleus.S3Library.NucleusS3AssetStore).Assembly,
             typeof(TFM.Nucleus.Stencil.NucleusTemplateStore).Assembly,
@@ -56,7 +57,7 @@ namespace TFM.Nucleus.Tests
             }
             sb.Append("        };\n    }\n}\n");
 
-            File.WriteAllText(Path.Combine(SqlServerRawGoldenTests.TestSourceDirectory(), "PublicApiSnapshot.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
+            File.WriteAllText(Path.Combine(RawGoldens.TestSourceDirectory(), "PublicApiSnapshot.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
         }
 
         private const BindingFlags Declared =

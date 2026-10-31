@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus\TFM.Nucleus.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
     <!-- The store packages, so the schema goldens cover their tables and the seam tests can
          scan them. -->
     <ProjectReference Include="..\..\src\TFM.Nucleus.Bindery\TFM.Nucleus.Bindery.csproj" />

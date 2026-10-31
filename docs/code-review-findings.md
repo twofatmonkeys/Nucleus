@@ -47,6 +47,20 @@ is a separate change, with a golden update that shows exactly what moves.
   `IsNonClusteredIndex`, and the `ServerFunctionKind` and `ServerFunction` tokens `SysDateTime`
   and `SysDateTimeOffset`. Alias them by meaning, as the attribute fields were.
 
+### Found with the PostgreSQL provider (October 2026)
+
+- **TFM.Stencil's round-trip case needs a contract release.** `Save_ThenGet_RoundTripsEveryField`
+  compared `CreatedUtc` and `UpdatedUtc` to the tick, and PostgreSQL's `timestamptz` keeps
+  microseconds, so the case fails on PostgreSQL by the 100 ns its value carries below a
+  microsecond. The contract change (compare as the same instant to the microsecond) is committed in
+  TFM.Stencil on branch `contract-microsecond-timestamps`; once it is released, bump the
+  `TFM.Stencil.Testing` pin in the integration test project and the case passes. Every other
+  Stencil case passes on both providers.
+- **Every PostgreSQL table carries a notification trigger**, created at initialise so a
+  subscription needs no DDL rights at run time. Each statement that writes a table queues one
+  `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
+  but a write-heavy table pays it on every statement.
+
 ### The parameterless AddNucleus() enables schema migration
 
 `NucleusOptions.ReadOnlySchema` defaults to `true`, but the convenience `AddNucleus()` overload sets
@@ -111,7 +125,9 @@ the child's row in place.
 `NucleusBinderyStore.DeletePageAsync` deletes versions with `PageId = @pageId`, and `VersionsOf`
 reads them the same way. Under a case-insensitive collation that also matches a page id differing
 only in case. The document lookup filters ordinally; the version paths do not. This predates the
-switch to delete by predicate, which kept the same condition.
+switch to delete by predicate, which kept the same condition. It is now provider dependent: SQL
+Server's default collation matches without regard to case, PostgreSQL's equality does not, so the
+same store deletes different rows for such a page id on the two engines.
 
 ### Pruning versions still loads their content
 
@@ -137,6 +153,10 @@ so avoiding the load needs column projection, which Nucleus does not have.
   named `SqlException` and reading the index name out of its message, so it could not work on any
   other engine. Providers now report `UniqueViolationException`, and the store matches its entity
   and column.
+- **Cancellation was wrapped in a plain exception** when the driver threw it inside a command, so
+  a caller catching `OperationCanceledException` missed it (on SQL Server it depended on where
+  SqlClient happened to throw). Cancellation now propagates as thrown, after a transactional
+  context is marked for rollback.
 
 ### The predicate parser dropped terms it could not place
 

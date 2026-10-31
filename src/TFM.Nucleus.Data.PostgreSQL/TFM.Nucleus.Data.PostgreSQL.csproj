@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything shared lives in ..\Directory.Build.props and ..\..\Directory.Build.props. A package
+    csproj should only carry what is genuinely specific to this package: its identity, its
+    description, its tags and its dependencies.
+  -->
+
+  <PropertyGroup>
+    <PackageId>TFM.Nucleus.Data.PostgreSQL</PackageId>
+    <Title>TFM.Nucleus.Data.PostgreSQL</Title>
+    <RootNamespace>TFM.Nucleus.Data.PostgreSQL</RootNamespace>
+    <Description>PostgreSQL provider for the Nucleus ORM: query rendering, the PostgreSQL schema dialect and catalog for automatic schema create, compare and migrate, the COPY bulk engine, LISTEN/NOTIFY change notifications and AddNucleusPostgresDataProvider registration. Requires PostgreSQL 16 or later.</Description>
+    <PackageTags>tfm;nucleus;orm;postgresql;npgsql;provider</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Package references are pinned per target framework so each consumer gets the assemblies
+         built for their runtime rather than a lowest common denominator set. Npgsql's major
+         version tracks .NET's. -->
+    <PackageReference Include="Npgsql" Version="8.0.9" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Npgsql" Version="10.0.3" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+    <ProjectReference Include="..\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep the list to real test projects: every entry here is a hole in the assembly boundary. -->
+    <InternalsVisibleTo Include="TFM.Nucleus.Tests" />
+  </ItemGroup>
+
+</Project>

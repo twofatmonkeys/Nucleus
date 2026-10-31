@@ -22,6 +22,12 @@ namespace TFM.Nucleus.Tests
                 "TFM.Nucleus.Data.SQL.SqlDataProviderException",
                 "TFM.Nucleus.Data.SQL.SqlDataProviderExceptionType",
             ]),
+            ["TFM.Nucleus.Data.PostgreSQL"] = (typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly,
+            [
+                "Microsoft.Extensions.DependencyInjection.NucleusPostgresServiceExtensions",
+                "TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration",
+                "TFM.Nucleus.Data.PostgreSQL.PostgresDataProviderException",
+            ]),
         };
 
         [Theory]

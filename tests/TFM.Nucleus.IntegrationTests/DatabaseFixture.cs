@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace TFM.Nucleus.IntegrationTests
 {
@@ -37,7 +38,8 @@ namespace TFM.Nucleus.IntegrationTests
                 return;
 
             var services = new ServiceCollection();
-            services.AddLogging();
+            var log = new CapturingLoggerProvider();
+            services.AddLogging(builder => builder.AddProvider(log));
             services.AddNucleus();
             AddProvider(services, Settings);
             _services = services.BuildServiceProvider();
@@ -45,7 +47,7 @@ namespace TFM.Nucleus.IntegrationTests
             Provider = _services.GetRequiredService<IDataProvider>();
             var status = await Provider.InitializeAsync();
             if (status != DataProviderStatus.Ok)
-                throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}");
+                throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}{Environment.NewLine}{string.Join(Environment.NewLine, log.Entries)}");
             Manager = new ObjectDataManager(Provider, _services.GetRequiredService<IObjectSchemaProvider>(), null);
         }
 
@@ -98,5 +100,28 @@ namespace TFM.Nucleus.IntegrationTests
     public sealed class SqlServerCollection : ICollectionFixture<SqlServerFixture>
     {
         public const string Name = "SqlServer";
+    }
+
+    /// <summary>PostgreSQL, configured by the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.</summary>
+    public sealed class PostgresFixture() : DatabaseFixture(TestConfig.TryGetPostgresSettings())
+    {
+        public override string ProviderName => "postgres";
+
+        protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
+
+        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings) =>
+            services.AddNucleusPostgresDataProvider(options =>
+            {
+                options.Server = settings.Server;
+                options.Database = settings.Database;
+                options.Username = settings.Username;
+                options.Password = settings.Password;
+            });
+    }
+
+    [CollectionDefinition(Name)]
+    public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>
+    {
+        public const string Name = "Postgres";
     }
 }

@@ -1,0 +1,44 @@
+﻿using TFM.Nucleus.Data.PostgreSQL;
+
+namespace TFM.Nucleus.Tests
+{
+    /// <summary>
+    /// Every shape of SQL the PostgreSQL provider renders: the shared query cases through its
+    /// renderer, plus its schema scripts, including every store entity's CREATE TABLE with the
+    /// names longer than 63 bytes shortened. <see cref="PostgresRawGoldenTests"/> compares each
+    /// case with <see cref="PostgresGoldens"/>.
+    /// </summary>
+    public static class PostgresGoldenCorpus
+    {
+        private const string Schema = "public";
+
+        public static IReadOnlyDictionary<string, Func<string>> Cases { get; } = BuildCases();
+
+        private static Dictionary<string, Func<string>> BuildCases()
+        {
+            var cases = new QueryGoldenCorpus(new PostgresQueryRenderer(Schema)).Build();
+            var dialect = new PostgresSchemaDialect(Schema, null);
+            static string Join(IEnumerable<TFM.Nucleus.Data.Schema.SchemaStatement> statements) => string.Join("\n--\n", statements.Select(s => s.Text));
+
+            var widget = QueryGoldenCorpus.TableOf(typeof(TestWidget));
+            var unique = QueryGoldenCorpus.TableOf(typeof(TestUniqueWidget));
+            var allTypes = QueryGoldenCorpus.TableOf(typeof(TestAllTypesWidget));
+
+            cases["ddl.rename"] = () => Join(dialect.RenameForRebuild(widget, "tbl_TFM_Nucleus_Tests_TestWidget_20260101000000"));
+            cases["ddl.copy"] = () => string.Join("\n--\n",
+                dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true).Text,
+                dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false).Text);
+            cases["ddl.drop"] = () => dialect.DropTable("tbl_X_20260101000000").Text;
+            cases["ddl.backfill"] = () => dialect.BackfillTimestamp(widget).Text;
+            cases["ddl.index"] = () => string.Join("\n--\n", unique.IndexedColumns.Select(c => dialect.CreateIndex(unique, c).Text));
+            cases["ddl.dropindex"] = () => dialect.DropIndex(widget, "NCI_tbl_X_Name").Text;
+            cases["ddl.fulltext"] = () => dialect.CreateFullTextIndex(allTypes, allTypes["Searchable"]);
+            cases["ddl.notify"] = () => string.Join("\n--\n", dialect.CreateNotifyFunction(), dialect.CreateNotifyTrigger(widget));
+
+            foreach (var type in QueryGoldenCorpus.SchemaTypes())
+                cases[$"ddl.create.{type.Name}"] = () => Join(dialect.CreateTable(QueryGoldenCorpus.TableOf(type)));
+
+            return cases;
+        }
+    }
+}

@@ -85,8 +85,11 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>How many times opening is attempted when failures are transient.</summary>
         protected virtual int OpenAttempts => 1;
 
-        /// <summary>Binds one value; the default sets it as given.</summary>
-        protected virtual DbParameter CreateParameter(DbCommand command, string name, object? value)
+        /// <summary>
+        /// Binds one value of <paramref name="source"/> (one element of a multi-valued term has its
+        /// own name); the default sets the value as given.
+        /// </summary>
+        protected virtual DbParameter CreateParameter(DbCommand command, string name, object? value, IQueryParameter source)
         {
             var parameter = command.CreateParameter();
             parameter.ParameterName = $"{_provider.ParameterPrefix}{name}";
@@ -174,29 +177,8 @@ namespace TFM.Nucleus.Data.Providers
             _isInitialized = true;
         }
 
-        private async ValueTask OpenConnection(bool async, CancellationToken token)
-        {
-            for (var attempt = 1; ; attempt++)
-            {
-                try
-                {
-                    if (async)
-                        await _connection!.OpenAsync(token);
-                    else
-                        _connection!.Open();
-                    return;
-                }
-                catch (Exception ex) when (attempt < OpenAttempts && IsTransientOpenFailure(ex) && !token.IsCancellationRequested)
-                {
-                    var delay = TimeSpan.FromMilliseconds(200 * Math.Pow(2, attempt - 1));
-                    Debug.WriteLine($"Opening a connection failed transiently (attempt {attempt}); retrying in {delay.TotalMilliseconds} ms. {ex.Message}", "Database");
-                    if (async)
-                        await Task.Delay(delay, token);
-                    else
-                        Thread.Sleep(delay);
-                }
-            }
-        }
+        private ValueTask OpenConnection(bool async, CancellationToken token) =>
+            ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, token);
 
         private void TryEnlistParent(TSelf? parent)
         {
@@ -459,8 +441,15 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>Binds each term that uses a variable, expanding multi-valued terms.</summary>
         protected void BindParameters(DbCommand command, IEnumerable<IQueryParameter?>? terms)
         {
-            foreach (var bound in ParameterBinding.Bind(terms))
-                command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value));
+            if (terms == null)
+                return;
+            foreach (var term in terms)
+            {
+                if (term == null || !term.UsesVariable)
+                    continue;
+                foreach (var bound in ParameterBinding.Bind(term))
+                    command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value, term));
+            }
         }
 
         /// <summary>Sets the command's text and parameters for a run; deletes skip the provider's hook.</summary>
@@ -495,6 +484,10 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (HasTransaction)
                 Rollback();
+            // Cancellation is the caller's own request, not a database failure: it propagates
+            // as it was thrown, on every provider, after the transaction is marked for rollback.
+            if (exception is OperationCanceledException)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
             return _provider.TranslateFailure(message, exception);
         }
 

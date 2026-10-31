@@ -4,15 +4,16 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as eight packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as nine packages that version and
 release together.
 
 | Package | Source | Role |
 |---|---|---|
-| `TFM.Nucleus.Abstractions` | `src\TFM.Nucleus.Abstractions` | Contracts and the neutral query model. Zero SQL. |
+| `TFM.Nucleus.Abstractions` | `src\TFM.Nucleus.Abstractions` | Contracts and the neutral query interfaces. Zero SQL. |
 | `TFM.Nucleus` | `src\TFM.Nucleus` | Entity core: `CoreObject`, schema reflection, change tracking. |
-| `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer. Zero SQL. |
+| `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer, the shared query and schema model, and the provider SDK. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
+| `TFM.Nucleus.Data.PostgreSQL` | `src\TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql). |
 | `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
 | `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
 | `TFM.Nucleus.Stencil` | `src\TFM.Nucleus.Stencil` | TFM.Stencil's template bundle store (used by TFM.Mailroom and TFM.Paperwork) over Nucleus entities. Provider neutral; depends on `TFM.Stencil.Abstractions` from the feed. |
@@ -31,10 +32,12 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- `Data.SQL`, and `Bindery`,
-`S3Library`, `Stencil` and `Attribution` sit beside `Data.SQL` over the same three. Direction is enforced by project references, and the "no SQL in
-the neutral layers" rule is enforced by `ProviderSeamTests`, which scans the compiled string
-literals of the neutral assemblies.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), and
+`Bindery`, `S3Library`, `Stencil` and `Attribution` sit beside the providers over the same three.
+Neither provider references the other. Direction is enforced by project references and by
+`ProviderSeamTests`, which also scans the compiled string literals of the neutral and store
+assemblies for SQL and provider names; `ProviderSurfaceTests` holds each provider's public surface
+to its registration and configuration.
 
 `TFM.Nucleus.Bindery` is the first package here that serves another library: `NucleusBinderyStore`
 implements TFM.Bindery's `IBinderyStore` and its three optional capabilities over four
@@ -157,6 +160,24 @@ collection rows deepest first through the parent's condition, then the root, the
 `DbDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
 detach the subqueries from their parents. The soft-delete rule lives once, in `SoftDelete`.
 
+`TFM.Nucleus.Data.PostgreSQL` is PostgreSQL's dialect over the same SDK: `PostgresQueryRenderer`,
+`PostgresSchemaDialect` with `PostgresTypes`, `PostgresCatalogReader` (information_schema and
+pg_catalog), the extras (a GIN full-text index per FullTextSearch column, and a statement-level
+trigger per table that runs `nucleus_notify()` to `pg_notify` the table's channel), the COPY
+BINARY bulk engine and `PostgresChangeSubscription` (one LISTEN connection per subscription).
+Identifiers are double-quoted so PascalCase survives; a name over 63 bytes goes through
+`IdentifierShortener` (Data) before it is written or compared, or PostgreSQL would silently
+truncate it and the schema check would rebuild it on every start. Index, constraint and sequence
+names are schema-wide in PostgreSQL, so a rebuild renames the old table's indexes and identity
+sequence before it creates the new table. Values are bound as their column's type: a
+`DateTimeOffset` as `timestamptz` in UTC (PostgreSQL keeps no offset and nothing below a
+microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `jsonb`; a `timestamptz`
+reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
+A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
+unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
+retries a transient failure (`ConnectRetryCount`). Its output is pinned by `PostgresGoldens.cs`,
+built from the same query corpus as the SQL Server goldens.
+
 ## Build and test
 
 ```powershell
@@ -176,10 +197,14 @@ Warnings become errors only when `ContinuousIntegrationBuild=true`. To reproduce
 dotnet build TFM.Nucleus.slnx --configuration Release -p:ContinuousIntegrationBuild=true
 ```
 
-The integration tests need a disposable SQL Server database, configured through the
-`NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and
-`NUCLEUS_TEST_PASSWORD` environment variables or the matching `Nucleus:*` user secrets. They skip
-cleanly when none is configured, which is what happens in CI.
+The integration tests run every suite once per provider: each neutral suite is an abstract class
+with a sealed subclass per provider under `SqlServer\` and `Postgres\`, next to that engine's own
+tests. SQL Server needs a disposable database configured through the `NUCLEUS_TEST_SERVER`,
+`NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` environment variables
+or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
+`Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
+A provider with no settings skips cleanly, which is what happens in CI. A fixture whose
+initialisation fails includes the stack's warnings and errors in its message.
 
 ## Deviations from the scaffold
 
@@ -222,7 +247,7 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The eight packages
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The nine packages
   share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version,
   `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version, `TFM.Nucleus.Stencil` a
   `TFM.Stencil.Abstractions` version and `TFM.Nucleus.Attribution` a `TFM.Attribution` version (two identical per-TFM lines in each csproj); a release of
@@ -243,5 +268,5 @@ warning in new code fails CI.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all eight packages and is the reference documentation consumers see on the feed.
+  all nine packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.
