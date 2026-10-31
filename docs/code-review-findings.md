@@ -49,13 +49,6 @@ is a separate change, with a golden update that shows exactly what moves.
 
 ### Found with the PostgreSQL provider (October 2026)
 
-- **TFM.Stencil's round-trip case needs a contract release.** `Save_ThenGet_RoundTripsEveryField`
-  compared `CreatedUtc` and `UpdatedUtc` to the tick, and PostgreSQL's `timestamptz` keeps
-  microseconds, so the case fails on PostgreSQL by the 100 ns its value carries below a
-  microsecond. The contract change (compare as the same instant to the microsecond) is committed in
-  TFM.Stencil on branch `contract-microsecond-timestamps`; once it is released, bump the
-  `TFM.Stencil.Testing` pin in the integration test project and the case passes. Every other
-  Stencil case passes on both providers.
 - **Every PostgreSQL table carries a notification trigger**, created at initialise so a
   subscription needs no DDL rights at run time. Each statement that writes a table queues one
   `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
@@ -157,6 +150,10 @@ so avoiding the load needs column projection, which Nucleus does not have.
   a caller catching `OperationCanceledException` missed it (on SQL Server it depended on where
   SqlClient happened to throw). Cancellation now propagates as thrown, after a transactional
   context is marked for rollback.
+- **TFM.Stencil's round-trip case could not pass on PostgreSQL.** `Save_ThenGet_RoundTripsEveryField`
+  compared `CreatedUtc` and `UpdatedUtc` to the tick, and `timestamptz` keeps microseconds, so the
+  case failed by the 100 ns a value carries below a microsecond. TFM.Stencil 1.26.304.1 compares
+  them as the same instant to the microsecond; the Stencil pins moved to it together.
 
 ### The predicate parser dropped terms it could not place
 
