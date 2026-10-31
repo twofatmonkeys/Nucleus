@@ -84,7 +84,7 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
         public async Task AClaimAlreadyHeldForTheNextVersion_IsReportedAsConcurrency()
         {
             // Proves the real path: the read-phase check passes, the claim insert hits the unique
-            // index, and the SqlException buried in the context's wrapper is classified.
+            // index, and the provider reports it as a UniqueViolationException the store classifies.
             var manager = fixture.RequireManager();
             using var _ = await TestDatabaseLock.AcquireAsync(Suite);
             await ResetAsync(manager);
@@ -117,38 +117,39 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
         }
 
         [Fact]
-        public void FindUniqueViolation_TellsConflictFromConcurrency_WithoutSqlClient()
+        public void FindUniqueViolation_TellsConflictFromConcurrency_ByEntityAndColumn()
         {
-            // A fake named SqlException with an int Number, wrapped the way the Nucleus context
-            // wraps provider errors: the classifier never references SqlClient.
-            var claim = new Exception("Error returning Query from DB.",
-                new SqlException(2601, "Cannot insert duplicate key row in object 'dbo.tbl_TFM_Nucleus_S3Library_S3AssetVersionClaim' with unique index 'UQ_tbl_TFM_Nucleus_S3Library_S3AssetVersionClaim_Claim'."));
-            var path = new Exception("Error returning Query from DB.",
-                new SqlException(2627, "Violation of UNIQUE KEY constraint 'UQ_tbl_TFM_Nucleus_S3Library_S3AssetRecord_LivePath'."));
-            var other = new Exception("Error returning Query from DB.",
-                new SqlException(2601, "Cannot insert duplicate key row with unique index 'UQ_tbl_Something_Else'."));
-            var notUnique = new Exception("Error returning Query from DB.", new SqlException(547, "FK violation"));
+            // The violation the providers report, wrapped the way a context wraps a failure: the
+            // classifier matches the entity and column of the broken index, never an engine type.
+            var engine = new InvalidOperationException("engine error");
+            Exception Wrapped(Type? type, string? column) => new Exception("Unable to execute SQL on DB.",
+                new UniqueViolationException("Unable to execute SQL on DB.", $"UQ_x_{column}", type, column, engine));
+            var claim = Wrapped(typeof(S3AssetVersionClaim), nameof(S3AssetVersionClaim.Claim));
+            var assetId = Wrapped(typeof(S3AssetRecord), nameof(S3AssetRecord.AssetId));
+            var path = Wrapped(typeof(S3AssetRecord), nameof(S3AssetRecord.LivePath));
+            var other = Wrapped(null, null);
             var id = Guid.NewGuid();
 
             var claimViolation = NucleusS3AssetStore.FindUniqueViolation(claim);
+            var assetIdViolation = NucleusS3AssetStore.FindUniqueViolation(assetId);
             var pathViolation = NucleusS3AssetStore.FindUniqueViolation(path);
             var otherViolation = NucleusS3AssetStore.FindUniqueViolation(other);
 
             Assert.NotNull(claimViolation);
             Assert.NotNull(pathViolation);
             Assert.NotNull(otherViolation);
-            Assert.Null(NucleusS3AssetStore.FindUniqueViolation(notUnique));
+            Assert.Null(NucleusS3AssetStore.FindUniqueViolation(new Exception("Error returning Query from DB.", engine)));
             Assert.Null(NucleusS3AssetStore.FindUniqueViolation(new InvalidOperationException("plain")));
 
             var concurrency = Assert.IsType<S3AssetConcurrencyException>(NucleusS3AssetStore.ClassifyUniqueViolation(claimViolation!, id, 3, 4, "a/b.jpg"));
             Assert.Equal(id, concurrency.Id);
             Assert.Equal(3, concurrency.ExpectedVersion);
             Assert.Equal(4, concurrency.ActualVersion);
+            Assert.IsType<S3AssetConcurrencyException>(NucleusS3AssetStore.ClassifyUniqueViolation(assetIdViolation!, id, 3, 4, "a/b.jpg"));
             var conflict = Assert.IsType<S3AssetConflictException>(NucleusS3AssetStore.ClassifyUniqueViolation(pathViolation!, id, 3, 4, "a/b.jpg"));
             Assert.Equal("a/b.jpg", conflict.FullPath);
             Assert.Null(NucleusS3AssetStore.ClassifyUniqueViolation(otherViolation!, id, 3, 4, "a/b.jpg"));
         }
-
         [Fact]
         public void SqlPredicate_CombinesOnlyTheTranslatableClauses()
         {
@@ -183,12 +184,6 @@ namespace TFM.Nucleus.IntegrationTests.S3Library
             public IObjectDataAdaptor<T> Get<T>() where T : ICoreObject<T>, new() => throw new TimeoutException("server unreachable");
             public Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new() => throw new TimeoutException("server unreachable");
             public Task<DataProviderStatus> InitializeDataProviderAsync() => throw new TimeoutException("server unreachable");
-        }
-
-        /// <summary>Named like SqlClient's exception and shaped like it where the classifier looks; nothing else.</summary>
-        private sealed class SqlException(int number, string message) : Exception(message)
-        {
-            public int Number { get; } = number;
         }
     }
 }
