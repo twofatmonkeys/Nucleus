@@ -292,7 +292,7 @@ the integration test database (`tests\TFM.Nucleus.IntegrationTests\Attribution`)
 | `CoreChildObject<T, TParent>` | A child entity that always belongs to a parent. Exposes `Parent` and participates in cascade saves and deletes. |
 | `CoreChildObject<TParent>` | The non self-referencing form of the above. |
 
-Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Timestamp` (a `DateTimeOffset` set by the server) for free.
+Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Timestamp` (a `DateTimeOffset` set by the server) for free. The server stamps the stored `Timestamp` on every insert and update, but the value is not read back: in memory it is the client clock at the object's first save, and a loaded object keeps the value it was loaded with. Reading it back on every write was measured at 10% to 65% slower for batched, split and bulk saves on both providers.
 
 ## Attribute reference
 
@@ -316,7 +316,7 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
 | `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
-| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 **Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and rebuilds the table, copying only the columns whose names the old and new tables share, so **the values in the old column are lost**. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 

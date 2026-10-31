@@ -49,13 +49,6 @@ namespace TFM.Nucleus.Data.Queries
         }
 
         /// <summary>
-        /// Whether a write reads the server's Timestamp back into the entity. Off: the entity
-        /// keeps the client clock, set when its changes are committed. A process-wide switch the
-        /// save benchmarks compare.
-        /// </summary>
-        internal static bool ReadBackTimestamp { get; set; }
-
-        /// <summary>
         /// The SET terms that write <paramref name="obj"/>: each changed property as its value,
         /// then each column [DatabaseColumn(SetValueOverride)] has the server compute, as that
         /// server function, whatever the client set. A column marked ReturnOutputToProperty
@@ -77,8 +70,7 @@ namespace TFM.Nucleus.Data.Queries
                 : new Parameter(column, value);
 
         private static bool ReadsBack(IDataColumnSchema column) =>
-            column.PropertySchema.DatabaseColumnAttribute?.ReturnOutputToProperty == true &&
-            (ReadBackTimestamp || column.ColumnName != Schema.TableSchema.TimestampColumn);
+            column.PropertySchema.DatabaseColumnAttribute?.ReturnOutputToProperty == true;
         public IEnumerable<IDataTableSchema> DistinctTableSchemas()
         {
             var schemas = new HashSet<IDataTableSchema>();

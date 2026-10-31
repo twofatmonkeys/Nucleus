@@ -47,6 +47,25 @@ is a separate change, with a golden update that shows exactly what moves.
   `IsNonClusteredIndex`, and the `ServerFunctionKind` and `ServerFunction` tokens `SysDateTime`
   and `SysDateTimeOffset`. Alias them by meaning, as the attribute fields were.
 
+### Timestamp in memory is the client clock (decided October 2026)
+
+The server stamps `Timestamp` on every write, and output parameters can now read a stored value
+back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock at the
+first save, and an update does not refresh it. Reading it back was measured with the save
+benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`, 15 interleaved rounds, median
+overhead against the client clock), against a 2% bar:
+
+| Path | SQL Server net10 | SQL Server net8 | PostgreSQL net10 | PostgreSQL net8 |
+|---|---|---|---|---|
+| one object at a time (x20) | +2.3% | -2.0% | +4.7% | +12.6% |
+| batch of 100 | +10.4% | +12.4% | +263.6% | -4.5% |
+| split sync path (1,000) | +13.0% | +14.9% | +16.0% | +15.7% |
+| bulk engine (20,000) | +47.3% | +65.5% | +32.8% | +26.1% |
+
+The PostgreSQL batch figures swing with run-to-run noise at a 15 ms median; every other path is
+consistently 10% or more slower, so Timestamp keeps the client clock. Re-measure before turning it
+on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCLEUS_BENCHMARK=1`.
+
 ### Found with the PostgreSQL provider (October 2026)
 
 - **Every PostgreSQL table carries a notification trigger**, created at initialise so a
