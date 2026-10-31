@@ -45,6 +45,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresBulkSaveIntegrationTests(PostgresFixture fixture) : BulkSaveIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresSaveBenchmarks(PostgresFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresAttributionStoreTests(PostgresFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);
 
     [Collection(PostgresCollection.Name)]

@@ -45,6 +45,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerBulkSaveIntegrationTests(SqlServerFixture fixture) : BulkSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerSaveBenchmarks(SqlServerFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerAttributionStoreTests(SqlServerFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

@@ -67,4 +67,35 @@
         [DatabaseColumn]
         public int Sequence { get => GetValue<int>(); set => SetValue(value); }
     }
+
+    /// <summary>Columns named apart from their properties, by both spellings of the attribute.</summary>
+    public class TestRenamedWidget : CoreObject<TestRenamedWidget>
+    {
+        [DatabaseColumn(ColumnName = "title_text", Indexed = true)]
+        public string? Title { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn("item_code", Unique = true)]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Quantity { get => GetValue<int>(); set => SetValue(value); }
+
+        public NucleusChildCollection<TestRenamedChild, TestRenamedWidget> Children => GetChildCollection<TestRenamedChild, TestRenamedWidget>();
+    }
+
+    public class TestRenamedChild : CoreChildObject<TestRenamedChild, TestRenamedWidget>
+    {
+        [DatabaseColumn(ColumnName = "seq")]
+        public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+    }
+
+    /// <summary>A column the server sets on every write and the entity reads back.</summary>
+    public class TestServerValueWidget : CoreObject<TestServerValueWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
 }

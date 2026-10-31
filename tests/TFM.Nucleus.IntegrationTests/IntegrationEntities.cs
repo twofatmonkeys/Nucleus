@@ -22,6 +22,17 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
+
+    /// <summary>The save benchmarks' rows, in a table of their own.</summary>
+    [Deletable]
+    public class IntBenchWidget : CoreObject<IntBenchWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Quantity { get => GetValue<int>(); set => SetValue(value); }
+    }
 }
 
 namespace TFM.Nucleus.IntegrationTests

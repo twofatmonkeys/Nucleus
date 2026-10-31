@@ -606,6 +606,12 @@ docker run -d --name nucleus-pg -e POSTGRES_USER=nucleus -e POSTGRES_PASSWORD=<p
 
 with `Nucleus:Postgres:Server` set to `localhost:15432`; the provider creates the database on the first run.
 
+The save benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`) time each write path (one object at a time, a batch, the split sync path and the bulk engine) on every configured provider. They skip unless `NUCLEUS_BENCHMARK=1` is set, and print their medians to the test output:
+
+```bash
+NUCLEUS_BENCHMARK=1 dotnet test tests/TFM.Nucleus.IntegrationTests --configuration Release --filter "FullyQualifiedName~SaveBenchmarks" --logger "console;verbosity=detailed"
+```
+
 ## Documentation
 
 - [docs/conventions.md](docs/conventions.md) - code and repository conventions
