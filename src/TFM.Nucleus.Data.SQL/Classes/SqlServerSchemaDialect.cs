@@ -98,7 +98,7 @@ namespace TFM.Nucleus.Data.SQL
         }
 
         /// <summary>
-        /// The CREATE INDEX statement for a column carrying NonClusteredIndex or Unique. Unique
+        /// The CREATE INDEX statement for a column carrying Indexed or Unique. Unique
         /// wins when both are set and produces one filtered unique index. NULLs are excluded by
         /// the filter because every Nucleus column is created NULL and an unfiltered unique index
         /// would allow only a single NULL row per table.
@@ -173,7 +173,7 @@ EXEC sp_executesql @sql;";
 
     /// <summary>
     /// SQL Server full-text search: a catalog per table (ftc_{table}) and a full-text index over
-    /// the table's FullTextIndex columns, keyed by the primary key. Catalogs of tables that no
+    /// the table's FullTextSearch columns, keyed by the primary key. Catalogs of tables that no
     /// longer need one are dropped.
     /// </summary>
     internal sealed class SqlServerFullTextExtras(SqlServerCatalogReader catalog, ILogger? logger) : ISchemaExtras
@@ -182,7 +182,7 @@ EXEC sp_executesql @sql;";
         {
             var dtIndexes = await catalog.ReadFullTextIndexesAsync(async, cancellationToken);
             bool indexesMatch = true;
-            foreach (var table in tables.Where(x => x.HasFullTextIndex))
+            foreach (var table in tables.Where(x => x.HasFullTextSearch))
             {
                 if (!FullTextColumnsMatch(table, dtIndexes))
                 {
@@ -195,7 +195,7 @@ EXEC sp_executesql @sql;";
 
         private static bool FullTextColumnsMatch(TableSchema table, IReadOnlyList<SqlServerCatalogReader.FullTextIndexColumn> dtIndexes)
         {
-            var ftColumns = table.Columns.Where(x => x.FullTextIndex).Select(x => x.ColumnName).ToList();
+            var ftColumns = table.Columns.Where(x => x.FullTextSearch).Select(x => x.ColumnName).ToList();
             var existingFtColumns = dtIndexes.Where(x => x.TableName == table.TableName).Select(x => x.ColumnName).ToList();
             if (existingFtColumns.Count != ftColumns.Count)
                 return false;
@@ -210,13 +210,13 @@ EXEC sp_executesql @sql;";
             foreach (var ftc in dbCatalogs.Where(x => x.StartsWith("ftc_")))
             {
                 var tblname = ftc.Substring(4); //remove 'ftc_' prefix
-                if (!tables.Any(x => x.TableName == tblname && x.HasFullTextIndex))
+                if (!tables.Any(x => x.TableName == tblname && x.HasFullTextSearch))
                 {
                     //drop full-text catalog
                     await catalog.ExecuteAsync(SqlServerSchemaDialect.DropFullTextCatalogSql(ftc), async, cancellationToken);
                 }
             }
-            var ftTables = tables.Where(x => x.HasFullTextIndex).ToList();
+            var ftTables = tables.Where(x => x.HasFullTextSearch).ToList();
             if (ftTables.Count == 0)
                 return;
 
@@ -237,7 +237,7 @@ EXEC sp_executesql @sql;";
                     await catalog.ExecuteAsync(SqlServerSchemaDialect.DropFullTextIndexSql(tableSchema.TableName), async, cancellationToken);
                 //recreate full-text index
                 await catalog.ExecuteAsync(SqlServerSchemaDialect.CreateFullTextIndexSql(tableSchema.TableName), async, cancellationToken);
-                foreach (var col in tableSchema.Columns.Where(x => x.FullTextIndex))
+                foreach (var col in tableSchema.Columns.Where(x => x.FullTextSearch))
                     await catalog.ExecuteAsync(SqlServerSchemaDialect.AddFullTextColumnSql(tableSchema.TableName, col.ColumnName), async, cancellationToken);
             }
         }

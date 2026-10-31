@@ -14,26 +14,56 @@ namespace TFM.Nucleus.Data
         public DataType DataType { get; set; }
 
         #region IDatabaseColumnAttribute implementation
+        // Either spelling of a flag sets it: the neutral fields are read together with the
+        // obsolete ones they replace, so entities written with the old names keep working.
+#pragma warning disable CS0618
+        bool IndexedFlag => Indexed || NonClusteredIndex;
+        bool FullTextSearchFlag => FullTextSearch || FullTextIndex;
+        bool IndexDescendingFlag => IndexDescending || IndexSortDESC;
+        bool ExternalStorageFlag => ExternalStorage || Filestream;
+#pragma warning restore CS0618
+
         DataType IDatabaseColumnAttribute.DataType => DataType;
         string IDatabaseColumnAttribute.ColumnName => ColumnName;
         int? IDatabaseColumnAttribute.DataLength => DataLength;
-        bool IDatabaseColumnAttribute.FullTextIndex => FullTextIndex;
-        bool IDatabaseColumnAttribute.NonClusteredIndex => NonClusteredIndex;
+        bool IDatabaseColumnAttribute.Indexed => IndexedFlag;
+        bool IDatabaseColumnAttribute.FullTextSearch => FullTextSearchFlag;
+        bool IDatabaseColumnAttribute.IndexDescending => IndexDescendingFlag;
+        bool IDatabaseColumnAttribute.ExternalStorage => ExternalStorageFlag;
+        bool IDatabaseColumnAttribute.FullTextIndex => FullTextSearchFlag;
+        bool IDatabaseColumnAttribute.NonClusteredIndex => IndexedFlag;
         bool IDatabaseColumnAttribute.Unique => Unique;
-        bool IDatabaseColumnAttribute.IndexSortDESC => IndexSortDESC;
+        bool IDatabaseColumnAttribute.IndexSortDESC => IndexDescendingFlag;
         bool IDatabaseColumnAttribute.PrimaryKey => PrimaryKey;
-        bool IDatabaseColumnAttribute.Filestream => Filestream;
+        bool IDatabaseColumnAttribute.Filestream => ExternalStorageFlag;
         int? IDatabaseColumnAttribute.DecimalPlaces => DecimalPlaces;
         eServerFunction IDatabaseColumnAttribute.SetValueOverride => SetValueOverride;
         bool IDatabaseColumnAttribute.ReturnOutputToProperty => ReturnOutputToProperty;
         #endregion
-        
+
         public int? DataLength = null;
         public string ColumnName;
+
+        /// <summary>The column gets an index of its own, so lookups by it do not scan the table.</summary>
+        public bool Indexed = false;
+
+        /// <summary>The column's text is indexed for full-text search where the provider supports it.</summary>
+        public bool FullTextSearch = false;
+
+        /// <summary>The column's index sorts descending.</summary>
+        public bool IndexDescending = false;
+
+        /// <summary>The value is stored outside the row where the provider supports it (SQL Server FILESTREAM).</summary>
+        public bool ExternalStorage = false;
+
+        [Obsolete("Use ExternalStorage.")]
         public bool Filestream = false;
+        [Obsolete("Use FullTextSearch.")]
         public bool FullTextIndex = false;
+        [Obsolete("Use Indexed.")]
         public bool NonClusteredIndex = false;
         public bool Unique = false;
+        [Obsolete("Use IndexDescending.")]
         public bool IndexSortDESC = false;
         public bool PrimaryKey = false;
         public int? DecimalPlaces = null;

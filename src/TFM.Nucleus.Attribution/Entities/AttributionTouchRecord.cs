@@ -25,10 +25,10 @@ public class AttributionTouchRecord : CoreObject<AttributionTouchRecord>
     public Guid TouchId { get => GetValue<Guid>(); set => SetValue(value); }
 
     /// <summary>The visitor's long lived web session id. Every read selects by it.</summary>
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public Guid SessionId { get => GetValue<Guid>(); set => SetValue(value); }
 
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public DateTimeOffset Touched { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
 
     [DatabaseColumn]

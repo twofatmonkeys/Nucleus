@@ -28,7 +28,7 @@ namespace TFM.Nucleus.Data.Schema
         public ColumnSchema IdentityColumn { get; }
         public bool ExistsInDatabase { get; internal set; } = false;
         public bool IsCurrent => ExistsInDatabase && Columns.All(c => c.IsCurrent);
-        public bool HasFullTextIndex => Columns.Any(c => c.FullTextIndex);
+        public bool HasFullTextSearch => Columns.Any(c => c.FullTextSearch);
 
         /// <summary>The type is [Deletable(DeleteBehavior.Soft)], so the table carries the soft-delete system columns.</summary>
         public bool IsSoftDeletable => SoftDelete.Applies(this);

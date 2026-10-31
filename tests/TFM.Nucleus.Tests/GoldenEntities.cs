@@ -48,7 +48,7 @@
         [DatabaseColumn]
         public TestWidget? Linked { get => GetValue<TestWidget>(); set => SetValue(value); }
 
-        [DatabaseColumn(FullTextIndex = true)]
+        [DatabaseColumn(FullTextSearch = true)]
         public string? Searchable { get => GetValue<string>(); set => SetValue(value); }
     }
 

@@ -12,7 +12,7 @@ namespace TFM.Nucleus.Bindery;
 [Deletable(DeleteBehavior.Hard)]
 public class BinderyPageVersion : CoreObject<BinderyPageVersion>
 {
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? PageId { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn(DataType.Unicode)]

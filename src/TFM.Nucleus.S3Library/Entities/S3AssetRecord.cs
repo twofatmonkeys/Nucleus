@@ -37,11 +37,11 @@ public class S3AssetRecord : CoreObject<S3AssetRecord>
     public string? Slug { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>The normalised folder, empty string for the root, so a folder query is one equality.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? Folder { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>The normalised <c>folder/slug</c>, always set, so path lookups find deleted rows too.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? FullPath { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>Equal to <see cref="FullPath"/> while live, null once soft-deleted. The unique index is the path rule.</summary>
@@ -55,7 +55,7 @@ public class S3AssetRecord : CoreObject<S3AssetRecord>
     public long SizeBytes { get => GetValue<long>(); set => SetValue(value); }
 
     /// <summary>Stored lowercase, so the hash lookup is one equality.</summary>
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public string? Sha256 { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]

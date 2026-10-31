@@ -12,7 +12,7 @@ namespace TFM.Nucleus.Data.SQL
     /// are never surfaced; Nucleus uses this for cache invalidation, so the event carries only
     /// the entity type.
     /// </summary>
-    public sealed class SqlQuerySubscription<T> : ChangeSubscriptionBase<T> where T : ICoreObject<T>, new()
+    internal sealed class SqlQuerySubscription<T> : ChangeSubscriptionBase<T> where T : ICoreObject<T>, new()
     {
         private readonly string _selectText;
         private readonly string _connectionString;

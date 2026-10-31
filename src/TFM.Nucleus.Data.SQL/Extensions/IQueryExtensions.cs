@@ -6,7 +6,7 @@ using TFM.Nucleus.Data.Queries;
 
 namespace TFM.Nucleus.Data.SQL
 {
-    public static class IQueryExtensions
+    internal static class IQueryExtensions
     {
         internal static SqlParameter[]? GetSQLParams(this IQueryParameterCollection? coll) =>
             ToSqlParameters(ParameterBinding.Bind(coll));

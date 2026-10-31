@@ -10,8 +10,8 @@ This repository holds the whole family. Eight packages ship from it, all on one 
 |---|---|
 | `TFM.Nucleus.Abstractions` | Contracts: `ICoreObject`, `IDataProvider` and `IDataContext`, the neutral query model (`IQuery`, `IQueryParameter`, `Operator`), schema interfaces, the `DataSet` row buffer, `NucleusCollection` and `NucleusChildCollection`, `PagedResult<T>`, `IChangeSubscription`, `INucleusRuntime`, `NucleusOptions`. Zero SQL. |
 | `TFM.Nucleus` | The core: `CoreObject` entity base classes, attribute-driven schema reflection (`ObjectSchema` and `PropertySchema` with IL-emitted materialisers), change tracking, the static convenience API, `NucleusLoggerProvider`, and DI registration. |
-| `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. Contains no SQL, proven by a tripwire test. |
-| `TFM.Nucleus.Data.SQL` | SQL Server provider: query rendering, connection and transaction context trees, the bulk engine, schema create, compare and migrate, and SqlDependency change notifications. |
+| `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](#provider-seam)). Contains no SQL, proven by a tripwire test. |
+| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 | `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
 | `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
@@ -60,7 +60,7 @@ Define entities. Properties are backed by the framework's change-tracking dictio
 [Cacheable(refreshInterval: 120, cacheLifetime: 900)]
 public class Customer : CoreObject<Customer>
 {
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn]
@@ -145,9 +145,11 @@ contract's two hard rules with unique indexes instead: `S3AssetRecord.LivePath` 
 path while a record is live and null once it is soft-deleted, so the filtered unique index on it
 is exactly "no two live records share a path"; and every save inserts a claim row for the version
 it moves to, in the same transaction as the record write, so two writers racing from one version
-collide on the claim index and exactly one commits. A unique violation on the claim surfaces as
-the library's `S3AssetConcurrencyException`, one on the live path as `S3AssetConflictException`,
-and any other storage failure as `S3LibraryException` with the original attached. Ordering,
+collide on the claim index and exactly one commits. The provider reports a broken unique index as
+a [`UniqueViolationException`](#unique-violations) naming the entity and column, and the store
+turns one on the claim into the library's `S3AssetConcurrencyException`, one on the live path into
+`S3AssetConflictException`, and any other storage failure into `S3LibraryException` with the
+original attached. Ordering,
 paging, the name filter and the count happen in memory over the rows the SQL-side filters select.
 The store passes `S3AssetStoreContract.Cases` from `TFM.S3Library.Testing` against the integration
 test database.
@@ -257,15 +259,17 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
 | `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
-| `Unique` | `false` | Adds a filtered unique nonclustered index on the column. NULLs are not constrained. See below. |
-| `NonClusteredIndex` | `false` | Adds a non-clustered index on the column. Neither this nor `Unique` is allowed on a `max` length or FILESTREAM column. |
-| `IndexSortDESC` | `false` | Sorts that index descending. |
-| `FullTextIndex` | `false` | Includes the column in the table's full-text index, which enables `CONTAINS` predicates. |
-| `Filestream` | `false` | Stores a `byte[]` column as FILESTREAM. |
-| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example a server timestamp, instead of sending the client value. |
+| `Unique` | `false` | Adds a unique index on the column. NULLs are not constrained. See below. |
+| `Indexed` | `false` | Adds an index on the column. Neither this nor `Unique` is allowed on a `max` length or externally stored column. Replaces `NonClusteredIndex`. |
+| `IndexDescending` | `false` | Sorts that index descending. Replaces `IndexSortDESC`. |
+| `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
+| `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
+| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp, instead of sending the client value. |
 | `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
 
-`Unique` creates a filtered unique nonclustered index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `NonClusteredIndex` as well does not add a second index, and `IndexSortDESC` applies to whichever index is created. Because the index is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
+The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
+
+`Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
 
 On initialise the provider compares the `NCI_*` and `UQ_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
 
@@ -390,7 +394,7 @@ Override these on an entity to run logic at defined points:
 | Option | Default | Meaning |
 |---|---|---|
 | `ReadOnlySchema` | `true` | When true the schema is verified but never written. The parameterless `AddNucleus()` sets it false. |
-| `AppName` | entry assembly name | Reported to SQL Server as the application name. |
+| `AppName` | entry assembly name | Reported to the database server as the application name. |
 | `AppVersion` | entry assembly version | Recorded with audit entries. |
 | `EnableAuditLogging` | `true` | Writes change summaries such as "Updated Name from A to B" on save and delete. |
 | `AuditLogLevel` | `Information` | The level those summaries are written at. The category is the entity type's full name. |
@@ -407,15 +411,40 @@ Override these on an entity to run logic at defined points:
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
 | `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
 | `SQLPacketSize` | `1500` | Network packet size. |
-| `MaxThreadsForLargeQuery` | `12` | Parallelism for large reads. |
-| `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters. |
-| `CommandTimeoutSeconds` | `10` | Per-command timeout. |
-| `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk operations. |
-| `BulkCopyBatchSize` | `50000` | Rows per bulk copy batch. |
+| `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
+| `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters; a larger insert or update batch goes to the bulk engine. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
+| `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
+| `BulkCopyBatchSize` | `50000` | Not currently applied: bulk statements run in batches of 50,000 rows. |
 
-Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+
+## Unique violations
+
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(columnName)` tests for one; all three are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+
+```csharp
+catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
+{
+    // another writer took the address first
+}
+```
 
 ## Behaviour changes
+
+These came in with the shared provider layer.
+
+- **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSQLDataProvider`,
+  `SQLConfiguration` and `SqlDataProviderException`. `SQLDataProvider`, `SqlDataContext`, the query
+  classes, the schema classes, `ParameterExtensions`, `ConfigureSQLOptions` and
+  `SqlDataContextException` are gone from the public surface; the query and schema model are in
+  `TFM.Nucleus.Data.Queries` and `TFM.Nucleus.Data.Schema`. `IDataConnection` and `IDataService`,
+  which nothing implemented, are deleted.
+- **A unique violation is a `UniqueViolationException`.** It derives from `Exception`, keeps the old
+  message and carries the SQL Server exception as its inner exception.
+- **A context that fails to open releases its pool slot**, and an async dispose removes the context
+  from the pool, as a sync dispose always did. Before, each held a slot or an entry for the life of
+  the process.
 
 These came in with delete by predicate and child collection exclusion. Each fixes a defect, but each
 can change what existing code sees.
@@ -443,7 +472,15 @@ can change what existing code sees.
 
 ## Provider seam
 
-All SQL text lives in the provider assembly. The neutral layers speak `IQuery`, `IQueryParameter`, `Operator` and `ServerFunctionKind` tokens, and a unit test scans the compiled strings of the neutral assemblies for SQL to keep it that way. A new provider implements `IDataProvider` and `IDataContext`, renders the neutral model in its own dialect, maps the server-function tokens and reports its `DataProviderCapabilities`. Nothing in the core or data layers changes.
+Applications code against `TFM.Nucleus.Data` and touch a provider package only to register and configure it, so the same entities run on whichever database a deployment chooses.
+
+`TFM.Nucleus.Data` holds everything that does not depend on the engine:
+
+- **The query model** (`TFM.Nucleus.Data.Queries`): `SelectQuery`, `InsertQuery`, `UpdateQuery` and `DeleteWhereQuery` decide what a query means: its condition tree, order, page, child collection queries, soft-delete filter and the children-first order of a delete cascade. `WhereRenderer` is the one walk of a condition tree; `ParameterBinding` names the parameters an IN term expands to.
+- **The schema model** (`TFM.Nucleus.Data.Schema`): `TableSchema` and `ColumnSchema` describe each entity's table, with what each column stores (`ColumnTypeIntent`) and its size. `SchemaManager` compares them with the database and creates, rebuilds and indexes tables.
+- **The provider SDK** (`TFM.Nucleus.Data.Providers`): `RelationalDataProvider` and `DbDataContext<TSelf>` are the provider and context over System.Data.Common, with pooling, the transaction tree, reads, deletes, the write paths and failure translation. `BulkWritePlanner` stages bulk writes, and `ChangeSubscriptionBase<T>` and `ListenerRefCounter` back change notifications.
+
+A provider package implements the dialect: an `IQueryRenderer` that writes each query, an `ISchemaDialect` that writes DDL and maps column types, an `ICatalogReader` over the engine's catalog and an `ISchemaStore` that ties them together. It derives its provider and context from the SDK base classes, recognises its engine's unique violations, and exposes only its registration and configuration. Unit tests enforce the boundary: one scans the compiled strings of the neutral and store assemblies for SQL and for provider names, one checks they reference no provider, and one holds each provider's public surface to its registration and configuration.
 
 ## Repository layout
 
@@ -467,7 +504,7 @@ dotnet build TFM.Nucleus.slnx --configuration Release
 dotnet test  TFM.Nucleus.slnx --configuration Release
 ```
 
-The unit tests need no database and cover golden-SQL snapshots, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwire. The integration tests activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database, and skip cleanly otherwise.
+The unit tests need no database and cover golden-SQL snapshots (raw goldens pin every space of the SQL Server output), the public API snapshot of every package, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwires. The two snapshots regenerate only when `NUCLEUS_ACCEPT_GOLDENS=1` is set, so a change to either is a reviewed diff. The integration tests activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database, and skip cleanly otherwise.
 
 ## Documentation
 

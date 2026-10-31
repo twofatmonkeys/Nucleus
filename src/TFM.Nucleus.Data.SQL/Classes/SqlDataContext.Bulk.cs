@@ -17,7 +17,7 @@ namespace TFM.Nucleus.Data.SQL
     /// staged rows; this writes them with a #temp table, SqlBulkCopy and one set-based statement
     /// per batch of rows.
     /// </summary>
-    public partial class SqlDataContext
+    internal partial class SqlDataContext
     {
         /// <summary>
         /// Default batch size for bulk INSERT/UPDATE operations.

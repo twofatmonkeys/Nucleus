@@ -18,7 +18,7 @@ namespace TFM.Nucleus.Stencil;
 public class StencilTemplateRecord : CoreObject<StencilTemplateRecord>
 {
     /// <summary>The consumer's partition, lowercased. Every listing filters on it.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? Collection { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>The template key as the caller gave it.</summary>

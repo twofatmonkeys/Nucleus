@@ -58,11 +58,11 @@ is soft-deleted. The version rule is the claim table: every save inserts a row
 racing from one version collide on `UQ_..._S3AssetVersionClaim_Claim` and exactly one commits;
 the previous claim is deleted in the same transaction, leaving one row per asset. Reads run
 outside a transaction and writes inside one, because a transactional context closes its
-connection after a read. A unique violation is recognised by walking the inner-exception chain
-for a type named `SqlException` with `Number` 2601 or 2627 and reading the index name from its
-message, so the package never references SqlClient; the claim or asset-id index means
-`S3AssetConcurrencyException`, the live-path index means `S3AssetConflictException`, anything
-else is rethrown as `S3LibraryException` with the original attached. Ordering, paging, the name
+connection after a read. A unique violation is the provider-neutral `UniqueViolationException`
+found in the inner-exception chain, matched by the entity and column it names, so the package
+knows no engine; the claim or asset-id index means `S3AssetConcurrencyException`, the live-path
+index means `S3AssetConflictException`, anything else is rethrown as `S3LibraryException` with
+the original attached. Ordering, paging, the name
 filter and the count run in memory over the rows the SQL-side equalities select, since the
 provider translates none of them. Tests run `S3AssetStoreContract.Cases` from
 `TFM.S3Library.Testing` against the integration database
@@ -113,7 +113,21 @@ dictionaries rather than fields, which is what makes change tracking and partial
 materialisers that construct entities without running constructors. The static API on `CoreObject`
 is a thin forwarder over `NucleusRuntime.Current`, which `AddNucleusData()` publishes.
 
-`TFM.Nucleus.Data` orchestrates. `ObjectDataManager` implements both `IObjectDataManager` and
+`TFM.Nucleus.Data` orchestrates, and holds everything a provider shares, so a provider package is
+only a dialect. The query model (`Queries`: Select, Insert, Update and DeleteWhere queries, the
+condition tree, `WhereRenderer`, `ParameterBinding`, `SoftDelete`) decides what a query means, and
+a query carries the provider's `IQueryRenderer`, which only writes it. The schema model (`Schema`:
+`TableSchema`, `ColumnSchema` with a `ColumnTypeIntent` and size facets, `SchemaComparer`,
+`SchemaManager`) builds, compares, creates and rebuilds tables through a provider's
+`ISchemaStore` (an `ISchemaDialect`, an `ICatalogReader` and a rebuild transaction). The provider
+SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
+`BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
+runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
+over System.Data.Common. I/O in the dialect interfaces takes an async flag and returns ValueTask,
+so one implementation serves the sync and async paths. A provider turns its engine's unique
+violation into `UniqueViolationException` (Abstractions) naming the entity and column.
+
+`ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. `ObjectDataAdaptor<T>`
 is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
@@ -129,15 +143,18 @@ child's parent as a stored value, so loaded children are never dirty. A load can
 collection by property name, which drops its query and marks the collection unloaded
 (`INucleusChildCollection.IsLoaded`); reading an unloaded collection throws, adding does not.
 
-`TFM.Nucleus.Data.SQL` renders the neutral model as T-SQL and owns every SQL string in the
-solution, along with schema create, compare and migrate, the bulk engine, and SqlDependency
-notifications. A select batches its child collection queries after its own rows, and
+`TFM.Nucleus.Data.SQL` is SQL Server's dialect over that SDK: `SqlServerQueryRenderer` (every
+T-SQL query string), `SqlServerSchemaDialect` and `SqlServerTypeMapper` (every DDL string),
+`SqlServerCatalogReader`, the full-text extras, the #temp and SqlBulkCopy bulk engine and
+SqlDependency notifications. Everything but its registration, `SQLConfiguration` and
+`SqlDataProviderException` is internal. Its output is pinned byte for byte by the raw goldens in
+`SqlServerGoldens.cs`. A select batches its child collection queries after its own rows, and
 `GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
 parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
 Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
 collection rows deepest first through the parent's condition, then the root, then
 `SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
-`SqlDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
+`DbDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
 detach the subqueries from their parents. The soft-delete rule lives once, in `SoftDelete`.
 
 ## Build and test
@@ -179,6 +196,28 @@ warning in new code fails CI.
 
 - **Do not put SQL in `Abstractions`, `TFM.Nucleus` or `Data`.** The provider seam is the whole
   reason a second database engine is possible. `ProviderSeamTests` will fail if you do.
+- **Consumers code against `Abstractions` and `Data` only.** An application, and every store
+  package, touches a provider package only to register and configure it, so a deployment picks
+  its database by picking a package. A provider package's public types are its `Add...` extensions,
+  its configuration class and the exception its registration throws; everything else is
+  `internal`. `ProviderSurfaceTests` holds each provider to that list, so widening it is a
+  deliberate review decision.
+- **No engine names in neutral or store assemblies.** No provider type name, error number or
+  registration name, in code or in a message. `ProviderSeamTests` scans the compiled strings of
+  `Abstractions`, `TFM.Nucleus`, `Data` and the store packages for SQL keywords and provider
+  names, and checks none of them references a provider or its client. When a store needs to know
+  what an engine did (a unique violation, say), add a neutral type to `Abstractions` or `Data` and
+  have every provider produce it.
+- **Shared logic lives once, in `Data`.** A provider implements the dialect interfaces and derives
+  from the SDK base classes; it never re-implements a query rule, a tree walk, the schema compare
+  or the execution paths. If a second provider needs something the first one has privately, move
+  it into `Data` behind a neutral name, not into the second provider as a copy.
+- **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
+  `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
+  SQL Server names stay, obsolete, because entities in production use them.
+- **Change the SQL Server goldens or the API snapshot deliberately.** `SqlServerGoldens.cs` and
+  `PublicApiSnapshot.cs` are written only by their accept tests, with `NUCLEUS_ACCEPT_GOLDENS=1`;
+  the diff is the review.
 - **Do not move a shared property into a csproj.** The three level props split (repo, `src`,
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.

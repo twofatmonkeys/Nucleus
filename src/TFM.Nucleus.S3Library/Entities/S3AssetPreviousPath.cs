@@ -10,11 +10,11 @@ namespace TFM.Nucleus.S3Library;
 [Deletable(DeleteBehavior.Hard)]
 public class S3AssetPreviousPath : CoreObject<S3AssetPreviousPath>
 {
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public Guid AssetId { get => GetValue<Guid>(); set => SetValue(value); }
 
     /// <summary>The path trimmed of slashes and lowercased, the form the library asks with.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? Path { get => GetValue<string>(); set => SetValue(value); }
 
     public override void Validate()

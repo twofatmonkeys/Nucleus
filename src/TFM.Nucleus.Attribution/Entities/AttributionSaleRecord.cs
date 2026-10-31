@@ -23,7 +23,7 @@ public class AttributionSaleRecord : CoreObject<AttributionSaleRecord>
     [DatabaseColumn(DataType.NotSpecified, -1)]
     public string? SessionIds { get => GetValue<string>(); set => SetValue(value); }
 
-    [DatabaseColumn(NonClusteredIndex = true)]
+    [DatabaseColumn(Indexed = true)]
     public DateTimeOffset Completed { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
 
     [DatabaseColumn]

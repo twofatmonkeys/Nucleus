@@ -17,11 +17,11 @@ public class BinderyDocument : CoreObject<BinderyDocument>
     public string? PageId { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>Normalised route for editor-created pages; null for zone sets on code pages.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? Route { get => GetValue<string>(); set => SetValue(value); }
 
     /// <summary>Developer-given key for a zone set on a code page; null for routed pages.</summary>
-    [DatabaseColumn(DataType.Unicode, NonClusteredIndex = true)]
+    [DatabaseColumn(DataType.Unicode, Indexed = true)]
     public string? PageKey { get => GetValue<string>(); set => SetValue(value); }
 
     [DatabaseColumn(DataType.Unicode)]

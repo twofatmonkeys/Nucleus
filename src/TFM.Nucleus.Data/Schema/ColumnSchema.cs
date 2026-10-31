@@ -39,13 +39,19 @@ namespace TFM.Nucleus.Data.Schema
         public readonly bool ExternalStorage;
 
         public readonly bool PrimaryKey;
-        public readonly bool FullTextIndex;
+
+        /// <summary>The column's text is indexed for full-text search where the provider supports it.</summary>
+        public readonly bool FullTextSearch;
+
         public readonly bool Unique;
-        public readonly bool NonClusteredIndex;
+
+        /// <summary>The column gets an index of its own.</summary>
+        public readonly bool Indexed;
+
         public readonly bool IndexSortDescending;
 
         /// <summary>True when the column gets an index of its own (plain or unique).</summary>
-        public bool HasColumnIndex => NonClusteredIndex || Unique;
+        public bool HasColumnIndex => Indexed || Unique;
 
         /// <summary>The length is unlimited.</summary>
         public bool IsMax => DataLength == MaxLength;
@@ -75,20 +81,20 @@ namespace TFM.Nucleus.Data.Schema
             Precision = DataLength - Scale;
             if (DataLength is not null and not MaxLength and <= 0)
                 throw new Exception($"Unable to determine the data size of column '{ColumnName}'.");
-            ExternalStorage = attr.Filestream;
+            ExternalStorage = attr.ExternalStorage;
             PrimaryKey = attr.PrimaryKey;
             Unique = attr.Unique;
-            FullTextIndex = attr.FullTextIndex;
-            NonClusteredIndex = attr.NonClusteredIndex;
+            FullTextSearch = attr.FullTextSearch;
+            Indexed = attr.Indexed;
             ClrType = GetClrType(propertySchema);
             RequiresCast = WillRequireCast(propertySchema);
-            IndexSortDescending = attr.IndexSortDESC;
+            IndexSortDescending = attr.IndexDescending;
             // A max-length or externally stored value cannot be an index key on every engine.
             // Fail at schema build with a readable message instead of a raw error inside Update.
             if (HasColumnIndex && (IsMax || ExternalStorage))
                 throw new InvalidOperationException(
-                    $"Property '{propertySchema.Name}' on '{owner.FullName}' cannot carry NonClusteredIndex or Unique: " +
-                    "a max-length or FILESTREAM column cannot be an index key.");
+                    $"Property '{propertySchema.Name}' on '{owner.FullName}' cannot carry Indexed or Unique: " +
+                    "a max-length or externally stored column cannot be an index key.");
         }
 
         public object? GetClrValue(object? value)

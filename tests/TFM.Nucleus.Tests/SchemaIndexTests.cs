@@ -52,7 +52,7 @@ namespace TFM.Nucleus.Tests
             Assert.StartsWith($"CREATE UNIQUE NONCLUSTERED INDEX [UQ_{Table}_Sku]", sql);
             Assert.Contains("([Sku] DESC) WHERE [Sku] IS NOT NULL", sql);
             Assert.True(sku.Unique);
-            Assert.True(sku.NonClusteredIndex);
+            Assert.True(sku.Indexed);
             // One index per column: Code, Sku and the inherited Timestamp.
             Assert.Equal(3, schema.Columns.Count(c => c.HasColumnIndex));
         }

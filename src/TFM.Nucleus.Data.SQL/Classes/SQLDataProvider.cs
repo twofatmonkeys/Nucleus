@@ -14,7 +14,7 @@ namespace TFM.Nucleus.Data.SQL
     /// The SQL Server provider: the shared relational provider with SQL Server's renderer,
     /// schema dialect, contexts and query-notification subscriptions.
     /// </summary>
-    public partial class SQLDataProvider(
+    internal partial class SQLDataProvider(
         IObjectSchemaProvider objectSchemaProvider,
         IOptionsMonitor<NucleusOptions> nucleusOptions,
         IOptionsMonitor<SQLConfiguration> sqlConfig,

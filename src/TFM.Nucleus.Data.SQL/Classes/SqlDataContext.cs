@@ -14,7 +14,7 @@ namespace TFM.Nucleus.Data.SQL
     /// SqlDependency registration when the context was asked for dependencies and the
     /// SqlBulkCopy engine for oversized writes.
     /// </summary>
-    public partial class SqlDataContext : DbDataContext<SqlDataContext>
+    internal partial class SqlDataContext : DbDataContext<SqlDataContext>
     {
         private readonly SQLDataProvider _sqlProvider;
 
