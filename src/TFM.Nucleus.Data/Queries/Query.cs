@@ -230,9 +230,13 @@ namespace TFM.Nucleus.Data.Queries
                 return [this];
         }
 
+        /// <summary>
+        /// Whether the chain needs more than <paramref name="paramLimit"/> parameters, and if so
+        /// the chunks it splits into, each of at most that many. Detaches the linked queries.
+        /// </summary>
         public bool NeedsSplitting(int paramLimit, out List<Query>? splitQueries)
         {
-            if (GetParameterCount() < paramLimit)
+            if (GetParameterCount() <= paramLimit)
             {
                 splitQueries = null;
                 return false;
@@ -249,7 +253,7 @@ namespace TFM.Nucleus.Data.Queries
                 foreach (var qry in tempList)
                 {
                     var paramCountForQry = qry.GetParameterCount();
-                    if (paramCount + paramCountForQry < paramLimit)
+                    if (paramCount + paramCountForQry <= paramLimit)
                     {
                         currentQuery.LinkedQueries.Add(qry);
                         paramCount += paramCountForQry;
