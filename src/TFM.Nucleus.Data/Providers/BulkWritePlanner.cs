@@ -50,7 +50,10 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>A SET term evaluated by the server rather than bound, such as the timestamp.</summary>
         public static bool IsServerFunction(IQueryParameter p) => !p.UsesVariable && p.Value != null;
 
-        /// <summary>The query and its linked queries, grouped by table. Each group is all inserts or all updates.</summary>
+        /// <summary>
+        /// The query and its linked queries, grouped by table and operation: a table written by
+        /// both inserts and updates gives one write of each, in the order each was first seen.
+        /// </summary>
         public static IReadOnlyList<BulkTableWrite> GroupByTable(Query rootQuery)
         {
             var allQueries = new List<Query>(rootQuery.LinkedQueries.Count + 1) { rootQuery };
@@ -66,13 +69,14 @@ namespace TFM.Nucleus.Data.Providers
             List<BulkTableWrite> writes = [];
             foreach (var tableGroup in allQueries.GroupBy(q => q.TableName!, StringComparer.OrdinalIgnoreCase))
             {
-                var queries = tableGroup.ToList();
-                // Validate all queries in the group are the same operation type
-                if (queries.Any(q => q.Type != queries[0].Type))
-                    throw new InvalidOperationException(
-                        $"Mixed insert and update operations for table '{tableGroup.Key}' in a single bulk batch. " +
-                        $"Split inserts and updates into separate queries.");
-                writes.Add(new BulkTableWrite((TableSchema)queries[0].TableSchema!, tableGroup.Key, queries[0].Type == QueryType.UPDATE, queries));
+                foreach (var operationGroup in tableGroup.GroupBy(q => q.Type))
+                {
+                    if (operationGroup.Key is not (QueryType.INSERT or QueryType.UPDATE))
+                        throw new InvalidOperationException(
+                            $"A bulk batch for table '{tableGroup.Key}' holds a {operationGroup.Key} query; only inserts and updates can be bulk written.");
+                    var queries = operationGroup.ToList();
+                    writes.Add(new BulkTableWrite((TableSchema)queries[0].TableSchema!, tableGroup.Key, operationGroup.Key == QueryType.UPDATE, queries));
+                }
             }
             return writes;
         }

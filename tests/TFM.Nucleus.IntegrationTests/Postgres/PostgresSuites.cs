@@ -45,6 +45,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresBulkSaveIntegrationTests(PostgresFixture fixture) : BulkSaveIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresMixedBatchIntegrationTests(PostgresFixture fixture) : MixedBatchIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresRenamedColumnIntegrationTests(PostgresFixture fixture) : RenamedColumnIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

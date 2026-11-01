@@ -45,6 +45,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerBulkSaveIntegrationTests(SqlServerFixture fixture) : BulkSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerMixedBatchIntegrationTests(SqlServerFixture fixture) : MixedBatchIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerRenamedColumnIntegrationTests(SqlServerFixture fixture) : RenamedColumnIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

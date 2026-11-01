@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.IntegrationTests
 {
@@ -29,14 +30,21 @@ namespace TFM.Nucleus.IntegrationTests
         /// <summary>How to configure this provider's test database, for the skip message.</summary>
         protected abstract string ConfigurationHint { get; }
 
-        /// <summary>Registers this provider against the test database.</summary>
-        protected abstract void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings);
+        /// <summary>Registers this provider against the test database, with its options changed by <paramref name="configure"/>.</summary>
+        protected abstract void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure);
 
         public async ValueTask InitializeAsync()
         {
             if (Settings == null)
                 return;
-            _stack = await StartStackAsync(services => AddProvider(services, Settings));
+            _stack = await StartStackAsync(services => AddProvider(services, Settings, _ => { }));
+        }
+
+        /// <summary>A second stack on the same database with its options changed by <paramref name="configure"/>.</summary>
+        public Task<TestStack> StartStackAsync(Action<RelationalProviderOptions> configure)
+        {
+            var settings = RequireSettings();
+            return StartStackAsync(services => AddProvider(services, settings, configure));
         }
 
         /// <summary>
@@ -111,10 +119,7 @@ namespace TFM.Nucleus.IntegrationTests
 
         protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
 
-        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings) =>
-            AddProvider(services, settings, _ => { });
-
-        private static void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<SQLConfiguration> configure) =>
+        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
             services.AddNucleusSQLDataProvider(options =>
             {
                 options.Server = settings.Server;
@@ -124,12 +129,9 @@ namespace TFM.Nucleus.IntegrationTests
                 configure(options);
             });
 
-        /// <summary>A second stack on the same database with its settings changed by <paramref name="configure"/>.</summary>
-        public Task<TestStack> StartStackAsync(Action<SQLConfiguration> configure)
-        {
-            var settings = RequireSettings();
-            return StartStackAsync(services => AddProvider(services, settings, configure));
-        }
+        /// <summary>A second stack on the same database with its SQL Server settings changed by <paramref name="configure"/>.</summary>
+        public Task<TestStack> StartStackAsync(Action<SQLConfiguration> configure) =>
+            StartStackAsync((RelationalProviderOptions options) => configure((SQLConfiguration)options));
     }
 
     [CollectionDefinition(Name)]
@@ -145,13 +147,14 @@ namespace TFM.Nucleus.IntegrationTests
 
         protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
 
-        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings) =>
+        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
             services.AddNucleusPostgresDataProvider(options =>
             {
                 options.Server = settings.Server;
                 options.Database = settings.Database;
                 options.Username = settings.Username;
                 options.Password = settings.Password;
+                configure(options);
             });
     }
 
