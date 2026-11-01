@@ -51,6 +51,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerChildSaveIntegrationTests(SqlServerFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerSaveCancellationIntegrationTests(SqlServerFixture fixture) : SaveCancellationIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerRenamedColumnIntegrationTests(SqlServerFixture fixture) : RenamedColumnIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

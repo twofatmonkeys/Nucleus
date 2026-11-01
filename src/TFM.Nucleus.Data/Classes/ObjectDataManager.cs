@@ -9,6 +9,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TFM.Nucleus;
 using TFM.Nucleus.Abstractions.Interfaces;
@@ -161,39 +162,19 @@ namespace TFM.Nucleus.Data
             }
         }
 
-        public async Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new()
-        {
-            try
-            {
-                var provider = ProviderFor<T>();
-                var qry = provider.CreateInsertAndUpdateQuery([obj]);
-                if (qry == null)
-                    return;
-                var s = qry.FlattenLinkedQueries();
-                using (var context = await provider.CreateContextAsync(ContextOptions.Transactional))
-                {
-                    try
-                    {
-                        await context.ExecuteQueryAsync(qry!);
-                        obj.CommitChanges(AuditLoggerFor(obj.GetType()));
-                        EvictCache(typeof(T));
-                        return;
-                    }
-                    catch
-                    {
-                        context.TryRollback();
-                        throw;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Error saving objects", ex);
-            }
-        }
+        public Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new() => SaveAsync<T>(obj, CancellationToken.None);
 
+        /// <inheritdoc cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
+        public Task SaveAsync<T>(T obj, CancellationToken token) where T : ICoreObject<T>, new() => SaveAsync<T>([obj], token);
 
-        public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
+        public Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new() => SaveAsync<T>(objs, CancellationToken.None);
+
+        /// <summary>
+        /// Saves the objects and their child collections in one transaction. A failure is wrapped
+        /// and rolls back; a cancelled save rolls back and throws
+        /// <see cref="OperationCanceledException"/> as it is.
+        /// </summary>
+        public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
             try
             {
@@ -203,10 +184,10 @@ namespace TFM.Nucleus.Data
                 if (qry == null)
                     return null;
                 
-                using var context = await provider.CreateContextAsync(ContextOptions.Transactional);
+                using var context = await provider.CreateContextAsync(ContextOptions.Transactional, token);
                 try
                 {
-                    await context.ExecuteQueryAsync(qry!);
+                    await context.ExecuteQueryAsync(qry!, token);
                     foreach (var obj in list)
                     {
                         obj.CommitChanges(AuditLoggerFor(obj.GetType()));
@@ -221,7 +202,7 @@ namespace TFM.Nucleus.Data
                     throw;
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 throw new Exception("Error saving objects", ex);
             }
@@ -490,27 +471,30 @@ namespace TFM.Nucleus.Data
 
         #region INucleusRuntime
 
-        private static readonly ConcurrentDictionary<(string Method, Type Type), MethodInfo> _runtimeDispatch = [];
+        private static readonly ConcurrentDictionary<(string Method, Type Type, int Parameters), MethodInfo> _runtimeDispatch = [];
 
-        /// <summary>Resolves the single-object generic overload of a manager method for a runtime entity type.</summary>
-        private static MethodInfo SingleObjectMethod(string methodName, Type entityType) =>
-            _runtimeDispatch.GetOrAdd((methodName, entityType), static key =>
+        /// <summary>
+        /// Resolves the single-object generic overload of a manager method for a runtime entity
+        /// type: the one taking the object first and <paramref name="parameters"/> parameters in all.
+        /// </summary>
+        private static MethodInfo SingleObjectMethod(string methodName, Type entityType, int parameters) =>
+            _runtimeDispatch.GetOrAdd((methodName, entityType, parameters), static key =>
                 typeof(ObjectDataManager).GetMethods(BindingFlags.Public | BindingFlags.Instance)
                     .First(m => m.Name == key.Method && m.IsGenericMethodDefinition &&
-                        m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType.IsGenericParameter)
+                        m.GetParameters().Length == key.Parameters && m.GetParameters()[0].ParameterType.IsGenericParameter)
                     .MakeGenericMethod(key.Type));
 
         void INucleusRuntime.Save(ICoreObject obj) =>
-            SingleObjectMethod(nameof(Save), obj.GetType()).Invoke(this, [obj]);
+            SingleObjectMethod(nameof(Save), obj.GetType(), 1).Invoke(this, [obj]);
 
         Task INucleusRuntime.SaveAsync(ICoreObject obj, CancellationToken token) =>
-            (Task)SingleObjectMethod(nameof(SaveAsync), obj.GetType()).Invoke(this, [obj])!;
+            (Task)SingleObjectMethod(nameof(SaveAsync), obj.GetType(), 2).Invoke(this, [obj, token])!;
 
         void INucleusRuntime.Delete(ICoreObject obj) =>
-            SingleObjectMethod(nameof(Delete), obj.GetType()).Invoke(this, [obj]);
+            SingleObjectMethod(nameof(Delete), obj.GetType(), 1).Invoke(this, [obj]);
 
         Task INucleusRuntime.DeleteAsync(ICoreObject obj, CancellationToken token) =>
-            (Task)SingleObjectMethod(nameof(DeleteAsync), obj.GetType()).Invoke(this, [obj, token])!;
+            (Task)SingleObjectMethod(nameof(DeleteAsync), obj.GetType(), 2).Invoke(this, [obj, token])!;
 
         /// <summary>
         /// Routes each object to its owning provider and bulk-saves per provider in one

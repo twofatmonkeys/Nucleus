@@ -527,6 +527,17 @@ namespace TFM.Nucleus.Data.Providers
             return _provider.TranslateFailure(message, exception);
         }
 
+        /// <summary>
+        /// As <see cref="Failure(string, Exception)"/>, except that a failure after
+        /// <paramref name="token"/> was cancelled is the cancellation. An engine can report a
+        /// command it cancelled as its own error (SqlClient raises a SqlException), so that
+        /// becomes an <see cref="OperationCanceledException"/> with the engine's error inside.
+        /// </summary>
+        protected Exception Failure(string message, Exception exception, CancellationToken token) =>
+            token.IsCancellationRequested && exception is not OperationCanceledException
+                ? Failure(message, new OperationCanceledException(message, exception, token))
+                : Failure(message, exception);
+
         #endregion
 
         #region Reads
@@ -779,7 +790,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex);
+                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, token);
             }
         }
 
