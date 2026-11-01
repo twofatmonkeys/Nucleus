@@ -42,8 +42,15 @@ namespace TFM.Nucleus
         {
             get { return GetValue<Guid>(); }
         }
+        /// <summary>
+        /// When the row was last written. The server stamps the stored value on every write; the
+        /// value in memory is the client clock at the first commit and is not read back, because
+        /// reading it back slowed batched and bulk saves by 10% to 65% (see
+        /// docs/code-review-findings.md). Mark a column of your own ReturnOutputToProperty to have
+        /// a server value read back.
+        /// </summary>
         [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
-            SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+            SetValueOverride = eServerFunction.CurrentDateTimeOffset)]
         public DateTimeOffset Timestamp
         {
             get { return GetValue<DateTimeOffset>(); }
@@ -78,9 +85,8 @@ namespace TFM.Nucleus
                     _properties[newProp.Key] = newProp.Value;
                 _newProperties.Clear();
             }
-            // Timestamp is server assigned (SYSDATETIMEOFFSET) and written back through
-            // OnOutputParameterReceived. Only fall back to the local clock if the server did not
-            // supply one, rather than overwriting the value it did supply.
+            // Timestamp is stamped by the server but not read back, so a new object takes the
+            // local clock here. A loaded object keeps the value it was loaded with.
             if (!_properties.ContainsKey(nameof(Timestamp)))
                 _properties[nameof(Timestamp)] = DateTimeOffset.Now;
             _isNew = false;
@@ -371,11 +377,22 @@ namespace TFM.Nucleus
         OnOutputParameterReceived(sender, args);
         protected internal void OnOutputParameterReceived(object? sender, IOutputReceivedEventArgs args)
         {
-            _properties[args.PropertyName!] = args.Value!;
+            AcceptServerValue(args.PropertyName!, args.Value);
             if (sender is not null and IQueryOutputParameter)
             {
                 ((IQueryOutputParameter)sender).OutputReceived -= OnOutputParameterReceived;
             }
+        }
+
+        /// <summary>
+        /// Takes the value the server stored for a property during a write. It is coerced as a
+        /// loaded value is, becomes the committed value, and drops any pending client value, so
+        /// committing the object's changes after the write keeps it.
+        /// </summary>
+        public void AcceptServerValue(string property, object? value)
+        {
+            _newProperties.Remove(property);
+            _properties[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
         }
 
 

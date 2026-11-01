@@ -211,13 +211,21 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         public Exception TranslateFailure(string message, Exception exception)
         {
+            if (TranslateEngineFailure(message, exception) is { } translated)
+                return translated;
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
                 return new Exception(message, exception);
-            var (entityType, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
-            return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, columnName, exception);
+            var (entityType, propertyName, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
+            return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, propertyName, columnName, exception);
         }
 
-        private (Type? EntityType, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
+        /// <summary>
+        /// A failure the engine reports that needs explaining in Nucleus's terms, wrapped with
+        /// the explanation; null for any other. The default explains nothing.
+        /// </summary>
+        protected virtual Exception? TranslateEngineFailure(string message, Exception exception) => null;
+
+        private (Type? EntityType, string? PropertyName, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
         {
             if (physicalIndexName == null)
                 return default;
@@ -225,7 +233,7 @@ namespace TFM.Nucleus.Data.Providers
             foreach (var table in Schema.TableCache.Values)
                 foreach (var column in table.IndexedColumns.Where(c => c.Unique))
                     if (dialect.IdentifierComparer.Equals(SchemaComparer.PhysicalIndexName(table, column, dialect), physicalIndexName))
-                        return (table.ObjectSchema.Type, column.ColumnName, IndexNaming.ColumnIndexName(table, column));
+                        return (table.ObjectSchema.Type, column.PropertyName, column.ColumnName, IndexNaming.ColumnIndexName(table, column));
             return default;
         }
 
@@ -300,6 +308,11 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         public DataProviderException(string? message, DataProviderErrorKind kind) : base(message)
+        {
+            Kind = kind;
+        }
+
+        public DataProviderException(string? message, DataProviderErrorKind kind, Exception? innerException) : base(message, innerException)
         {
             Kind = kind;
         }

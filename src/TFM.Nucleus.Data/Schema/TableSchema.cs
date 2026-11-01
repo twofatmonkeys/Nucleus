@@ -67,6 +67,38 @@ namespace TFM.Nucleus.Data.Schema
                     $"Type '{objectSchema.FullName}' marks '{pkColumns[0].PropertySchema.Name}' as PrimaryKey. " +
                     "The primary key is reserved for the ID column CoreObject provides.");
             IdentityColumn = pkColumns[0];
+            EnsureColumnNamesAreUsable(objectSchema);
+        }
+
+        /// <summary>
+        /// Column names come from [DatabaseColumn]'s ColumnName, so two properties can claim one
+        /// column, or a property can claim a column the table already has for itself. Both are
+        /// refused here. Names are compared without regard to case, as SQL Server compares them,
+        /// so an entity is valid on every provider. The columns CoreObject provides keep their
+        /// own names, which every provider writes literally.
+        /// </summary>
+        private void EnsureColumnNamesAreUsable(IObjectSchema objectSchema)
+        {
+            foreach (var system in new[] { "ID", TimestampColumn })
+                if (FindByPropertyName(system) is { } column && !column.ColumnName.Equals(system, StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        $"Type '{objectSchema.FullName}' names the column of '{system}' '{column.ColumnName}'. " +
+                        $"The {system} column CoreObject provides keeps its name.");
+
+            var reserved = new List<string> { ClusterIdColumn };
+            if (IsSoftDeletable)
+                reserved.AddRange([SoftDelete.IsDeletedColumn, SoftDelete.DeletedAtColumn]);
+            foreach (var column in _columns)
+                if (reserved.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        $"Property '{column.PropertyName}' on '{objectSchema.FullName}' maps to column '{column.ColumnName}', " +
+                        "which the table already has as a system column.");
+
+            var duplicate = _columns.GroupBy(c => c.ColumnName, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+            if (duplicate != null)
+                throw new InvalidOperationException(
+                    $"Type '{objectSchema.FullName}' maps more than one property to column '{duplicate.Key}': " +
+                    $"{string.Join(", ", duplicate.Select(c => c.PropertyName))}. Column names are compared without regard to case.");
         }
 
         public ColumnSchema? FindByPropertyName(string propertyName) =>
@@ -80,7 +112,8 @@ namespace TFM.Nucleus.Data.Schema
         public bool TryGetValueByProperty(string propertyName, out IDataColumnSchema? dataTableSchema) =>
             (dataTableSchema = FindByPropertyName(propertyName)) != null;
 
-        public ColumnSchema this[string columnName] => _byProperty[columnName];
+        /// <summary>The column of a property, by the property's name.</summary>
+        public ColumnSchema this[string propertyName] => _byProperty[propertyName];
 
         public bool Equals(TableSchema? other)
         {

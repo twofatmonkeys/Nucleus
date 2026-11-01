@@ -106,7 +106,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 async
                     ? await _provider.CreatePostgresDataContextAsync(null, true, false, cancellationToken, true)
                     : _provider.CreatePostgresDataContext(null, true, false, true),
-                table => PostgresCatalogReader.ColumnsQuery(_provider.SchemaName, table),
+                table => new SchemaStatement(PostgresCatalogReader.ColumnsQuery(_provider.SchemaName, table)),
                 PostgresCatalogReader.ReadColumn);
     }
 

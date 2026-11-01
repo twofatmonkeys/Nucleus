@@ -8,44 +8,41 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
-### Found during the provider refactor (October 2026)
+### Found while fixing the SQL findings (October 2026)
 
-The SQL Server output was pinned byte for byte before the query and schema model moved into
-`TFM.Nucleus.Data`, so these were kept exactly as they were and are recorded here instead. Each
-is a separate change, with a golden update that shows exactly what moves.
+- **A bulk save of loaded objects with a child collection throws.** `IDataContext.BulkSaveAsync`
+  builds each object's update, which builds its child collections' queries, and those need the
+  object's `DataProvider`. Neither a load nor `BulkSaveAsync` sets it, so saving loaded parents
+  through the bulk path fails with "has no data provider, so a child collection query cannot be
+  built". The sync `ObjectDataManager.Save<T>` has the same gap: unlike `SaveAsync` it never sets
+  `DataProvider`.
+- **A mixed batch over the parameter limit throws.** An async `SaveAsync` of new and existing
+  objects of one type, together over `MaxParametersPerQuery`, groups both into one table write, and
+  `BulkWritePlanner.GroupByTable` refuses a group that mixes inserts and updates.
+  `BulkSaveAsync` splits them first and is not affected.
+- **A group exactly at the limit fans out.** At a parameter count equal to
+  `MaxParametersPerQuery` the bulk test (greater than) fails and `NeedsSplitting` (less than) splits,
+  so the batch goes to parallel child contexts instead of one command.
+- **`INucleusRuntime.SaveAsync` drops its cancellation token.**
 
-- **Every SQL Server select is a dirty read by default.** `Query.WithNoLock` defaults to false and
-  `SqlServerQueryRenderer` writes `WITH(NOLOCK)` when it is false, so the flag is inverted: every
-  root, paged and count select reads uncommitted rows unless a caller sets `WithNoLock = true`,
-  which removes the hint. Nothing in the repo sets it. Fixing it changes what both production
-  sites read under concurrent writes.
-- **Chained updates are joined with a space.** `SqlServerQueryRenderer.Update` appends each linked
-  query with a space rather than `;`. T-SQL accepts it; it is still wrong, and the raw golden
-  `update.many` pins it.
-- **The OUTPUT clauses are dead.** Nothing constructs an `OutputParameter`, so the insert and
-  update OUTPUT branches never render, `ReturnOutputToProperty` has no effect, and `Timestamp` is
-  never read back (the entity keeps the client's `DateTimeOffset.Now`). The update branch is also
-  malformed. Remove both, or implement read-back, as one change.
-- **TEXTIMAGE_ON never fires.** `SqlServerSchemaDialect.CreateTableStatements` looks for
-  `nvarchar(max)`, `varchar(max)` and `varbinary(max)` case-sensitively, but the type mapper
-  writes `[NVarChar](max)`. The clause is optional, so tables are correct; the check is dead.
-- **`DatabaseColumn.ColumnName` is half implemented.** `ExpressionParser` uses it for a predicate's
-  column, but the schema names every column after its property, so a property with a different
-  `ColumnName` produces predicates on a column that does not exist. Either honour it in
-  `TableSchema` or remove it.
-- **LIKE wildcards in values are not escaped on SQL Server.** `StartsWith("50%")` matches every
-  value starting `50`. The value is bound, so this is a correctness issue, not an injection.
-- **`SQLConfiguration.BulkCopyBatchSize` is not applied.** Bulk statements run in fixed batches of
-  50,000 rows. The README says so.
-- **A catalog column of a type Nucleus does not know fails the whole schema check**, in any table
-  of the database, including tables Nucleus does not own (a `sql_variant` column, say). The type
-  is parsed when the catalog is read rather than when a Nucleus column is compared.
-- **The SQL Server catalog queries interpolate a table name** (`ColumnsQuery`, the full-text
-  check) instead of binding it. The names are Nucleus's own, so this is hygiene rather than an
-  injection.
-- **Some neutral names still carry SQL Server vocabulary**: `IPropertySchema.HasFullTextIndex` and
-  `IsNonClusteredIndex`, and the `ServerFunctionKind` and `ServerFunction` tokens `SysDateTime`
-  and `SysDateTimeOffset`. Alias them by meaning, as the attribute fields were.
+### Timestamp in memory is the client clock (decided October 2026)
+
+The server stamps `Timestamp` on every write, and output parameters can now read a stored value
+back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock at the
+first save, and an update does not refresh it. Reading it back was measured with the save
+benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`, 15 interleaved rounds, median
+overhead against the client clock), against a 2% bar:
+
+| Path | SQL Server net10 | SQL Server net8 | PostgreSQL net10 | PostgreSQL net8 |
+|---|---|---|---|---|
+| one object at a time (x20) | +2.3% | -2.0% | +4.7% | +12.6% |
+| batch of 100 | +10.4% | +12.4% | +263.6% | -4.5% |
+| split sync path (1,000) | +13.0% | +14.9% | +16.0% | +15.7% |
+| bulk engine (20,000) | +47.3% | +65.5% | +32.8% | +26.1% |
+
+The PostgreSQL batch figures swing with run-to-run noise at a 15 ms median; every other path is
+consistently 10% or more slower, so Timestamp keeps the client clock. Re-measure before turning it
+on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCLEUS_BENCHMARK=1`.
 
 ### Found with the PostgreSQL provider (October 2026)
 
@@ -129,6 +126,47 @@ them and choose which to delete. Ordering happens in memory because the provider
 so avoiding the load needs column projection, which Nucleus does not have.
 
 ## Fixed
+
+### SQL findings fixed after the PostgreSQL provider (October 2026)
+
+These were recorded while the SQL Server output was pinned for the provider refactor, then fixed
+one commit each. Their cover is the raw goldens (`SqlServerGoldens.cs`, `PostgresGoldens.cs`), which
+show each change, and the named tests rather than `RegressionTests.cs`.
+
+- **Every SQL Server select was a dirty read.** `Query.WithNoLock` was inverted: the renderer wrote
+  `WITH(NOLOCK)` when it was false, its default. Selects now read committed data, and
+  `WithNoLock = true` opts in.
+- **Chained SQL Server updates were joined with a space.** They are joined with `;` and a newline,
+  like inserts.
+- **Output parameters were dead, and `SetValueOverride` worked only on `Timestamp`.** Nothing
+  built an `OutputParameter`, the SQL Server update branch was malformed, PostgreSQL refused them,
+  and every other overridden column was written with the client value. Writes now apply every
+  `SetValueOverride` and read every `ReturnOutputToProperty` column back (`OUTPUT` on SQL Server,
+  `RETURNING` on PostgreSQL) on every path, the bulk engines included. SQL Server's refusal on a
+  table with a trigger (error 334) is explained. `Timestamp` itself is not read back; see "Timestamp
+  in memory is the client clock" above. Covered by `ServerValueIntegrationTests` and
+  `OutputTriggerTests`.
+- **TEXTIMAGE_ON never fired.** The case-sensitive check could never match the type mapper's
+  output, and the clause only named the default filegroup, so the check is removed.
+- **`DatabaseColumn.ColumnName` was half implemented.** It now names the physical column on every
+  path on both providers, values still bind by property name, and schema build refuses names that
+  would collide. Covered by `ColumnNameTests` and `RenamedColumnIntegrationTests`. The PostgreSQL
+  comparer also finds a column name over 63 bytes now.
+- **`string.Contains` failed on SQL Server on a column without a full-text index.** It is a
+  full-text search only on a `FullTextSearch` column and a substring match elsewhere, on both
+  providers. Covered by `PatternMatchIntegrationTests`.
+- **LIKE wildcards in values were not escaped, on either provider.** Pattern values are bound with
+  `%`, `_`, `[` and `\` escaped and every pattern declares `ESCAPE '\'`. Covered by
+  `LikePatternTests` and `PatternMatchIntegrationTests`.
+- **`SQLConfiguration.BulkCopyBatchSize` was not applied.** The bulk engine uses it. Covered by
+  `BulkCopyBatchSizeTests`, which counts the statements sent.
+- **An unknown catalog column type failed the whole schema check.** The type is compared, not
+  parsed on read; an unknown type on a Nucleus column is a mismatch. Covered by `ForeignTableTests`.
+- **The SQL Server catalog interpolated table names.** The rebuild's column read and the full-text
+  check bind them. Covered by `SqlServerCatalogTests`.
+- **Neutral names carried SQL Server vocabulary.** `IPropertySchema.IsIndexed` and
+  `IsFullTextSearch`, and `ServerFunction.CurrentDateTime` and `CurrentDateTimeOffset`, replace the
+  old names, which stay obsolete.
 
 ### Context and store defects fixed by the provider refactor (October 2026)
 

@@ -23,7 +23,7 @@ namespace TFM.Nucleus.Data.SQL
         /// <summary>The condition that selects rows which have not been soft deleted.</summary>
         internal const string LiveRowFilter = "[IsDeleted] = 0";
 
-        private static string NoLock(Query q) => q.WithNoLock ? "" : " WITH(NOLOCK)";
+        private static string NoLock(Query q) => q.WithNoLock ? " WITH(NOLOCK)" : "";
 
         // ---- Select
 
@@ -61,7 +61,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             if (column.IsEmpty)
                 return string.Empty;
-            return column.IsDescending ? $"{column.Column} DESC" : $"{column.Column} ASC";
+            return column.IsDescending ? $"[{column.Column}] DESC" : $"[{column.Column}] ASC";
         }
 
         /// <summary>The order of the root rows: the one asked for, or [ID] when the query needs one.</summary>
@@ -153,7 +153,7 @@ namespace TFM.Nucleus.Data.SQL
             {
                 var parent = q.ParentSelect
                     ?? throw new InvalidQueryException("A child collection query must hang off a select.");
-                var sb = new StringBuilder($"WHERE {q.LinkedColumn} IN (")
+                var sb = new StringBuilder($"WHERE [{q.LinkedColumn}] IN (")
                     .Append(ParentIdSelect(parent)).Append(')');
                 if (softDeleteFilter != null)
                     sb.Append($" AND {softDeleteFilter}");
@@ -167,16 +167,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             var sb = new StringBuilder($"INSERT INTO {q.TableName}");
             sb.Append($"({string.Join(",", q.SetParameters.Select(x => LeftOperand(x!)))})");
-            if (q.SetParameters.HasOutputParameters)
-            {
-                var outputParams = q.SetParameters.OutputParameters;
-                sb.Append(" OUTPUT ");
-                for (int i = 0; i < outputParams.Count; i++)
-                {
-                    sb.Append($"INSERTED.{LeftOperand(outputParams[i])} AS [{outputParams[i].Variable}]")
-                        .Append(i < outputParams.Count - 1 ? " ," : "");
-                }
-            }
+            sb.Append(OutputClause(q));
             sb.Append(" VALUES ");
             sb.Append($"({string.Join(",", q.SetParameters.Select(x => SetValue(x!)))})");
             foreach (var l in q.LinkedQueries)
@@ -188,24 +179,24 @@ namespace TFM.Nucleus.Data.SQL
         {
             var sb = new StringBuilder($"UPDATE {q.TableName} WITH (ROWLOCK) SET ");
             sb.Append(string.Join(",", q.SetParameters.Select(x => SetCondition(x!))));
-            if (q.SetParameters.HasOutputParameters)
-            {
-                var outputParams = q.SetParameters.OutputParameters;
-                sb.Append(" OUTPUT ");
-                for (int i = 0; i < outputParams.Count; i++)
-                {
-                    sb.Append(i < 1 ? $"({LeftOperand(outputParams[i])}" : $"{SetValue(outputParams[i])}")
-                        .Append(i < q.SetParameters.Count - 1 ? "," : ")");
-                }
-            }
+            sb.Append(OutputClause(q));
             if (!q.Where.IsEmpty)
             {
                 sb.Append($" WHERE {WhereRenderer.Render(q.Where, this)}");
             }
             foreach (var l in q.LinkedQueries)
-                sb.Append($" {l.BuildQuery()}");
+                sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Returns the stored value of each output term, aliased by the term's variable so the
+        /// context can hand it back. Empty when the write has no output terms.
+        /// </summary>
+        private static string OutputClause(Query q) =>
+            q.SetParameters.HasOutputParameters
+                ? " OUTPUT " + string.Join(" ,", q.SetParameters.OutputParameters.Select(o => $"INSERTED.{LeftOperand(o)} AS [{o.Variable}]"))
+                : "";
 
         // ---- Delete
 
@@ -285,6 +276,9 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        // A pattern term's value is bound escaped by LikePattern, so its wildcards are literal.
+        private static readonly string PatternEscape = $" ESCAPE '{LikePattern.EscapeCharacter}'";
+
         internal static string WhereCondition(Parameter p)
         {
             switch (p.Operator)
@@ -292,15 +286,15 @@ namespace TFM.Nucleus.Data.SQL
                 case Operator.Contains:
                     return $"CONTAINS({LeftOperand(p)}, {VariableReference(p)})";
                 case Operator.ContainsCaseSensitive:
-                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} LIKE '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} LIKE '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.Like:
-                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.LikeCaseSensitive:
-                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} {OperatorString(p)} '%' + {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} COLLATE {CaseSensitiveCollation} {OperatorString(p)} '%' + {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.StartsWith:
-                    return $"{LeftOperand(p)} {OperatorString(p)} {VariableReference(p)} + '%'";
+                    return $"{LeftOperand(p)} {OperatorString(p)} {VariableReference(p)} + '%'{PatternEscape}";
                 case Operator.EndsWith:
-                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)}";
+                    return $"{LeftOperand(p)} {OperatorString(p)} '%' + {VariableReference(p)}{PatternEscape}";
                 case Operator.EqualsIgnoreCase:
                     return $"LOWER({LeftOperand(p)}) {OperatorString(p)} LOWER({VariableReference(p)})";
                 case Operator.In:
@@ -361,8 +355,8 @@ namespace TFM.Nucleus.Data.SQL
         internal static string ServerFunctionSql(IServerFunction function) =>
             function.Kind switch
             {
-                ServerFunctionKind.SysDateTime => "SYSDATETIME()",
-                ServerFunctionKind.SysDateTimeOffset => "SYSDATETIMEOFFSET()",
+                ServerFunctionKind.CurrentDateTime => "SYSDATETIME()",
+                ServerFunctionKind.CurrentDateTimeOffset => "SYSDATETIMEOFFSET()",
                 ServerFunctionKind.UtcNow => "GETUTCDATE()",
                 ServerFunctionKind.NewGuid => "NEWID()",
                 _ => throw new NotSupportedException($"Server function {function.Kind} is not supported by the SQL Server provider."),

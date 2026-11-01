@@ -24,15 +24,18 @@ namespace TFM.Nucleus.Tests
         private static T Loaded<T>(Guid id) where T : CoreObject =>
             ObjectSchema<T>.BuildObjectViaReflection(new Dictionary<string, object?> { ["ID"] = id });
 
+        /// <summary>Finds any type's table, for the child collection queries of a select.</summary>
+        private static TableSchema? AnyTable(Type type) => Table(type);
+
         private string Select<T>(Action<SelectQuery>? configure = null) where T : ICoreObject
         {
-            var query = new SelectQuery(renderer, Table<T>());
+            var query = new SelectQuery(renderer, Table<T>(), AnyTable);
             configure?.Invoke(query);
             return query.BuildQuery();
         }
 
         private string Where<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject =>
-            new SelectQuery(renderer, Table<T>()).Parse(predicate.Body).BuildQuery();
+            new SelectQuery(renderer, Table<T>(), AnyTable).Parse(predicate.Body).BuildQuery();
 
         private string Term(Parameter parameter) =>
             Select<TestWidget>(q => q.Where.And(parameter));
@@ -71,7 +74,7 @@ namespace TFM.Nucleus.Tests
 
         /// <summary>The entity types whose CREATE TABLE every provider's goldens pin.</summary>
         public static IEnumerable<Type> SchemaTypes() =>
-            new[] { typeof(TestWidget), typeof(TestUniqueWidget), typeof(TestSoftWidget), typeof(TestDeletableChild), typeof(TestAllTypesWidget), typeof(TestSoftParent), typeof(NullableWidget) }
+            new[] { typeof(TestWidget), typeof(TestUniqueWidget), typeof(TestSoftWidget), typeof(TestDeletableChild), typeof(TestAllTypesWidget), typeof(TestSoftParent), typeof(NullableWidget), typeof(TestRenamedWidget), typeof(TestRenamedChild), typeof(TestServerValueWidget) }
                 .Concat(StoreEntityTypes());
 
         public static TableSchema TableOf(Type type) => Table(type);
@@ -139,7 +142,7 @@ namespace TFM.Nucleus.Tests
                 ["term.in.empty"] = () => Term(new Parameter("Quantity", new List<int>(), Operator.In)),
                 ["term.equals.null"] = () => Term(new Parameter("Name", null)),
                 ["term.notequals.null"] = () => Term(new Parameter("Name", null, Operator.NotEquals)),
-                ["term.serverfunction"] = () => Term(new Parameter("Name", ServerFunction.SysDateTime, Operator.LessThan)),
+                ["term.serverfunction"] = () => Term(new Parameter("Name", ServerFunction.CurrentDateTime, Operator.LessThan)),
                 ["where.or.and"] = () => Where<TestWidget>(w => (w.Name == "a" || w.Name == "b") && w.Quantity > 1),
                 ["where.and.or"] = () => Where<TestWidget>(w => w.Name == "a" && (w.Quantity == 1 || w.Quantity == 2)),
                 ["where.methods"] = () => Where<TestWidget>(w => w.Name!.StartsWith("a") && w.Name.EndsWith("z") && w.Name.Contains("m")),
@@ -150,6 +153,31 @@ namespace TFM.Nucleus.Tests
                     return Where<TestWidget>(w => ids.Contains(w.ID));
                 },
                 ["where.enum"] = () => Where<NullableWidget>(w => w.Kind == WidgetKind.Premium && w.OptionalKind == null),
+                ["where.contains.plain"] = () => Where<TestWidget>(w => w.Name!.Contains("m")),
+                ["where.startswith.wildcard"] = () => Where<TestWidget>(w => w.Name!.StartsWith("50%_[x]")),
+
+                // ---- Columns named apart from their properties
+                ["renamed.select"] = () => Select<TestRenamedWidget>(),
+                ["renamed.where"] = () => Where<TestRenamedWidget>(w => w.Title == "a" && w.Code!.StartsWith("x")),
+                ["renamed.ordered"] = () => Select<TestRenamedWidget>(q => { q.AddOrderBy("Title"); q.AddOrderBy("Code", descending: true); }),
+                ["renamed.children.top"] = () => Select<TestRenamedWidget>(q => q.Take = 3),
+                ["renamed.insert"] = () => new InsertQuery(renderer, Table<TestRenamedWidget>(), new TestRenamedWidget { Title = "a", Code = "c", Quantity = 1 }).BuildQuery(),
+                ["renamed.update"] = () =>
+                {
+                    var w = Loaded<TestRenamedWidget>(Guid.NewGuid());
+                    w.Title = "b";
+                    w.Code = "d";
+                    return new UpdateQuery(renderer, Table<TestRenamedWidget>(), w).BuildQuery();
+                },
+
+                // ---- A column the server sets and the entity reads back
+                ["servervalue.insert"] = () => new InsertQuery(renderer, Table<TestServerValueWidget>(), new TestServerValueWidget { Name = "a" }).BuildQuery(),
+                ["servervalue.update"] = () =>
+                {
+                    var w = Loaded<TestServerValueWidget>(Guid.NewGuid());
+                    w.Name = "b";
+                    return new UpdateQuery(renderer, Table<TestServerValueWidget>(), w).BuildQuery();
+                },
 
                 // ---- Inserts and updates
                 ["insert.one"] = () => new InsertQuery(renderer, Table<TestWidget>(), new TestWidget { Name = "A", Quantity = 5 }).BuildQuery(),

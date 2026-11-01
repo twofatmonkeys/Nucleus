@@ -20,12 +20,6 @@ namespace TFM.Nucleus.Data.SQL
     internal partial class SqlDataContext
     {
         /// <summary>
-        /// Default batch size for bulk INSERT/UPDATE operations.
-        /// Prevents transaction log pressure and lock escalation at high row counts.
-        /// </summary>
-        private const int DefaultBulkBatchSize = 50000;
-
-        /// <summary>
         /// Routes each table of the batch to the insert or the update strategy:
         /// - INSERT: grouped by column signature (preserves DB defaults for unset columns)
         /// - UPDATE: VARBINARY bitmask (single statement, no grouping, handles varying ChangedProperties)
@@ -85,8 +79,9 @@ namespace TFM.Nucleus.Data.SQL
                     await CreateTempTableAsync(tempTable, dataColumns, null, 0, token);
                     await BulkCopyToTempTableAsync(tempTable, dt, token);
 
-                    var baseSql = BuildBulkInsertSql(write.TableName, tempTable, dataColumns, serverFunctionColumns);
-                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "INSERT", token);
+                    var outputs = BulkWritePlanner.ScanOutputs(group, write.Schema);
+                    var baseSql = BuildBulkInsertSql(write.TableName, tempTable, dataColumns, serverFunctionColumns, outputs);
+                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "INSERT", outputs, token);
                 }
                 finally
                 {
@@ -103,7 +98,8 @@ namespace TFM.Nucleus.Data.SQL
         private static string BuildBulkInsertSql(
             string tableName, string tempTable,
             List<BulkColumn> dataColumns,
-            Dictionary<string, Parameter> serverFunctionColumns)
+            Dictionary<string, Parameter> serverFunctionColumns,
+            BulkOutputs outputs)
         {
             var insertCols = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
             var selectExprs = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
@@ -119,7 +115,7 @@ namespace TFM.Nucleus.Data.SQL
                 selectExprs.Add(SqlServerQueryRenderer.SetValue(kvp.Value));
             }
 
-            return $"INSERT INTO {tableName} ({string.Join(",", insertCols)}) " +
+            return $"INSERT INTO {tableName} ({string.Join(",", insertCols)}) {OutputClause(outputs)}" +
                    $"SELECT {string.Join(",", selectExprs)} FROM [{tempTable}] s";
         }
 
@@ -163,9 +159,10 @@ namespace TFM.Nucleus.Data.SQL
                 await CreateTempTableAsync(tempTable, dataColumns, whereColumns, bitmaskByteCount, token);
                 await BulkCopyToTempTableAsync(tempTable, dt, token);
 
+                var outputs = BulkWritePlanner.ScanOutputs(write.Queries, write.Schema);
                 var baseSql = BuildBitmaskUpdateSql(
-                    write.TableName, tempTable, dataColumns, whereColumns, serverFunctionColumns);
-                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, DefaultBulkBatchSize, "UPDATE", token);
+                    write.TableName, tempTable, dataColumns, whereColumns, serverFunctionColumns, outputs);
+                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "UPDATE", outputs, token);
             }
             finally
             {
@@ -189,7 +186,8 @@ namespace TFM.Nucleus.Data.SQL
             string tableName, string tempTable,
             List<BulkColumn> dataColumns,
             List<BulkColumn> whereColumns,
-            Dictionary<string, Parameter> serverFunctionColumns)
+            Dictionary<string, Parameter> serverFunctionColumns,
+            BulkOutputs outputs)
         {
             var setClauses = new List<string>(dataColumns.Count + serverFunctionColumns.Count);
 
@@ -212,7 +210,7 @@ namespace TFM.Nucleus.Data.SQL
             foreach (var col in whereColumns)
                 joinClauses.Add($"t.[{col.Name}]=s.[{BulkWritePlanner.WhereColumnAlias(col.Name)}]");
 
-            return $"UPDATE t WITH (ROWLOCK) SET {string.Join(",", setClauses)} " +
+            return $"UPDATE t WITH (ROWLOCK) SET {string.Join(",", setClauses)} {OutputClause(outputs)}" +
                    $"FROM {tableName} t INNER JOIN [{tempTable}] s ON {string.Join(" AND ", joinClauses)}";
         }
 
@@ -290,12 +288,12 @@ namespace TFM.Nucleus.Data.SQL
         private async Task ExecuteInBatchesAsync(
             string baseSql,
             int totalRows, int batchSize,
-            string operationName, CancellationToken token)
+            string operationName, BulkOutputs outputs, CancellationToken token)
         {
             if (totalRows <= batchSize)
             {
                 // Small enough for a single pass - append WHERE to constrain to all rows
-                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN 1 AND {totalRows}", token);
+                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN 1 AND {totalRows}", outputs, token);
 
                 Debug.WriteLine($"  Bulk {operationName}: {totalRows} rows in single batch");
                 return;
@@ -310,7 +308,7 @@ namespace TFM.Nucleus.Data.SQL
                 int batchEnd = Math.Min(batchStart + batchSize - 1, totalRows);
                 batchNumber++;
 
-                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN {batchStart} AND {batchEnd}", token);
+                await ExecuteBulkStatementAsync($"{baseSql} WHERE s.[_rowid] BETWEEN {batchStart} AND {batchEnd}", outputs, token);
 
                 Debug.WriteLine($"  Bulk {operationName} batch {batchNumber}: " +
                     $"rows {batchStart}-{batchEnd} ({batchEnd - batchStart + 1} rows) " +
@@ -323,14 +321,30 @@ namespace TFM.Nucleus.Data.SQL
             Debug.WriteLine($"  Bulk {operationName}: {totalRows} rows in {batchNumber} batches");
         }
 
-        private async Task ExecuteBulkStatementAsync(string commandText, CancellationToken token)
+        private Task ExecuteBulkStatementAsync(string commandText, CancellationToken token) =>
+            ExecuteBulkStatementAsync(commandText, BulkOutputs.None, token);
+
+        /// <summary>Runs one bulk statement, reading back what it returns when the write has outputs.</summary>
+        private async Task ExecuteBulkStatementAsync(string commandText, BulkOutputs outputs, CancellationToken token)
         {
             var command = SqlCommand;
             command.Parameters.Clear();
             command.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
             command.CommandText = commandText;
-            await command.ExecuteNonQueryAsync(token);
+            if (outputs.IsEmpty)
+            {
+                await command.ExecuteNonQueryAsync(token);
+                return;
+            }
+            await using var reader = await command.ExecuteReaderAsync(token);
+            await ReceiveBulkOutputsAsync(reader, outputs, token);
         }
+
+        /// <summary>Returns the identity and each output column of every row the statement writes.</summary>
+        private static string OutputClause(BulkOutputs outputs) =>
+            outputs.IsEmpty
+                ? ""
+                : $"OUTPUT {string.Join(",", outputs.Columns.Prepend(outputs.IdentityColumn).Select(c => $"INSERTED.[{c}]"))} ";
 
         private async Task TryDropTempTableAsync(string tempTable)
         {

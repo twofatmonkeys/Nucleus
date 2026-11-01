@@ -25,12 +25,7 @@ namespace TFM.Nucleus.Data.Queries
             ArgumentNullException.ThrowIfNull(tableSchema, nameof(tableSchema));
             if (obj != null)
             {
-                foreach (var prop in obj.ChangedProperties)
-                    if (tableSchema.TryGetValueByProperty(prop.Key, out var col))
-                        SetParameters.Add(new Parameter(col!, prop.Value));
-
-                //add timestamp
-                SetParameters.Add(new Parameter("Timestamp", ServerFunction.SysDateTimeOffset));
+                AddWriteTerms(tableSchema, obj);
                 //add child collection queries if applicable
                 if (tableSchema!.ObjectSchema.HasNucleusChildCollections)
                 {

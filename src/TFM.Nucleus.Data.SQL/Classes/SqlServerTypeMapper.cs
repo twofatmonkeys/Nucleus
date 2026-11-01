@@ -118,21 +118,14 @@ namespace TFM.Nucleus.Data.SQL
             return sb.ToString();
         }
 
-        /// <summary>The SQL Server type named by INFORMATION_SCHEMA. Throws on a type Nucleus does not know.</summary>
-        public static ESqlDataType Parse(string? dataTypeStr)
-        {
-            if (dataTypeStr != null && Enum.TryParse<ESqlDataType>(dataTypeStr, true, out var dataType))
-            {
-                return dataType;
-            }
-            throw new Exception($"Unknown SQL data type '{dataTypeStr}'");
-        }
-
-        /// <summary>True when a column found in the catalog has the type and size the schema needs.</summary>
+        /// <summary>
+        /// True when a column found in the catalog has the type and size the schema needs. A type
+        /// Nucleus does not know is a mismatch, so the table is rebuilt to the schema's type.
+        /// </summary>
         public static bool Matches(ColumnSchema column, CatalogColumn existing)
         {
             var type = SqlType(column);
-            if (Parse(existing.TypeName) != type)
+            if (!Enum.TryParse<ESqlDataType>(existing.TypeName, true, out var existingType) || existingType != type)
                 return false;
             if (HasPrecisionScale(type))
             {

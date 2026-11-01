@@ -34,7 +34,7 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
             var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
 
-            var sql = FindInChain<SqlException>(ex);
+            var sql = ExceptionChain.Find<SqlException>(ex);
             Assert.NotNull(sql);
             Assert.Equal(2601, sql!.Number);
             Assert.Contains("UQ_", sql.Message);
@@ -43,6 +43,18 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerBulkSaveIntegrationTests(SqlServerFixture fixture) : BulkSaveIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerRenamedColumnIntegrationTests(SqlServerFixture fixture) : RenamedColumnIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerPatternMatchIntegrationTests(SqlServerFixture fixture) : PatternMatchIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerServerValueIntegrationTests(SqlServerFixture fixture) : ServerValueIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerSaveBenchmarks(SqlServerFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerAttributionStoreTests(SqlServerFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);

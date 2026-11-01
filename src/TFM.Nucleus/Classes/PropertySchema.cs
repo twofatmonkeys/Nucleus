@@ -132,10 +132,14 @@ namespace TFM.Nucleus
 
         public string Name => PropertyInfo.Name;
 
-        public bool HasFullTextIndex => DBColumnAttribute?.FullTextSearch ?? false;
+        public bool IsFullTextSearch => DBColumnAttribute?.FullTextSearch ?? false;
+        [Obsolete("Use IsFullTextSearch.")]
+        public bool HasFullTextIndex => IsFullTextSearch;
         public bool IsDBColumn => DBColumnAttribute != null;
         public bool IsOverridden => IsDBColumn && DBColumnAttribute?.SetValueOverride != eServerFunction.NULL;
-        public bool IsNonClusteredIndex => DBColumnAttribute?.Indexed ?? false;
+        public bool IsIndexed => DBColumnAttribute?.Indexed ?? false;
+        [Obsolete("Use IsIndexed.")]
+        public bool IsNonClusteredIndex => IsIndexed;
         public bool IsUnique => DBColumnAttribute?.Unique ?? false;
         //public bool ForceTimestamp => DBColumnAttribute?.ForceTimestamp ?? false;
         public IObjectSchema? ChildSchema =>

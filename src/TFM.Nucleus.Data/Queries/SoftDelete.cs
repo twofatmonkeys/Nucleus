@@ -20,7 +20,7 @@
         public static Parameter[] NewSetParameters() =>
         [
             new Parameter(IsDeletedColumn, true),
-            new Parameter(DeletedAtColumn, ServerFunction.SysDateTimeOffset),
+            new Parameter(DeletedAtColumn, ServerFunction.CurrentDateTimeOffset),
         ];
     }
 }

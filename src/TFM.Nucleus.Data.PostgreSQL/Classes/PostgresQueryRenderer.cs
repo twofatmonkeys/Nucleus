@@ -118,16 +118,16 @@ namespace TFM.Nucleus.Data.PostgreSQL
             return conditions.Count == 0 ? null : "WHERE " + string.Join(" AND ", conditions);
         }
 
-        private string Condition(Query q) => WhereRenderer.Render(q.Where, new ConditionWriter(q.TableSchema));
+        private static string Condition(Query q) => WhereRenderer.Render(q.Where, ConditionWriter.Instance);
 
         // ---- Insert and update
 
         public string Insert(InsertQuery q)
         {
-            RefuseOutputParameters(q);
             var sb = new StringBuilder($"INSERT INTO {TableOf(q)} ");
             sb.Append($"({string.Join(", ", q.SetParameters.Select(p => Quote(p!.Name!)))})");
             sb.Append($" VALUES ({string.Join(", ", q.SetParameters.Select(p => SetValue(p!)))})");
+            sb.Append(ReturningClause(q));
             foreach (var l in q.LinkedQueries)
                 sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
@@ -135,23 +135,24 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public string Update(UpdateQuery q)
         {
-            RefuseOutputParameters(q);
             var sb = new StringBuilder($"UPDATE {TableOf(q)} SET ");
             sb.Append(string.Join(", ", q.SetParameters.Select(p => SetCondition(p!))));
             if (!q.Where.IsEmpty)
                 sb.Append($" WHERE {Condition(q)}");
+            sb.Append(ReturningClause(q));
             foreach (var l in q.LinkedQueries)
                 sb.Append($";{Environment.NewLine}{l.BuildQuery()}");
             return sb.ToString();
         }
 
-        // Nothing in Nucleus builds an output parameter; render one and the write would silently
-        // skip the read-back, so refuse it instead.
-        private static void RefuseOutputParameters(Query q)
-        {
-            if (q.SetParameters.HasOutputParameters)
-                throw new NotSupportedException("The PostgreSQL provider does not read written values back.");
-        }
+        /// <summary>
+        /// Returns the stored value of each output term, aliased by the term's variable so the
+        /// context can hand it back. Empty when the write has no output terms.
+        /// </summary>
+        private static string ReturningClause(Query q) =>
+            q.SetParameters.HasOutputParameters
+                ? " RETURNING " + string.Join(", ", q.SetParameters.OutputParameters.Select(o => $"{Quote(o.Name!)} AS {Quote(o.Variable!)}"))
+                : "";
 
         // ---- Delete
 
@@ -193,10 +194,12 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         // ---- Terms
 
-        /// <summary>Writes the terms of one query, which can see that query's columns.</summary>
-        private sealed class ConditionWriter(IDataTableSchema? table) : IConditionWriter
+        /// <summary>Writes the terms of a condition.</summary>
+        private sealed class ConditionWriter : IConditionWriter
         {
-            public string Term(Parameter term) => WhereCondition(term, table);
+            public static readonly ConditionWriter Instance = new();
+
+            public string Term(Parameter term) => WhereCondition(term);
             public string And => " AND ";
             public string Or => " OR ";
             public string Group(string condition) => $"({condition})";
@@ -204,19 +207,17 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         private static string Variable(Parameter p) => $"@{p.Variable}";
 
-        // Wildcards in the value are literal on SQL Server; ESCAPE '' makes PostgreSQL agree, so
-        // a backslash in the value is a backslash rather than an escape.
-        private static string Pattern(string column, string op, string pattern) => $"{column} {op} {pattern} ESCAPE ''";
+        // A pattern term's value is bound escaped by LikePattern, so its wildcards are literal.
+        private static string Pattern(string column, string op, string pattern) => $"{column} {op} {pattern} ESCAPE '{LikePattern.EscapeCharacter}'";
 
-        internal static string WhereCondition(Parameter p, IDataTableSchema? table)
+        internal static string WhereCondition(Parameter p)
         {
             var column = Quote(p.Name!);
             switch (p.Operator)
             {
+                // A full-text search: the parser only produces it for a FullTextSearch column.
                 case Operator.Contains:
-                    return IsFullTextSearch(table, p.Name!)
-                        ? $"to_tsvector('{FullTextConfiguration}', {column}) @@ plainto_tsquery('{FullTextConfiguration}', {Variable(p)})"
-                        : Pattern(column, "ILIKE", $"'%' || {Variable(p)} || '%'");
+                    return $"to_tsvector('{FullTextConfiguration}', {column}) @@ plainto_tsquery('{FullTextConfiguration}', {Variable(p)})";
                 case Operator.ContainsCaseSensitive:
                 case Operator.LikeCaseSensitive:
                     return Pattern(column, "LIKE", $"'%' || {Variable(p)} || '%'");
@@ -252,10 +253,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
             };
             return $"{column} {op} {RightOperand(p)}";
         }
-
-        /// <summary>A column carrying FullTextSearch is searched through its full-text index.</summary>
-        private static bool IsFullTextSearch(IDataTableSchema? table, string columnName) =>
-            table?.FindByColumnName(columnName) is ColumnSchema { FullTextSearch: true };
 
         /// <summary>IN over the term's values, one parameter per element; an empty list matches nothing.</summary>
         private static string InCondition(Parameter p, string column)
@@ -296,8 +293,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
         internal static string ServerFunctionSql(IServerFunction function) =>
             function.Kind switch
             {
-                ServerFunctionKind.SysDateTime => "clock_timestamp()::timestamp",
-                ServerFunctionKind.SysDateTimeOffset => "clock_timestamp()",
+                ServerFunctionKind.CurrentDateTime => "clock_timestamp()::timestamp",
+                ServerFunctionKind.CurrentDateTimeOffset => "clock_timestamp()",
                 ServerFunctionKind.UtcNow => "(clock_timestamp() AT TIME ZONE 'UTC')",
                 ServerFunctionKind.NewGuid => "gen_random_uuid()",
                 _ => throw new NotSupportedException($"Server function {function.Kind} is not supported by the PostgreSQL provider."),

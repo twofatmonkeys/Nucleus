@@ -204,7 +204,9 @@ tests. SQL Server needs a disposable database configured through the `NUCLEUS_TE
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
 `Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
 A provider with no settings skips cleanly, which is what happens in CI. A fixture whose
-initialisation fails includes the stack's warnings and errors in its message.
+initialisation fails includes the stack's warnings and errors in its message. The save benchmarks
+under `Benchmarks\` skip unless `NUCLEUS_BENCHMARK=1`; they compare variants interleaved, so a
+change that claims no cost on the write path is measured against them rather than asserted.
 
 ## Deviations from the scaffold
 

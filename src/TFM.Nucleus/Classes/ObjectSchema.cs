@@ -321,7 +321,12 @@ namespace TFM.Nucleus
         public async Task<IDictionary> Extract(DbDataReader reader, CancellationToken token)
         {
             var coll = new Dictionary<Guid, T>();
-            var columns = (await reader.GetColumnSchemaAsync(token)).Select(x => x.ColumnName).ToArray();
+            // A column named apart from its property binds to the property.
+            var propertyOfColumn = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in AllDBColumns)
+                propertyOfColumn.TryAdd(string.IsNullOrWhiteSpace(property.DatabaseColumnAttribute?.ColumnName) ? property.Name : property.DatabaseColumnAttribute.ColumnName, property.Name);
+            var columns = (await reader.GetColumnSchemaAsync(token))
+                .Select(x => propertyOfColumn.GetValueOrDefault(x.ColumnName, x.ColumnName)).ToArray();
             while (await reader.ReadAsync(token))
             {
                 var properties = new Dictionary<string, object?>();

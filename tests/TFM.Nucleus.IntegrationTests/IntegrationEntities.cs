@@ -22,6 +22,99 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
+
+    /// <summary>Columns named apart from their properties, with a unique one and a child collection.</summary>
+    [Deletable]
+    public class IntRenamedItem : CoreObject<IntRenamedItem>
+    {
+        [DatabaseColumn(ColumnName = "item_title", Indexed = true)]
+        public string? Title { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn("item_code", Unique = true)]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(ColumnName = "item_count")]
+        public int Count { get => GetValue<int>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntRenamedNote, IntRenamedItem> Notes => GetChildCollection<IntRenamedNote, IntRenamedItem>();
+    }
+
+    [Deletable]
+    public class IntRenamedNote : CoreChildObject<IntRenamedNote, IntRenamedItem>
+    {
+        [DatabaseColumn(ColumnName = "note_text")]
+        public string? Text { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    /// <summary>Renamed columns without a child collection, for the bulk engine.</summary>
+    [Deletable]
+    public class IntRenamedRow : CoreObject<IntRenamedRow>
+    {
+        [DatabaseColumn(ColumnName = "row_title")]
+        public string? Title { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(ColumnName = "row_code")]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(ColumnName = "row_count")]
+        public int Count { get => GetValue<int>(); set => SetValue(value); }
+    }
+
+    /// <summary>A column the server stamps on every write and the entity reads back, with a child collection.</summary>
+    [Deletable]
+    public class IntStampedItem : CoreObject<IntStampedItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+
+        public NucleusChildCollection<IntStampedLine, IntStampedItem> Lines => GetChildCollection<IntStampedLine, IntStampedItem>();
+    }
+
+    [Deletable]
+    public class IntStampedLine : CoreChildObject<IntStampedLine, IntStampedItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
+    /// <summary>A stamped row without children, for the split and bulk write paths.</summary>
+    [Deletable]
+    public class IntStampedRow : CoreObject<IntStampedRow>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
+    /// <summary>A stamped row in a table of its own, which a test puts a trigger on.</summary>
+    [Deletable]
+    public class IntTriggeredRow : CoreObject<IntTriggeredRow>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
+    }
+
+    /// <summary>The save benchmarks' rows, in a table of their own.</summary>
+    [Deletable]
+    public class IntBenchWidget : CoreObject<IntBenchWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Quantity { get => GetValue<int>(); set => SetValue(value); }
+    }
 }
 
 namespace TFM.Nucleus.IntegrationTests

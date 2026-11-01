@@ -32,17 +32,7 @@ namespace TFM.Nucleus.Data.Queries
             var idCol = tableSchema.IdentityColumn ?? throw new Exception("Table schema does not have an identity column defined");
             var id = obj.GetPropertyValue(idCol.PropertySchema.Name) ?? throw new Exception("Unable to retrieve identity value from ICoreObject<>");
             Where.And(idCol.ColumnName, id);
-            foreach (var prop in obj.ChangedProperties)
-            {
-                var col = tableSchema?.FindByPropertyName(prop.Key);
-                if (col != null)
-                {
-                    var val = prop.Value;
-                    SetParameters.Add(new Parameter(col, val));
-                }
-            }
-            //add timestamp
-            SetParameters.Add(new Parameter("Timestamp", ServerFunction.SysDateTimeOffset));
+            AddWriteTerms(tableSchema, obj);
             //add child collection queries if applicable
             if (tableSchema!.ObjectSchema.HasNucleusChildCollections)
             {

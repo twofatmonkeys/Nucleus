@@ -128,9 +128,10 @@ otherwise. These are the differences an application can see:
 - **`DateTimeOffset` is stored as UTC, to the microsecond.** A `timestamptz` keeps the instant but
   not the offset, and no ticks below a microsecond, so a value saved at +10:00 reads back as the
   same instant at +00:00. `DateTimeOffset` equality compares instants, so comparisons hold.
-- **`string.Contains` on a `FullTextSearch` column is a full-text search** (`to_tsvector('english',
-  column) @@ plainto_tsquery(...)`, over a GIN index); on any other column it is a substring match.
-  On SQL Server, `string.Contains` is always `CONTAINS()`, which needs a full-text index.
+- **Full-text search uses each engine's own rules.** `string.Contains` on a `FullTextSearch`
+  column is a full-text search on both providers: `CONTAINS()` on SQL Server, and
+  `to_tsvector('english', column) @@ plainto_tsquery(...)` over a GIN index on PostgreSQL, so which
+  words match can differ. On any other column it is a substring match on both.
 - **Long names are shortened.** PostgreSQL keeps 63 bytes of an identifier. A table, index or
   trigger name longer than that keeps its first 30 and last 23 bytes around eight hex characters
   of its SHA-256, the same way every time, so the schema check finds what it created.
@@ -291,7 +292,7 @@ the integration test database (`tests\TFM.Nucleus.IntegrationTests\Attribution`)
 | `CoreChildObject<T, TParent>` | A child entity that always belongs to a parent. Exposes `Parent` and participates in cascade saves and deletes. |
 | `CoreChildObject<TParent>` | The non self-referencing form of the above. |
 
-Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Timestamp` (a `DateTimeOffset` set by the server) for free.
+Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Timestamp` (a `DateTimeOffset` set by the server) for free. The server stamps the stored `Timestamp` on every insert and update, but the value is not read back: in memory it is the client clock at the object's first save, and a loaded object keeps the value it was loaded with. Reading it back on every write was measured at 10% to 65% slower for batched, split and bulk saves on both providers.
 
 ## Attribute reference
 
@@ -303,7 +304,7 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 
 | Field | Default | Meaning |
 |---|---|---|
-| `ColumnName` | property name | Physical column name. |
+| `ColumnName` | property name | Physical column name, used by every statement, index name and predicate. Set it as `[DatabaseColumn("code")]` or `[DatabaseColumn(ColumnName = "code")]`. See renaming below. |
 | `DataType` | `NotSpecified` | One of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
 | `DataLength` | inferred | Column length. `-1` maps to `max`. |
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
@@ -314,8 +315,10 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `IndexDescending` | `false` | Sorts that index descending. Replaces `IndexSortDESC`. |
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
-| `SetValueOverride` | `NULL` | Has the server compute the value on write, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp, instead of sending the client value. |
-| `ReturnOutputToProperty` | `false` | Reads the server-computed value back into the property after the write. |
+| `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
+
+**Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and rebuilds the table, copying only the columns whose names the old and new tables share, so **the values in the old column are lost**. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
 Each property maps to a column type by its CLR type, or by `DataType` when one is given:
 
@@ -335,7 +338,7 @@ Each property maps to a column type by its CLR type, or by `DataType` when one i
 | `byte[]` | `varbinary(max)` | `bytea` |
 | a type named `TFMJsonString` | `json` | `jsonb` |
 
-The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
+The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. The same holds below the attributes, for a provider author: `IPropertySchema.IsIndexed` and `IsFullTextSearch` replace `IsNonClusteredIndex` and `HasFullTextIndex`, and `ServerFunction.CurrentDateTime` and `CurrentDateTimeOffset` (with the matching `ServerFunctionKind` values) replace `SysDateTime` and `SysDateTimeOffset`. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
 
 `Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
 
@@ -487,7 +490,7 @@ Override these on an entity to run logic at defined points:
 | `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters; a larger insert or update batch goes to the bulk engine. |
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
-| `BulkCopyBatchSize` | `50000` | Not currently applied: bulk statements run in batches of 50,000 rows. |
+| `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
 
 Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
 
@@ -511,7 +514,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 
 ## Unique violations
 
-A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(columnName)` tests for one; all three are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType`, `PropertyName` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property and column whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(name)` tests for one by the property's name or the column's; all of them are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
 
 ```csharp
 catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
@@ -521,6 +524,29 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 ```
 
 ## Behaviour changes
+
+These came in with the fixes for the SQL Server review findings.
+
+- **SQL Server selects read committed data.** `Query.WithNoLock` was inverted: every select ran
+  `WITH(NOLOCK)` and read uncommitted rows unless the flag was set, which removed the hint. A
+  select now reads committed data, as on PostgreSQL, so it can wait for a row another transaction
+  is writing. Set `WithNoLock = true` on a query to read uncommitted rows.
+- **`ColumnName` names the column.** It used to reach predicates only, while the table, every
+  write and every read used the property name, so a property with a different `ColumnName` was
+  filtered on a column that did not exist. A loaded `DataSet` or `StreamingRow` labels its values
+  by property name, which differs from the column name only for such a property.
+- **`string.Contains` is a substring match unless the column is `FullTextSearch`.** On SQL Server
+  it was always `CONTAINS()`, which fails on a column without a full-text index. It is now
+  `LIKE '%value%'` on such a column, as on PostgreSQL, and still a full-text search on a
+  `FullTextSearch` column.
+- **Wildcards in a value match literally.** `StartsWith("50%")` used to match every value
+  starting `50` on both providers, because `%`, `_` and (on SQL Server) `[` in the value acted as
+  wildcards. A pattern predicate's value is now bound with those characters escaped, so it matches
+  only `50%...`.
+- **`SetValueOverride` and `ReturnOutputToProperty` work on every column.** Only the built-in
+  `Timestamp` was ever computed by the server; on any other column `SetValueOverride` was ignored
+  and the client value written, and nothing was read back. Both now apply to every column on both
+  providers.
 
 These came in with the shared provider layer.
 
@@ -605,6 +631,12 @@ docker run -d --name nucleus-pg -e POSTGRES_USER=nucleus -e POSTGRES_PASSWORD=<p
 ```
 
 with `Nucleus:Postgres:Server` set to `localhost:15432`; the provider creates the database on the first run.
+
+The save benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`) time each write path (one object at a time, a batch, the split sync path and the bulk engine) on every configured provider. They skip unless `NUCLEUS_BENCHMARK=1` is set, and print their medians to the test output:
+
+```bash
+NUCLEUS_BENCHMARK=1 dotnet test tests/TFM.Nucleus.IntegrationTests --configuration Release --filter "FullyQualifiedName~SaveBenchmarks" --logger "console;verbosity=detailed"
+```
 
 ## Documentation
 

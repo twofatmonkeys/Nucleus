@@ -24,6 +24,11 @@ namespace TFM.Nucleus.Data.Queries
         public OrderByCollection OrderBy = new();
         public WhereCollection Where = new();
         public ParameterCollection SetParameters { get; set; } = [];
+        /// <summary>
+        /// Lets a select read rows other transactions have not committed yet. Off by default, so
+        /// a select reads committed data. SQL Server only: PostgreSQL never reads uncommitted rows
+        /// and ignores it.
+        /// </summary>
         public bool WithNoLock = false;
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
@@ -42,6 +47,30 @@ namespace TFM.Nucleus.Data.Queries
                 throw new InvalidQueryException("Child query must be of type Query");
             _linkedQueries.Add(q);
         }
+
+        /// <summary>
+        /// The SET terms that write <paramref name="obj"/>: each changed property as its value,
+        /// then each column [DatabaseColumn(SetValueOverride)] has the server compute, as that
+        /// server function, whatever the client set. A column marked ReturnOutputToProperty
+        /// becomes an <see cref="OutputParameter"/>, so the write reads the stored value back
+        /// into the entity.
+        /// </summary>
+        protected void AddWriteTerms(IDataTableSchema tableSchema, ICoreObject obj)
+        {
+            foreach (var prop in obj.ChangedProperties)
+                if (tableSchema.FindByPropertyName(prop.Key) is { } column && !column.PropertySchema.IsOverridden)
+                    SetParameters.Add(WriteTerm(column, prop.Value, obj));
+            foreach (var column in tableSchema.Columns.Where(c => c.PropertySchema.IsOverridden))
+                SetParameters.Add(WriteTerm(column, ServerFunction.Get(column.PropertySchema.DatabaseColumnAttribute!.SetValueOverride), obj));
+        }
+
+        private static Parameter WriteTerm(IDataColumnSchema column, object? value, ICoreObject obj) =>
+            ReadsBack(column)
+                ? new OutputParameter(column, value, (_, args) => obj.AcceptServerValue(column.PropertySchema.Name, args.Value))
+                : new Parameter(column, value);
+
+        private static bool ReadsBack(IDataColumnSchema column) =>
+            column.PropertySchema.DatabaseColumnAttribute?.ReturnOutputToProperty == true;
         public IEnumerable<IDataTableSchema> DistinctTableSchemas()
         {
             var schemas = new HashSet<IDataTableSchema>();

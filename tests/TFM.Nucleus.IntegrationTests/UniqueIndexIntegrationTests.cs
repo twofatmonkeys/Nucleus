@@ -12,7 +12,7 @@ namespace TFM.Nucleus.IntegrationTests
             var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
 
             // Every provider reports the broken index as the neutral exception, naming its column.
-            var violation = FindInChain<UniqueViolationException>(ex);
+            var violation = ExceptionChain.Find<UniqueViolationException>(ex);
             Assert.NotNull(violation);
             Assert.True(violation!.Is<IntUniqueItem>(nameof(IntUniqueItem.Code)));
             Assert.Equal("UQ_tbl_TFM_Nucleus_IntegrationTests_IntUniqueItem_Code", violation.IndexName);
@@ -46,15 +46,6 @@ namespace TFM.Nucleus.IntegrationTests
 
             var loaded = manager.Get<IntUniqueItem>().Where(x => x.Code!.StartsWith(prefix)).ToList();
             Assert.Equal(2, loaded.Count);
-        }
-
-        /// <summary>The first exception of type <typeparamref name="T"/> in the inner-exception chain.</summary>
-        protected static T? FindInChain<T>(Exception ex) where T : Exception
-        {
-            for (Exception? e = ex; e != null; e = e.InnerException)
-                if (e is T found)
-                    return found;
-            return null;
         }
     }
 }

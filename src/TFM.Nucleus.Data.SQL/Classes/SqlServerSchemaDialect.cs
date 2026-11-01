@@ -80,8 +80,8 @@ namespace TFM.Nucleus.Data.SQL
             //add default primary key constraint
             qry += $" CONSTRAINT [PK_{tableSchema.TableName}] PRIMARY KEY NONCLUSTERED( [{idColumn}] ASC )WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, " +
                 "IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY] ) ON [PRIMARY] ";
-            if (qry.Contains("nvarchar(max)") || qry.Contains("varchar(max)") || qry.Contains("varbinary(max)"))
-                qry += "TEXTIMAGE_ON [PRIMARY] ";
+            // Large values stay in the table's own filegroup, PRIMARY, which is SQL Server's
+            // default, so no TEXTIMAGE_ON clause is needed.
             if (qry.Contains("FILESTREAM"))
                 qry += "FILESTREAM_ON [FileStream] ";
             List<string> statements = [qry];

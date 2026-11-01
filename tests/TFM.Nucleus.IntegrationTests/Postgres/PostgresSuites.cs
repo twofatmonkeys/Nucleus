@@ -34,7 +34,7 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
             var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
 
-            var postgres = FindInChain<PostgresException>(ex);
+            var postgres = ExceptionChain.Find<PostgresException>(ex);
             Assert.NotNull(postgres);
             Assert.Equal("23505", postgres!.SqlState);
             Assert.Equal("UQ_tbl_TFM_Nucleus_IntegrationTests_IntUniqueItem_Code", postgres.ConstraintName);
@@ -43,6 +43,18 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresBulkSaveIntegrationTests(PostgresFixture fixture) : BulkSaveIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresRenamedColumnIntegrationTests(PostgresFixture fixture) : RenamedColumnIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresPatternMatchIntegrationTests(PostgresFixture fixture) : PatternMatchIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresServerValueIntegrationTests(PostgresFixture fixture) : ServerValueIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresSaveBenchmarks(PostgresFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresAttributionStoreTests(PostgresFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);
