@@ -487,7 +487,7 @@ Override these on an entity to run logic at defined points:
 | `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
 | `SQLPacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
-| `MaxParametersPerQuery` | `2000` | Batches are split at this many parameters; a larger insert or update batch goes to the bulk engine. |
+| `MaxParametersPerQuery` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
@@ -508,7 +508,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 | `ConnectRetryCount` | `3` | Attempts at opening a connection when the failure is transient, with an exponential back-off. |
 | `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
-| `MaxParametersPerQuery` | `30000` | Batches are split at this many parameters (PostgreSQL allows 65,535); a larger insert or update batch goes to the bulk engine. |
+| `MaxParametersPerQuery` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 
@@ -524,6 +524,23 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 ```
 
 ## Behaviour changes
+
+These came in with the fixes for the save path findings.
+
+- **A cancelled save throws `OperationCanceledException`.** `INucleusRuntime.SaveAsync`, which
+  `CoreObject.SaveAsync(CancellationToken)` routes through, dropped its token, so a save could not
+  be cancelled. The token now reaches the context. A cancelled save rolls back and throws
+  `OperationCanceledException` as it is, where the manager's `SaveAsync` wrapped every failure in
+  a plain `Exception`; other failures are still wrapped. `ObjectDataManager` gains
+  `SaveAsync(obj, CancellationToken)` and `SaveAsync(objs, CancellationToken)`.
+- **A loaded parent saves its child collections on every path.** Only the manager's `SaveAsync` set
+  the object's `DataProvider`, which its child collections build their writes through, so a loaded
+  parent with a child collection threw through `Save` and every `IDataContext` save. The provider
+  now sets it as it builds each write.
+- **A batch at exactly `MaxParametersPerQuery` runs as one command**, and a split batch fills each
+  command up to the limit. It used to split one parameter early.
+- **A save of new and existing objects over the limit no longer throws.** The bulk engine writes
+  its inserts and its updates as two writes in the same transaction.
 
 These came in with the fixes for the SQL Server review findings.
 

@@ -8,22 +8,14 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
-### Found while fixing the SQL findings (October 2026)
+### Found while fixing the save path findings (November 2026)
 
-- **A bulk save of loaded objects with a child collection throws.** `IDataContext.BulkSaveAsync`
-  builds each object's update, which builds its child collections' queries, and those need the
-  object's `DataProvider`. Neither a load nor `BulkSaveAsync` sets it, so saving loaded parents
-  through the bulk path fails with "has no data provider, so a child collection query cannot be
-  built". The sync `ObjectDataManager.Save<T>` has the same gap: unlike `SaveAsync` it never sets
-  `DataProvider`.
-- **A mixed batch over the parameter limit throws.** An async `SaveAsync` of new and existing
-  objects of one type, together over `MaxParametersPerQuery`, groups both into one table write, and
-  `BulkWritePlanner.GroupByTable` refuses a group that mixes inserts and updates.
-  `BulkSaveAsync` splits them first and is not affected.
-- **A group exactly at the limit fans out.** At a parameter count equal to
-  `MaxParametersPerQuery` the bulk test (greater than) fails and `NeedsSplitting` (less than) splits,
-  so the batch goes to parallel child contexts instead of one command.
-- **`INucleusRuntime.SaveAsync` drops its cancellation token.**
+- **Child collections nest one level only.** `GetChildCollection<TChild, TParent>` requires the
+  parent to be a `CoreObject<TParent>`, and `CoreChildObject<T, TParent>` derives from `CoreObject`,
+  so a child cannot hold a child collection of its own: it does not compile. The save and load
+  paths would bind a deeper level (a child collection's writes go through the same provider method
+  as its parent's), but nothing above the entity base allows one. A limitation rather than a
+  defect; changing it touches the entity base, which is a major version.
 
 ### Timestamp in memory is the client clock (decided October 2026)
 
@@ -126,6 +118,29 @@ them and choose which to delete. Ordering happens in memory because the provider
 so avoiding the load needs column projection, which Nucleus does not have.
 
 ## Fixed
+
+### Save path findings fixed after the SQL findings (November 2026)
+
+These were recorded while the SQL findings were fixed, then fixed one commit each. Their cover is
+the named tests rather than `RegressionTests.cs`, and each fails with its fix reverted.
+
+- **A loaded parent with a child collection could not be saved.** A child collection builds its
+  writes through its parent's `DataProvider`, and only the manager's `SaveAsync` set it, so the sync
+  `Save` and every `IDataContext` save threw "has no data provider". The provider now sets it as it
+  builds each write (`ChildSaveIntegrationTests`, five save paths on both providers).
+- **A mixed batch over the parameter limit threw.** An async `SaveAsync` of new and existing objects
+  of one type over `MaxParametersPerQuery` reached `BulkWritePlanner.GroupByTable`, which refused a
+  group mixing inserts and updates. It now gives one write of each (`BulkWritePlannerTests`,
+  `MixedBatchIntegrationTests`).
+- **A group exactly at the limit fanned out.** `Query.NeedsSplitting` split at a count equal to
+  `MaxParametersPerQuery`, and its chunks stopped one parameter short of it. Both comparisons are
+  inclusive now, matching the bulk route and the delete check, and the unused SQL provider copy of
+  `NeedsSplitting` is removed (`QuerySplitTests`).
+- **`INucleusRuntime.SaveAsync` dropped its cancellation token.** It now reaches the context, and a
+  cancelled save throws `OperationCanceledException` as it is rather than wrapped
+  (`RuntimeSaveTokenTests`, `SaveCancellationIntegrationTests`). A command cancelled while the engine
+  runs it, which SqlClient can report as a `SqlException`, becomes an `OperationCanceledException`
+  too; that branch has no test, since it needs a command cancelled mid-flight.
 
 ### SQL findings fixed after the PostgreSQL provider (October 2026)
 
