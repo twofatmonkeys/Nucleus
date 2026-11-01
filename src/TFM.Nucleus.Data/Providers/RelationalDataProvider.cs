@@ -154,10 +154,27 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         public UpdateQuery? CreateUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
-            UpdateQuery.Create(Renderer, GetTableSchema<T>(), objs);
+            UpdateQuery.Create(Renderer, GetTableSchema<T>(), Bind(objs));
 
         public InsertQuery? CreateInsertQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
-            InsertQuery.Create(Renderer, GetTableSchema<T>(), objs);
+            InsertQuery.Create(Renderer, GetTableSchema<T>(), Bind(objs));
+
+        /// <summary>
+        /// Makes this provider the object's data provider, which its child collections build
+        /// their write queries through. Every write query is built after it, so a loaded object
+        /// saves its children on any save path, and their children in turn.
+        /// </summary>
+        internal void Bind(ICoreObject obj) => obj.DataProvider = this;
+
+        private List<T>? Bind<T>(IEnumerable<T>? objs) where T : ICoreObject
+        {
+            if (objs == null)
+                return null;
+            var list = objs.ToList();
+            foreach (var obj in list)
+                Bind(obj);
+            return list;
+        }
 
         /// <summary>
         /// Deletes the given objects by ID, with every row of their child collections, whether
@@ -187,10 +204,11 @@ namespace TFM.Nucleus.Data.Providers
 
         public Query? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
         {
-            if (objs == null || !objs.Any()) return null;
+            var list = Bind(objs);
+            if (list == null || list.Count == 0) return null;
             var schema = GetTableSchema<T>();
-            var update = UpdateQuery.Create(Renderer, schema, objs.Where(x => !x.IsNew));
-            var insert = InsertQuery.Create(Renderer, schema, objs.Where(x => x.IsNew));
+            var update = UpdateQuery.Create(Renderer, schema, list.Where(x => !x.IsNew));
+            var insert = InsertQuery.Create(Renderer, schema, list.Where(x => x.IsNew));
             if (insert != null) { if (update != null) insert.LinkedQueries.Add(update); return insert; }
             return update;
         }

@@ -166,7 +166,6 @@ namespace TFM.Nucleus.Data
             try
             {
                 var provider = ProviderFor<T>();
-                obj.DataProvider = provider;
                 var qry = provider.CreateInsertAndUpdateQuery([obj]);
                 if (qry == null)
                     return;
@@ -200,9 +199,6 @@ namespace TFM.Nucleus.Data
             {
                 var provider = ProviderFor<T>();
                 var list = objs as IList<T> ?? objs.ToList();
-                foreach (var obj in list)
-                    obj.DataProvider = provider;
-
                 var qry = provider.CreateInsertAndUpdateQuery(list);
                 if (qry == null)
                     return null;
