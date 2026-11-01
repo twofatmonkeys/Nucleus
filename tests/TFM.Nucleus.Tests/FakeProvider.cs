@@ -73,8 +73,14 @@ namespace TFM.Nucleus.Tests
             return context;
         }
 
-        public Task<IDataContext> CreateContextAsync(ContextOptions? options = null, CancellationToken token = default) =>
-            Task.FromResult(CreateContext(options));
+        /// <summary>The token each async context was created with, in order.</summary>
+        public List<CancellationToken> ContextTokens { get; } = [];
+
+        public Task<IDataContext> CreateContextAsync(ContextOptions? options = null, CancellationToken token = default)
+        {
+            ContextTokens.Add(token);
+            return Task.FromResult(CreateContext(options));
+        }
 
         /// <summary>Capabilities say unsupported, so the seam contract is to throw.</summary>
         public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>
@@ -165,6 +171,9 @@ namespace TFM.Nucleus.Tests
     public sealed class FakeDataContext(FakeDataProvider provider, ContextOptions options) : IDataContext
     {
         public List<IQuery> ExecutedQueries { get; } = [];
+
+        /// <summary>The token each async execution was given, in order.</summary>
+        public List<CancellationToken> ExecutionTokens { get; } = [];
         public bool RolledBack { get; private set; }
 
         public bool HasTransaction => options.UseTransaction;
@@ -179,7 +188,11 @@ namespace TFM.Nucleus.Tests
 
         public void ExecuteQuery(IQuery query) => ExecutedQueries.Add(query);
         public Task ExecuteQueryAsync(IQuery query) { ExecutedQueries.Add(query); return Task.CompletedTask; }
-        public Task ExecuteQueryAsync(IQuery query, CancellationToken token) => ExecuteQueryAsync(query);
+        public Task ExecuteQueryAsync(IQuery query, CancellationToken token)
+        {
+            ExecutionTokens.Add(token);
+            return ExecuteQueryAsync(query);
+        }
         public void ExecuteQueries(IQuery[] queries) => ExecutedQueries.AddRange(queries);
         public Task ExecuteQueriesAsync(IQuery[] queries) { ExecutedQueries.AddRange(queries); return Task.CompletedTask; }
         public Task ExecuteQueriesAsync(IQuery[] queries, CancellationToken token) => ExecuteQueriesAsync(queries);

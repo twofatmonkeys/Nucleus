@@ -260,7 +260,16 @@ namespace TFM.Nucleus.Data.Providers
         private Query BuildSaveQuery(ICoreObject obj)
         {
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
-            var tableSchema = _provider.GetTableSchema(obj.GetType());
+            return BuildWriteQuery(_provider.GetTableSchema(obj.GetType()), obj);
+        }
+
+        /// <summary>
+        /// The object's insert or update, with its child collections' writes linked. The object
+        /// is bound to this context's provider first, which those child writes are built through.
+        /// </summary>
+        private Query BuildWriteQuery(TableSchema tableSchema, ICoreObject obj)
+        {
+            _provider.Bind(obj);
             return obj.IsNew ? new InsertQuery(_provider.Renderer, tableSchema, obj) : new UpdateQuery(_provider.Renderer, tableSchema, obj);
         }
 
@@ -323,7 +332,7 @@ namespace TFM.Nucleus.Data.Providers
                     Query? root = null;
                     foreach (var obj in operationGroup)
                     {
-                        Query query = operationGroup.Key ? new InsertQuery(_provider.Renderer, tableSchema, obj) : new UpdateQuery(_provider.Renderer, tableSchema, obj);
+                        var query = BuildWriteQuery(tableSchema, obj);
                         if (root == null)
                             root = query;
                         else
@@ -517,6 +526,17 @@ namespace TFM.Nucleus.Data.Providers
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
             return _provider.TranslateFailure(message, exception);
         }
+
+        /// <summary>
+        /// As <see cref="Failure(string, Exception)"/>, except that a failure after
+        /// <paramref name="token"/> was cancelled is the cancellation. An engine can report a
+        /// command it cancelled as its own error (SqlClient raises a SqlException), so that
+        /// becomes an <see cref="OperationCanceledException"/> with the engine's error inside.
+        /// </summary>
+        protected Exception Failure(string message, Exception exception, CancellationToken token) =>
+            token.IsCancellationRequested && exception is not OperationCanceledException
+                ? Failure(message, new OperationCanceledException(message, exception, token))
+                : Failure(message, exception);
 
         #endregion
 
@@ -770,7 +790,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex);
+                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, token);
             }
         }
 

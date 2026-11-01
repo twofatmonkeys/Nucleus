@@ -23,20 +23,5 @@ namespace TFM.Nucleus.Data.SQL
         /// </summary>
         private static SqlParameter[] ToSqlParameters(IEnumerable<KeyValuePair<string, object?>> bound) =>
             [.. bound.Select(b => new SqlParameter($"@{b.Key}", b.Value))];
-
-        internal static bool NeedsSplitting(this IQuery qry, int paramLimit, out IQuery[]? splitQueries)
-        {
-            if (qry.AllQueryParameters == null || qry.AllQueryParameters.Count() < paramLimit)
-            {
-                splitQueries = null;
-                return false;
-            }
-            else
-            {
-                splitQueries = qry.Split(paramLimit).ToArray();
-                return true;
-            }
-        }
-
     }
 }
