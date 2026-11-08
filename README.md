@@ -525,6 +525,13 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 
 ## Behaviour changes
 
+This came in with the keyword column fix.
+
+- **A SQL Server table with a column named like a keyword can be rebuilt.** A property named `By`,
+  `Order` or `Key` made a table that was created fine but failed every later rebuild ("Incorrect
+  syntax near the keyword 'By'"), so the provider would not start once its entity changed. The
+  rebuild's row copy brackets every name now. Nothing changes for other tables.
+
 These came in with the fixes for the save path findings.
 
 - **A cancelled save throws `OperationCanceledException`.** `INucleusRuntime.SaveAsync`, which

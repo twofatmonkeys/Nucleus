@@ -119,6 +119,19 @@ namespace TFM.Nucleus.IntegrationTests
 
 namespace TFM.Nucleus.IntegrationTests
 {
+    /// <summary>Columns named with SQL Server keywords: created bracketed, so a rebuild must copy them bracketed too.</summary>
+    public class IntKeywordItem : CoreObject<IntKeywordItem>
+    {
+        [DatabaseColumn(DataType.Unicode)]
+        public string? By { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Order { get => GetValue<int>(); set => SetValue(value); }
+
+        [DatabaseColumn(DataType.Unicode)]
+        public string? Note { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     public class IntUniqueItem : CoreObject<IntUniqueItem>
     {
         [DatabaseColumn(Unique = true)]

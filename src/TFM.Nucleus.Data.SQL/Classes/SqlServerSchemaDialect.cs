@@ -141,12 +141,18 @@ WHERE object_id = OBJECT_ID(@tempTableName) AND type_desc != 'HEAP' AND name IS 
 
 EXEC sp_executesql @sql;";
 
+        /// <summary>
+        /// Copies the rows of a table being rebuilt into its new table. Every name is bracketed, as
+        /// CREATE TABLE writes them: a column named with a keyword (By, Order, Key) is created
+        /// without trouble, so the copy must not be the step that fails on it.
+        /// </summary>
         internal static string CopyTableDataSql(string sourceTableName, string destTableName, IReadOnlyList<string> commonColumns, bool orderByClusterId)
         {
-            var qry = $"INSERT INTO {destTableName}({String.Join(", ", commonColumns)}) " +
-                $"SELECT {String.Join(", ", commonColumns)} FROM {sourceTableName}";
+            var columns = String.Join(", ", commonColumns.Select(c => $"[{c}]"));
+            var qry = $"INSERT INTO [dbo].[{destTableName}]({columns}) " +
+                $"SELECT {columns} FROM [dbo].[{sourceTableName}]";
             if (orderByClusterId)
-                qry += " ORDER BY ClusterID ASC";
+                qry += $" ORDER BY [{TableSchema.ClusterIdColumn}] ASC";
             return qry;
         }
 

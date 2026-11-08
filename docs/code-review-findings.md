@@ -119,6 +119,21 @@ so avoiding the load needs column projection, which Nucleus does not have.
 
 ## Fixed
 
+### A table with a keyword column could never be rebuilt on SQL Server (November 2026)
+
+Found by the RedPoint website: adding a column to an entity with a property named `By` stopped the
+provider starting with "Incorrect syntax near the keyword 'By'", and the rebuild rolled back. CREATE
+TABLE brackets every column name, so such a table is created without trouble, but the rebuild's row
+copy (`SqlServerSchemaDialect.CopyTableDataSql`) joined the names bare. Every table with a column
+named like a keyword (`By`, `Order`, `Key`) was stuck at the schema it was created with. The copy
+now brackets the column names, the `ClusterID` it orders by and both table names, as the rest of the
+dialect does (the `ddl.copy` and `ddl.copy.keywords` goldens). `KeywordColumnRebuildTests` takes such
+a table back to an older shape holding a row and starts the stack again; it fails with this fix
+reverted. The PostgreSQL dialect already quoted every name in its copy.
+
+Names are bracketed and not escaped, here as everywhere else in the dialect: a name holding `]`
+would already fail at CREATE TABLE.
+
 ### Save path findings fixed after the SQL findings (November 2026)
 
 These were recorded while the SQL findings were fixed, then fixed one commit each. Their cover is
