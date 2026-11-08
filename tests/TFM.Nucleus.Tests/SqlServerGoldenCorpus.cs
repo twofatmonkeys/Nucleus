@@ -22,6 +22,9 @@
             cases["ddl.copy"] = () => string.Join("\n--\n",
                 SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true),
                 SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false));
+            // Columns named with keywords are created bracketed, so the copy must bracket them too.
+            cases["ddl.copy.keywords"] = () =>
+                SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "By", "Order", "Key", "Timestamp"], orderByClusterId: true);
             cases["ddl.drop"] = () => SqlServerSchemaDialect.DropTableSql("tbl_X_20260101000000");
             cases["ddl.backfill"] = () => SqlServerSchemaDialect.BackfillTimestampSql("tbl_X");
             cases["ddl.dropindex"] = () => SqlServerSchemaDialect.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X");
