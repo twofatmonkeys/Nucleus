@@ -37,6 +37,7 @@ namespace TFM.Nucleus.IntegrationTests
         {
             if (Settings == null)
                 return;
+            using var schema = await SchemaLockAsync();
             _stack = await StartStackAsync(services => AddProvider(services, Settings, _ => { }));
         }
 
@@ -101,6 +102,14 @@ namespace TFM.Nucleus.IntegrationTests
         /// net10.0 runs share a database, but two providers never do.
         /// </summary>
         internal Task<TestDatabaseLock> LockAsync(string suite) => TestDatabaseLock.AcquireAsync($"{suite}-{ProviderName}");
+
+        /// <summary>
+        /// The cross-process lock over the database's schema, per provider. Hold it to change a
+        /// table's shape with raw DDL, to start a stack (which updates the schema), or to check the
+        /// whole schema is current, so the net8.0 and net10.0 runs never see each other's tables
+        /// half changed. It is not reentrant: take it once per test, around the whole change.
+        /// </summary>
+        internal Task<TestDatabaseLock> SchemaLockAsync() => LockAsync("schema");
     }
 
     /// <summary>A booted Nucleus stack over one provider; disposing it disposes its services.</summary>

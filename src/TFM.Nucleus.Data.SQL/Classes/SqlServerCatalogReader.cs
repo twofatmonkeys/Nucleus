@@ -143,6 +143,7 @@ namespace TFM.Nucleus.Data.SQL
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
+                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
                 command.Parameters.TryAddRange(statement.Parameters.GetSQLParams());
                 if (async)
                     await command.ExecuteNonQueryAsync(cancellationToken);
@@ -189,6 +190,7 @@ namespace TFM.Nucleus.Data.SQL
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = SqlServerSchemaDialect.CreateFullTextCatalogSql(catalogName);
+                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
                 if (async)
                     await command.ExecuteNonQueryAsync(cancellationToken);
                 else

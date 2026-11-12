@@ -11,9 +11,10 @@ namespace TFM.Nucleus.Data.Schema
 {
     /// <summary>
     /// Builds the tables a provider stores from the entity model, compares them with the
-    /// database and brings the database in line: missing databases are created, a table whose
-    /// columns differ is rebuilt (renamed, recreated, its rows copied, the old table dropped)
-    /// in one transaction, then column indexes and the provider's extras are synced. The
+    /// database and brings the database in line, all in one transaction: missing databases and
+    /// tables are created, a table that only lacks columns has them added in place, and a table
+    /// with a column of the wrong type is rebuilt (renamed, recreated, its rows copied, the old
+    /// table dropped). Column indexes and the provider's extras are synced after it commits. The
     /// provider's <see cref="ISchemaStore"/> supplies the dialect and the database access.
     /// </summary>
     public class SchemaManager(ISchemaStore store, IObjectSchemaProvider objectSchemaProvider, ILogger? logger) : IDataSchema
@@ -146,7 +147,8 @@ namespace TFM.Nucleus.Data.Schema
                 {
                     try
                     {
-                        await RebuildTable(transaction, table, async, cancellationToken);
+                        if (!await TryAddColumns(transaction, table, async, cancellationToken))
+                            await RebuildTable(transaction, table, async, cancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -183,6 +185,28 @@ namespace TFM.Nucleus.Data.Schema
                 await transaction.DisposeAsync();
             else
                 transaction.Dispose();
+        }
+
+        /// <summary>
+        /// Adds the columns an existing table lacks, when that is all it needs and the dialect can
+        /// add them in place. False means the table must be created or rebuilt instead.
+        /// </summary>
+        private async ValueTask<bool> TryAddColumns(ISchemaTransaction transaction, TableSchema table, bool async, CancellationToken cancellationToken)
+        {
+            var plan = SchemaComparer.PlanUpdate(table);
+            if (plan.Kind != TableUpdateKind.AddColumns)
+                return false;
+            var statements = Dialect.AddColumns(table, plan.Columns, plan.SoftDeleteColumns);
+            if (statements == null)
+                return false;
+            _logger?.LogInformation("Adding columns {columns} to the Database Table of the '{objectName}' object.",
+                string.Join(", ", plan.Columns.Select(c => c.ColumnName).Concat(plan.SoftDeleteColumns)), table.ObjectSchema.FullName);
+            foreach (var statement in statements)
+                await transaction.ExecuteAsync(statement, async, cancellationToken);
+            // A legacy table without Timestamp gets it stamped, as a rebuild's copy would.
+            if (plan.Columns.Any(c => Dialect.IdentifierComparer.Equals(c.ColumnName, TableSchema.TimestampColumn)))
+                await transaction.ExecuteAsync(Dialect.BackfillTimestamp(table), async, cancellationToken);
+            return true;
         }
 
         private async ValueTask RebuildTable(ISchemaTransaction transaction, TableSchema table, bool async, CancellationToken cancellationToken)

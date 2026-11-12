@@ -132,6 +132,30 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Note { get => GetValue<string>(); set => SetValue(value); }
     }
 
+    /// <summary>
+    /// A table that gains columns: the add-column suite drops Key (indexed, and named with a
+    /// keyword) and Extra from a populated table, then starts the stack again.
+    /// </summary>
+    public class IntGrowingItem : CoreObject<IntGrowingItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(Indexed = true)]
+        public string? Key { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int? Extra { get => GetValue<int?>(); set => SetValue(value); }
+    }
+
+    /// <summary>A soft-deletable table that loses its soft-delete columns in the add-column suite.</summary>
+    [Deletable(DeleteBehavior.Soft)]
+    public class IntGrowingSoftItem : CoreObject<IntGrowingSoftItem>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     public class IntUniqueItem : CoreObject<IntUniqueItem>
     {
         [DatabaseColumn(Unique = true)]

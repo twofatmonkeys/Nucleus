@@ -131,6 +131,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
+                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
                 foreach (var bound in ParameterBinding.Bind(statement.Parameters))
                     command.Parameters.AddWithValue(bound.Key, bound.Value ?? DBNull.Value);
                 if (async)

@@ -68,6 +68,8 @@ services.AddNucleusPostgresDataProvider(options =>
 
 `InitializeDataProviderAsync` connects, then creates or migrates the database, tables, indexes and full-text indexes (and, on PostgreSQL, the change notification triggers) to match your entity classes. Set `NucleusOptions.ReadOnlySchema` to `true` to make it verify without writing.
 
+How a table is migrated depends on what changed. A table that only lacks columns (a new property, or the soft-delete columns of a type newly made soft-deletable) has them added in place with `ALTER TABLE`. Every column is created NULL, so the change is metadata only and takes no time at any table size, and existing rows read the new column as null. A column whose type or size changed means a rebuild: the table is renamed, created again and its rows copied across in one transaction, which takes time in proportion to the table. A column the entity no longer has is left in the table either way. Each schema statement runs under `SchemaCommandTimeoutSeconds` (15 minutes by default).
+
 Define entities. Properties are backed by the framework's change-tracking dictionaries through `GetValue`/`SetValue` rather than by fields:
 
 ```csharp
@@ -148,9 +150,10 @@ otherwise. These are the differences an application can see:
 
 The schema is `public` unless `PostgresConfiguration.Schema` says otherwise, and is created when
 missing. Each table carries the Guid `ID` primary key, an identity `ClusterID` that keeps a
-rebuild's copy in insertion order, and a column per `[DatabaseColumn]` property. A table whose
-columns change is rebuilt in one transaction: PostgreSQL's DDL is transactional, so a failed rebuild
-leaves nothing behind.
+rebuild's copy in insertion order, and a column per `[DatabaseColumn]` property. A table that only
+lacks columns has them added in place, and one whose column types change is rebuilt, as on SQL
+Server, in one transaction: PostgreSQL's DDL is transactional, so a failed update leaves nothing
+behind. Adding a column, `IsDeleted` with its constant default included, is a catalog-only change.
 
 ## Bindery
 
@@ -318,7 +321,7 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
 | `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
-**Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and rebuilds the table, copying only the columns whose names the old and new tables share, so **the values in the old column are lost**. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
+**Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and adds it empty, so **the property reads null on every existing row**. The old column and its values stay in the table, but nothing reads them. If the same deployment also changes a column's type, the table is rebuilt instead, copying only the columns whose names the old and new tables share, and the old column's values are lost. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
 Each property maps to a column type by its CLR type, or by `DataType` when one is given:
 
@@ -488,7 +491,8 @@ Override these on an entity to run logic at defined points:
 | `SQLPacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
 | `MaxParametersPerQuery` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Commands themselves use the driver's default timeout. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Despite the name it is not a command timeout: queries and saves use the driver's default of 30 seconds. |
+| `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
 
@@ -509,7 +513,8 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 | `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
 | `MaxParametersPerQuery` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
+| `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 
 ## Unique violations
@@ -524,6 +529,24 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 ```
 
 ## Behaviour changes
+
+These came in with the fix for schema updates on large tables.
+
+- **New columns are added in place.** Adding a property used to rebuild its table, copying every
+  row in one statement under the driver's 30 second timeout, so a large table failed to migrate
+  and the provider would not start. A table that only lacks columns now gets them by
+  `ALTER TABLE`, which leaves the rows alone and is instant at any size. A changed column type
+  still rebuilds.
+- **Schema statements have a timeout of their own.** `SchemaCommandTimeoutSeconds` (900 by
+  default, 0 for no limit) covers a rebuild's copy, added columns and index changes, so a genuine
+  rebuild or an index build on a large table is no longer cut off at 30 seconds.
+- **Missing soft-delete columns are repaired.** A soft-deletable table without `IsDeleted` or
+  `DeletedAt` was reported as not current but never changed, and initialise still returned `Ok`.
+  The columns are added now. On SQL Server, `IsDeleted` is `NOT NULL` with a default of 0: adding it
+  is metadata only on Enterprise, Developer and Azure SQL, but Standard and Express write the
+  default into every row, which takes time on a large table.
+- **Changing `ColumnName` no longer drops the old column's values.** The new column is added empty
+  and the old one is left in the table (see Renaming).
 
 This came in with the keyword column fix.
 
@@ -620,7 +643,7 @@ Applications code against `TFM.Nucleus.Data` and touch a provider package only t
 `TFM.Nucleus.Data` holds everything that does not depend on the engine:
 
 - **The query model** (`TFM.Nucleus.Data.Queries`): `SelectQuery`, `InsertQuery`, `UpdateQuery` and `DeleteWhereQuery` decide what a query means: its condition tree, order, page, child collection queries, soft-delete filter and the children-first order of a delete cascade. `WhereRenderer` is the one walk of a condition tree; `ParameterBinding` names the parameters an IN term expands to.
-- **The schema model** (`TFM.Nucleus.Data.Schema`): `TableSchema` and `ColumnSchema` describe each entity's table, with what each column stores (`ColumnTypeIntent`) and its size. `SchemaManager` compares them with the database and creates, rebuilds and indexes tables.
+- **The schema model** (`TFM.Nucleus.Data.Schema`): `TableSchema` and `ColumnSchema` describe each entity's table, with what each column stores (`ColumnTypeIntent`) and its size. `SchemaManager` compares them with the database and creates tables, adds missing columns in place, rebuilds a table whose column types changed, and syncs indexes.
 - **The provider SDK** (`TFM.Nucleus.Data.Providers`): `RelationalDataProvider` and `DbDataContext<TSelf>` are the provider and context over System.Data.Common, with pooling, the transaction tree, reads, deletes, the write paths and failure translation. `BulkWritePlanner` stages bulk writes, and `ChangeSubscriptionBase<T>` and `ListenerRefCounter` back change notifications.
 
 A provider package implements the dialect: an `IQueryRenderer` that writes each query, an `ISchemaDialect` that writes DDL and maps column types, an `ICatalogReader` over the engine's catalog and an `ISchemaStore` that ties them together. It derives its provider and context from the SDK base classes, recognises its engine's unique violations, and exposes only its registration and configuration. Unit tests enforce the boundary: one scans the compiled strings of the neutral and store assemblies for SQL and for provider names, one checks they reference no provider, and one holds each provider's public surface to its registration and configuration.

@@ -76,4 +76,23 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresTemplateStoreContractTests(PostgresFixture fixture) : Stencil.NucleusTemplateStoreContractTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresAddColumnIntegrationTests(PostgresFixture fixture) : AddColumnIntegrationTests(fixture)
+    {
+        // Dropping a column drops its indexes with it. The provider's tables live in public.
+        protected override string DropColumnsSql(string table, params string[] columns) =>
+            $"ALTER TABLE \"public\".\"{table}\" {string.Join(", ", columns.Select(c => $"DROP COLUMN \"{c}\""))}";
+
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE \"public\".\"{table}\" ALTER COLUMN \"{column}\" TYPE varchar({length})";
+
+        protected override string TableIdSql(string table) => $"SELECT '\"public\".\"{table}\"'::regclass::oid::bigint";
+
+        protected override string DeleteAllSql(string table) => $"DELETE FROM \"public\".\"{table}\"";
+
+        protected override Task ExecuteAsync(string sql) => PostgresScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => PostgresScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
 }

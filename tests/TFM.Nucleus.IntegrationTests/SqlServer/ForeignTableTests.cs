@@ -15,6 +15,7 @@
         {
             var settings = fixture.RequireSettings();
             var table = $"foreign_{Guid.NewGuid():N}";
+            using var schema = await fixture.SchemaLockAsync();
             await SqlServerScript.ExecuteAsync(settings, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Anything] sql_variant NULL)", Ct);
             try
             {

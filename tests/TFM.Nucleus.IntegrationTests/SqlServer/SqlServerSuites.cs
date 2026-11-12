@@ -76,4 +76,25 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerTemplateStoreContractTests(SqlServerFixture fixture) : Stencil.NucleusTemplateStoreContractTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerAddColumnIntegrationTests(SqlServerFixture fixture) : AddColumnIntegrationTests(fixture)
+    {
+        // A column cannot be dropped while an index or a default constraint depends on it.
+        protected override string DropColumnsSql(string table, params string[] columns) => string.Concat(columns.Select(c =>
+            $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'NCI_{table}_{c}' AND object_id = OBJECT_ID(N'dbo.{table}')) DROP INDEX [NCI_{table}_{c}] ON [dbo].[{table}]; " +
+            $"IF OBJECT_ID(N'dbo.DF_{table}_{c}', N'D') IS NOT NULL ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [DF_{table}_{c}]; " +
+            $"ALTER TABLE [dbo].[{table}] DROP COLUMN [{c}]; "));
+
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE [dbo].[{table}] ALTER COLUMN [{column}] varchar({length}) NULL";
+
+        protected override string TableIdSql(string table) => $"SELECT CAST(OBJECT_ID(N'dbo.{table}') AS bigint)";
+
+        protected override string DeleteAllSql(string table) => $"DELETE FROM [dbo].[{table}]";
+
+        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
 }

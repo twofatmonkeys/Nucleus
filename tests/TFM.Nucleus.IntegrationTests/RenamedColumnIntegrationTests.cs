@@ -15,6 +15,7 @@
         public async Task Schema_IsCurrentAfterInitialise()
         {
             fixture.RequireManager();
+            using var schema = await fixture.SchemaLockAsync();
 
             Assert.Equal(DataProviderStatus.Ok, await fixture.Provider!.CheckSchemaIsCurrentAsync(null));
         }

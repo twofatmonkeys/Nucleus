@@ -28,6 +28,11 @@ namespace TFM.Nucleus.Tests
             cases["ddl.copy"] = () => string.Join("\n--\n",
                 dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true).Text,
                 dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false).Text);
+            var growing = QueryGoldenCorpus.TableOf(typeof(TestGrowingWidget));
+            var added = new[] { growing["Key"], growing["Notes"], growing["Price"], growing["Extra"] };
+            cases["ddl.addcolumns"] = () => Join(dialect.AddColumns(growing, added, [])!);
+            cases["ddl.addcolumns.softdelete"] = () => Join(dialect.AddColumns(growing, [], [SoftDelete.IsDeletedColumn, SoftDelete.DeletedAtColumn])!);
+            cases["ddl.addcolumns.both"] = () => Join(dialect.AddColumns(growing, [growing["Key"]], [SoftDelete.DeletedAtColumn])!);
             cases["ddl.drop"] = () => dialect.DropTable("tbl_X_20260101000000").Text;
             cases["ddl.backfill"] = () => dialect.BackfillTimestamp(widget).Text;
             cases["ddl.index"] = () => string.Join("\n--\n", unique.IndexedColumns.Select(c => dialect.CreateIndex(unique, c).Text));

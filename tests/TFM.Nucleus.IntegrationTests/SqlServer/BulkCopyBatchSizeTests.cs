@@ -15,6 +15,7 @@
         {
             fixture.RequireSettings();
             const int batchSize = 97;
+            using var schema = await fixture.SchemaLockAsync();
             using var stack = await fixture.StartStackAsync(options => options.BulkCopyBatchSize = batchSize);
             var manager = stack.Manager;
             // Three values a row on insert takes this many rows past the 2,000 parameter limit,

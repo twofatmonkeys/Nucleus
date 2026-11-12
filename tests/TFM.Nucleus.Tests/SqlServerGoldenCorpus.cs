@@ -25,6 +25,12 @@
             // Columns named with keywords are created bracketed, so the copy must bracket them too.
             cases["ddl.copy.keywords"] = () =>
                 SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "By", "Order", "Key", "Timestamp"], orderByClusterId: true);
+            // A table that only lacks columns has them added in place, every name bracketed.
+            var growing = QueryGoldenCorpus.TableOf(typeof(TestGrowingWidget));
+            var added = new[] { growing["Key"], growing["Notes"], growing["Price"], growing["Extra"] };
+            cases["ddl.addcolumns"] = () => SqlServerSchemaDialect.AddColumnsSql(growing, added, []);
+            cases["ddl.addcolumns.softdelete"] = () => SqlServerSchemaDialect.AddColumnsSql(growing, [], [SoftDelete.IsDeletedColumn, SoftDelete.DeletedAtColumn]);
+            cases["ddl.addcolumns.both"] = () => SqlServerSchemaDialect.AddColumnsSql(growing, [growing["Key"]], [SoftDelete.DeletedAtColumn]);
             cases["ddl.drop"] = () => SqlServerSchemaDialect.DropTableSql("tbl_X_20260101000000");
             cases["ddl.backfill"] = () => SqlServerSchemaDialect.BackfillTimestampSql("tbl_X");
             cases["ddl.dropindex"] = () => SqlServerSchemaDialect.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X");

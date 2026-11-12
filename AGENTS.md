@@ -103,8 +103,9 @@ library documents. Bool, int and decimal columns read as nullable with a default
 written without the column reads back null. The library ships no contract package, so the tests in
 `tests\TFM.Nucleus.IntegrationTests\Attribution` cover its documented rules directly, on fresh
 ids, with no reset and no lock. The first run of the two frameworks in parallel against a database
-without the tables can fail schema initialisation in one of them while the other creates them;
-rerun, or run one framework first.
+without the tables used to fail schema initialisation in one of them while the other created them.
+Fixture initialisation now holds the schema lock, so the two runs initialise one after the other;
+if a first run still fails, rerun.
 
 `Abstractions` holds every interface the other layers speak: `ICoreObject`, `IDataProvider`,
 `IDataContext`, `IObjectSchema`, `IQuery` and the neutral query tokens, plus `NucleusOptions`, the
@@ -121,8 +122,12 @@ only a dialect. The query model (`Queries`: Select, Insert, Update and DeleteWhe
 condition tree, `WhereRenderer`, `ParameterBinding`, `SoftDelete`) decides what a query means, and
 a query carries the provider's `IQueryRenderer`, which only writes it. The schema model (`Schema`:
 `TableSchema`, `ColumnSchema` with a `ColumnTypeIntent` and size facets, `SchemaComparer`,
-`SchemaManager`) builds, compares, creates and rebuilds tables through a provider's
-`ISchemaStore` (an `ISchemaDialect`, an `ICatalogReader` and a rebuild transaction). The provider
+`SchemaManager`) builds, compares, creates and updates tables through a provider's
+`ISchemaStore` (an `ISchemaDialect`, an `ICatalogReader` and a rebuild transaction). A table that
+only lacks columns has them added in place (`ISchemaDialect.AddColumns`, decided by
+`SchemaComparer.PlanUpdate`); only a changed column type rebuilds and copies the rows, because a
+rebuild takes time in proportion to the table. Schema statements run under
+`SchemaCommandTimeoutSeconds`, not the driver default. The provider
 SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
@@ -204,7 +209,10 @@ tests. SQL Server needs a disposable database configured through the `NUCLEUS_TE
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
 `Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
 A provider with no settings skips cleanly, which is what happens in CI. A fixture whose
-initialisation fails includes the stack's warnings and errors in its message. The save benchmarks
+initialisation fails includes the stack's warnings and errors in its message. The net8.0 and
+net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
+stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
+for its duration; the lock is not reentrant, so take it once per test. The save benchmarks
 under `Benchmarks\` skip unless `NUCLEUS_BENCHMARK=1`; they compare variants interleaved, so a
 change that claims no cost on the write path is measured against them rather than asserted.
 

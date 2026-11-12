@@ -27,6 +27,7 @@ namespace TFM.Nucleus.Data.Schema
             foreach (var table in all)
             {
                 var physical = dialect.PhysicalName(table.TableName);
+                table.MissingSoftDeleteColumns.Clear();
                 if (!snapshot.Tables.Contains(physical, comparer))
                 {
                     table.ExistsInDatabase = false;
@@ -35,7 +36,9 @@ namespace TFM.Nucleus.Data.Schema
                 }
                 table.ExistsInDatabase = true;
                 var tableColumns = snapshot.Columns.Where(c => comparer.Equals(c.TableName, physical)).ToList();
-                if (table.IsSoftDeletable && !SoftDeleteColumnNames.All(name => tableColumns.Any(c => comparer.Equals(c.Name, name))))
+                if (table.IsSoftDeletable)
+                    table.MissingSoftDeleteColumns.AddRange(SoftDeleteColumnNames.Where(name => !tableColumns.Any(c => comparer.Equals(c.Name, dialect.PhysicalName(name)))));
+                if (table.MissingSoftDeleteColumns.Count > 0)
                 {
                     softDeleteColumnsCurrent = false;
                     logger?.LogWarning("Soft-delete system columns are missing from table: {tablename}", table.TableName);
@@ -59,6 +62,24 @@ namespace TFM.Nucleus.Data.Schema
                 }
             }
             return all.All(t => t.IsCurrent) && softDeleteColumnsCurrent;
+        }
+
+        /// <summary>
+        /// What bringing one compared table in line takes. A table that only lacks columns has
+        /// them added in place, which leaves its rows alone and takes no time at any size. A
+        /// column of the wrong type, or a missing primary key column, means a rebuild. A column
+        /// the entity no longer has is left in the table either way. Call after
+        /// <see cref="CompareTables"/>.
+        /// </summary>
+        internal static TableUpdatePlan PlanUpdate(TableSchema table)
+        {
+            if (!table.ExistsInDatabase)
+                return new TableUpdatePlan(TableUpdateKind.Create, [], []);
+            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase)
+                return new TableUpdatePlan(TableUpdateKind.Rebuild, [], []);
+            return new TableUpdatePlan(TableUpdateKind.AddColumns,
+                [.. table.Columns.Where(c => !c.ExistsInDatabase)],
+                [.. table.MissingSoftDeleteColumns]);
         }
 
         /// <summary>
@@ -108,4 +129,22 @@ namespace TFM.Nucleus.Data.Schema
             existing.HasFilter == col.Unique &&
             existing.IsDescending == col.IndexSortDescending;
     }
+
+    internal enum TableUpdateKind
+    {
+        /// <summary>The table does not exist and is created.</summary>
+        Create,
+
+        /// <summary>The table only lacks columns, which are added in place.</summary>
+        AddColumns,
+
+        /// <summary>A column changed type, so the table is recreated and its rows copied.</summary>
+        Rebuild,
+    }
+
+    /// <summary>
+    /// How one table is brought in line: for <see cref="TableUpdateKind.AddColumns"/>, the entity
+    /// columns and the soft-delete system columns the table lacks.
+    /// </summary>
+    internal sealed record TableUpdatePlan(TableUpdateKind Kind, IReadOnlyList<ColumnSchema> Columns, IReadOnlyList<string> SoftDeleteColumns);
 }

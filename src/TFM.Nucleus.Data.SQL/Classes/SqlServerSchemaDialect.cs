@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Queries;
 using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data.SQL
@@ -40,6 +41,11 @@ namespace TFM.Nucleus.Data.SQL
             ];
         }
 
+        // A FILESTREAM column needs the table to have a FILESTREAM filegroup, which only a table
+        // created with one has, so a table gaining one is rebuilt.
+        public IReadOnlyList<SchemaStatement>? AddColumns(TableSchema table, IReadOnlyList<ColumnSchema> columns, IReadOnlyList<string> softDeleteColumns) =>
+            columns.Any(SqlServerTypeMapper.IsFileStream) ? null : [AddColumnsSql(table, columns, softDeleteColumns)];
+
         public SchemaStatement CopyRows(string sourceTableName, string destTableName, IReadOnlyList<string> columns, bool orderByClusterId) =>
             CopyTableDataSql(sourceTableName, destTableName, columns, orderByClusterId);
 
@@ -63,7 +69,30 @@ namespace TFM.Nucleus.Data.SQL
         // ---- Statement builders.
 
         private static string SoftDeleteColumnSql(TableSchema tableSchema) =>
-            $"[IsDeleted] [bit] NOT NULL CONSTRAINT [DF_{tableSchema.TableName}_IsDeleted] DEFAULT(0),[DeletedAt] [datetimeoffset](7) NULL, ";
+            $"{SoftDeleteColumnDefinition(tableSchema, SoftDelete.IsDeletedColumn)},{SoftDeleteColumnDefinition(tableSchema, SoftDelete.DeletedAtColumn)}, ";
+
+        /// <summary>One soft-delete system column, as CREATE TABLE and ALTER TABLE ADD both write it.</summary>
+        private static string SoftDeleteColumnDefinition(TableSchema tableSchema, string column) => column switch
+        {
+            SoftDelete.IsDeletedColumn => $"[{SoftDelete.IsDeletedColumn}] [bit] NOT NULL CONSTRAINT [DF_{tableSchema.TableName}_{SoftDelete.IsDeletedColumn}] DEFAULT(0)",
+            SoftDelete.DeletedAtColumn => $"[{SoftDelete.DeletedAtColumn}] [datetimeoffset](7) NULL",
+            _ => throw new ArgumentException($"'{column}' is not a soft-delete system column.", nameof(column)),
+        };
+
+        /// <summary>
+        /// Adds columns to an existing table in one statement. A NULL column is a metadata-only
+        /// change at any table size. IsDeleted is NOT NULL with a constant default, which is
+        /// metadata-only on Enterprise, Developer and Azure SQL and fills every row on the other
+        /// editions. Every name is bracketed, as CREATE TABLE writes it.
+        /// </summary>
+        internal static string AddColumnsSql(TableSchema tableSchema, IReadOnlyList<ColumnSchema> columns, IReadOnlyList<string> softDeleteColumns)
+        {
+            if (columns.Count == 0 && softDeleteColumns.Count == 0)
+                throw new ArgumentException("There are no columns to add.", nameof(columns));
+            var definitions = columns.Select(c => $"[{c.ColumnName}] {SqlServerTypeMapper.TypeDefinition(c)}")
+                .Concat(softDeleteColumns.Select(c => SoftDeleteColumnDefinition(tableSchema, c)));
+            return $"ALTER TABLE [dbo].[{tableSchema.TableName}] ADD {string.Join(", ", definitions)}";
+        }
 
         internal static IReadOnlyList<string> CreateTableStatements(TableSchema tableSchema)
         {

@@ -46,15 +46,38 @@ namespace TFM.Nucleus.Data.PostgreSQL
             sb.Append($"{Quote(TableSchema.ClusterIdColumn)} bigint GENERATED ALWAYS AS IDENTITY, ");
             foreach (var col in table.Columns)
                 if (col.ColumnName != idColumn)
-                    sb.Append($"{Quote(col.ColumnName)} {PostgresTypes.TypeName(col)} NULL, ");
+                    sb.Append($"{ColumnDefinition(col)}, ");
             if (table.IsSoftDeletable)
-                sb.Append($"{Quote(SoftDelete.IsDeletedColumn)} boolean NOT NULL DEFAULT false, {Quote(SoftDelete.DeletedAtColumn)} timestamptz NULL, ");
+                sb.Append($"{SoftDeleteColumnDefinition(SoftDelete.IsDeletedColumn)}, {SoftDeleteColumnDefinition(SoftDelete.DeletedAtColumn)}, ");
             sb.Append($"CONSTRAINT {Quote($"PK_{table.TableName}")} PRIMARY KEY ({Quote(idColumn)}))");
 
             List<SchemaStatement> statements = [$"CREATE SCHEMA IF NOT EXISTS {Quote(Schema)}", sb.ToString()];
             foreach (var col in table.IndexedColumns)
                 statements.Add(CreateIndex(table, col));
             return statements;
+        }
+
+        /// <summary>An entity column, as CREATE TABLE and ALTER TABLE ADD COLUMN both write it. Every column is created NULL.</summary>
+        private static string ColumnDefinition(ColumnSchema column) => $"{Quote(column.ColumnName)} {PostgresTypes.TypeName(column)} NULL";
+
+        /// <summary>One soft-delete system column, as CREATE TABLE and ALTER TABLE ADD COLUMN both write it.</summary>
+        private static string SoftDeleteColumnDefinition(string column) => column switch
+        {
+            SoftDelete.IsDeletedColumn => $"{Quote(SoftDelete.IsDeletedColumn)} boolean NOT NULL DEFAULT false",
+            SoftDelete.DeletedAtColumn => $"{Quote(SoftDelete.DeletedAtColumn)} timestamptz NULL",
+            _ => throw new ArgumentException($"'{column}' is not a soft-delete system column.", nameof(column)),
+        };
+
+        /// <summary>
+        /// Adds columns to an existing table in one statement. A NULL column, and a NOT NULL one
+        /// with a constant default such as IsDeleted, is a catalog-only change at any table size.
+        /// </summary>
+        public IReadOnlyList<SchemaStatement>? AddColumns(TableSchema table, IReadOnlyList<ColumnSchema> columns, IReadOnlyList<string> softDeleteColumns)
+        {
+            if (columns.Count == 0 && softDeleteColumns.Count == 0)
+                throw new ArgumentException("There are no columns to add.", nameof(columns));
+            var definitions = columns.Select(ColumnDefinition).Concat(softDeleteColumns.Select(SoftDeleteColumnDefinition));
+            return [$"ALTER TABLE {TableName(table.TableName)} {string.Join(", ", definitions.Select(d => $"ADD COLUMN {d}"))}"];
         }
 
         /// <summary>

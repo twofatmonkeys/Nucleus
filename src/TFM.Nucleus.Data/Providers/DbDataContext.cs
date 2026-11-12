@@ -829,6 +829,7 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
+                command.CommandTimeout = Options.SchemaCommandTimeoutSeconds;
                 if (async)
                     await command.ExecuteNonQueryAsync(token);
                 else
