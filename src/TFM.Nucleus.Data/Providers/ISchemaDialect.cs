@@ -37,6 +37,15 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         IReadOnlyList<SchemaStatement> RenameForRebuild(TableSchema table, string tempTableName);
 
+        /// <summary>
+        /// Adds columns to an existing table without touching its rows: the entity
+        /// <paramref name="columns"/>, created NULL as <see cref="CreateTable"/> creates them, and the
+        /// soft-delete system columns named in <paramref name="softDeleteColumns"/>. Returns null
+        /// when the engine cannot add one of them in place, and the table is rebuilt instead, which
+        /// is also what a dialect that does not implement this gets.
+        /// </summary>
+        IReadOnlyList<SchemaStatement>? AddColumns(TableSchema table, IReadOnlyList<ColumnSchema> columns, IReadOnlyList<string> softDeleteColumns) => null;
+
         /// <summary>Copies the named columns of every row from one table to another.</summary>
         SchemaStatement CopyRows(string sourceTableName, string destTableName, IReadOnlyList<string> columns, bool orderByClusterId);
 

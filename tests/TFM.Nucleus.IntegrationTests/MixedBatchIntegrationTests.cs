@@ -13,6 +13,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task NewAndExistingRowsOverTheLimit_AreAllWritten()
         {
             fixture.RequireSettings();
+            using var schema = await fixture.SchemaLockAsync();
             using var stack = await fixture.StartStackAsync(options => options.MaxParametersPerQuery = 60);
             var manager = stack.Manager;
             const int rows = 20;

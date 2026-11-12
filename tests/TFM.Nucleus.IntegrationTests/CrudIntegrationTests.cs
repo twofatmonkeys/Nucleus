@@ -3,9 +3,10 @@ namespace TFM.Nucleus.IntegrationTests
     public abstract class CrudIntegrationTests(DatabaseFixture fixture)
     {
         [Fact]
-        public void SchemaIsCurrentAfterInitialization()
+        public async Task SchemaIsCurrentAfterInitialization()
         {
             fixture.RequireSettings();
+            using var schema = await fixture.SchemaLockAsync();
 
             var status = fixture.Provider!.CheckSchemaIsCurrent(null);
 

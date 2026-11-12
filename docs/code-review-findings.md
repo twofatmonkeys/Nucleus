@@ -119,6 +119,40 @@ so avoiding the load needs column projection, which Nucleus does not have.
 
 ## Fixed
 
+### Schema updates rebuilt large tables and timed out (November 2026)
+
+Every schema change rebuilt its table, even a new nullable property: `SchemaManager.UpdateCore`
+renamed the table, created it again and copied every row in one `INSERT ... SELECT` inside one
+transaction. No command timeout was set on it, so the copy ran under the driver default of 30
+seconds, and on a large table it timed out, rolled back and left the provider unable to start.
+
+A table that only lacks columns now has them added in place (`ISchemaDialect.AddColumns`, a
+default interface member so existing implementations still compile and simply rebuild).
+`SchemaComparer.PlanUpdate` decides: a missing table is created, a column of the wrong type or a
+missing `ID` means a rebuild, and anything else is an add. SQL Server declines a FILESTREAM
+column, which needs a filegroup the table may not have, and that table is rebuilt. A legacy table
+gaining `Timestamp` is backfilled, as its rebuild was. Every schema statement now runs under
+`RelationalProviderOptions.SchemaCommandTimeoutSeconds` (900 by default), in the rebuild
+transaction and in both catalog readers, so a genuine rebuild or an index build is not cut off.
+Cover: the `ddl.addcolumns*` goldens on both providers, `SchemaUpdatePlanTests` and
+`SchemaManagerUpdateTests` (unit), and `AddColumnIntegrationTests` on both providers, which tell
+an in-place change from a rebuild by the table's object id; the in-place tests fail with the add
+path disabled.
+
+Found on the way:
+
+- **Missing soft-delete columns were never repaired.** `TableSchema.IsCurrent` ignored them, so
+  the check reported the table not current, the update skipped it as current, and initialise
+  returned `Ok` with `IsDeleted` still missing. `IsCurrent` now counts them, and they are added in
+  place. The soft-delete tests fail with the old `IsCurrent`.
+- **`KeywordColumnRebuildTests` would have stopped testing a rebuild.** It made the table out of
+  date by dropping a column, which is now an in-place add. It changes a column's type instead and
+  checks the table was recreated; it still fails with the keyword copy fix reverted.
+- **The integration runs raced on the schema.** The net8.0 and net10.0 runs share a database, and
+  a test changing a table with raw DDL could make the other run's whole-schema check fail. Every
+  test that changes a table, starts a stack or checks the whole schema, and the fixture's own
+  initialise, now holds `DatabaseFixture.SchemaLockAsync`.
+
 ### A table with a keyword column could never be rebuilt on SQL Server (November 2026)
 
 Found by the RedPoint website: adding a column to an entity with a property named `By` stopped the

@@ -82,8 +82,14 @@ namespace TFM.Nucleus.Data.SQL
         public static bool HasPrecisionScale(ESqlDataType type) =>
             type is ESqlDataType.Decimal or ESqlDataType.Numeric;
 
-        /// <summary>The column's type and nullability in a CREATE TABLE.</summary>
-        public static string Constructor(ColumnSchema column)
+        /// <summary>The column's type and nullability in a CREATE TABLE, followed by its separator.</summary>
+        public static string Constructor(ColumnSchema column) => TypeDefinition(column) + ", ";
+
+        /// <summary>
+        /// The column's type and nullability, as CREATE TABLE and ALTER TABLE ADD both write it.
+        /// Every column is created NULL.
+        /// </summary>
+        public static string TypeDefinition(ColumnSchema column)
         {
             var type = SqlType(column);
             var constr = $"[{type}]";
@@ -93,11 +99,15 @@ namespace TFM.Nucleus.Data.SQL
             }
             else if (!string.IsNullOrEmpty(DataSize(column)))
                 constr += $"({DataSize(column)})";
-            if (column.ExternalStorage && type == ESqlDataType.VarBinary)
+            if (IsFileStream(column))
                 constr += " FILESTREAM ";
-            constr += " NULL, ";
+            constr += " NULL";
             return constr;
         }
+
+        /// <summary>An externally stored binary column, which SQL Server keeps in FILESTREAM.</summary>
+        public static bool IsFileStream(ColumnSchema column) =>
+            column.ExternalStorage && SqlType(column) == ESqlDataType.VarBinary;
 
         /// <summary>
         /// The type of a bulk temp table column. Mirrors <see cref="Constructor"/> but omits

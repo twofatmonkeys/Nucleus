@@ -27,7 +27,15 @@ namespace TFM.Nucleus.Data.Schema
         public IReadOnlyList<ColumnSchema> Columns => _columns;
         public ColumnSchema IdentityColumn { get; }
         public bool ExistsInDatabase { get; internal set; } = false;
-        public bool IsCurrent => ExistsInDatabase && Columns.All(c => c.IsCurrent);
+
+        /// <summary>
+        /// True when the table exists, every column exists with the type the schema needs, and a
+        /// soft-deletable table has both of its soft-delete system columns.
+        /// </summary>
+        public bool IsCurrent => ExistsInDatabase && MissingSoftDeleteColumns.Count == 0 && Columns.All(c => c.IsCurrent);
+
+        /// <summary>The soft-delete system columns the last compare found missing from the table.</summary>
+        internal List<string> MissingSoftDeleteColumns { get; } = [];
         public bool HasFullTextSearch => Columns.Any(c => c.FullTextSearch);
 
         /// <summary>The type is [Deletable(DeleteBehavior.Soft)], so the table carries the soft-delete system columns.</summary>

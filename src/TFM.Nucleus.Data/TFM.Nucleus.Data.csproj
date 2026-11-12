@@ -30,4 +30,9 @@
     <ProjectReference Include="..\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Keep the list to real test projects: every entry here is a hole in the assembly boundary. -->
+    <InternalsVisibleTo Include="TFM.Nucleus.Tests" />
+  </ItemGroup>
+
 </Project>

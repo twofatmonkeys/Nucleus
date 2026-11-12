@@ -5,6 +5,9 @@
     {
         public static IReadOnlyDictionary<string, string> Expected { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["ddl.addcolumns"] = "ALTER TABLE [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget] ADD [Key] [VarChar](255) NULL, [Notes] [NVarChar](max) NULL, [Price] [Decimal](18,2) NULL, [Extra] [Int] NULL",
+            ["ddl.addcolumns.both"] = "ALTER TABLE [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget] ADD [Key] [VarChar](255) NULL, [DeletedAt] [datetimeoffset](7) NULL",
+            ["ddl.addcolumns.softdelete"] = "ALTER TABLE [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget] ADD [IsDeleted] [bit] NOT NULL CONSTRAINT [DF_tbl_TFM_Nucleus_Tests_TestGrowingWidget_IsDeleted] DEFAULT(0), [DeletedAt] [datetimeoffset](7) NULL",
             ["ddl.backfill"] = "UPDATE [dbo].[tbl_X] SET [Timestamp] = SYSDATETIMEOFFSET() WHERE [Timestamp] IS NULL",
             ["ddl.copy"] = "INSERT INTO [dbo].[tbl_X]([ID], [Name], [Timestamp]) SELECT [ID], [Name], [Timestamp] FROM [dbo].[tbl_X_20260101000000] ORDER BY [ClusterID] ASC\n--\nINSERT INTO [dbo].[tbl_X]([ID], [Name]) SELECT [ID], [Name] FROM [dbo].[tbl_X_20260101000000]",
             ["ddl.copy.keywords"] = "INSERT INTO [dbo].[tbl_X]([ID], [By], [Order], [Key], [Timestamp]) SELECT [ID], [By], [Order], [Key], [Timestamp] FROM [dbo].[tbl_X_20260101000000] ORDER BY [ClusterID] ASC",

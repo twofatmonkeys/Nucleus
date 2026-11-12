@@ -41,8 +41,28 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The most parameters one command binds; a larger write is split or bulk copied.</summary>
         public int MaxParametersPerQuery { get; set; }
 
-        /// <summary>How long an async context waits for a free slot in the pool, in seconds.</summary>
+        /// <summary>
+        /// How long an async context waits for a free slot in the pool, in seconds. Despite the
+        /// name it is not a command timeout: commands use the driver's default.
+        /// </summary>
         public int CommandTimeoutSeconds { get; set; } = 10;
+
+        private int _schemaCommandTimeoutSeconds = 900;
+
+        /// <summary>
+        /// The command timeout of each schema statement, in seconds: a table rebuild's row copy, an
+        /// added column, an index created or dropped. 0 means no limit. A rebuild copies every row
+        /// of a table, and the driver's default of 30 seconds is far too short for a large one.
+        /// </summary>
+        public int SchemaCommandTimeoutSeconds
+        {
+            get => _schemaCommandTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _schemaCommandTimeoutSeconds = value;
+            }
+        }
 
         /// <summary>The command timeout of each bulk copy and bulk statement, in seconds.</summary>
         public int BulkCopyTimeoutSeconds { get; set; } = 60;
