@@ -84,8 +84,47 @@ namespace TFM.Nucleus.Data.Queries
         // ---- The rules every renderer applies. They decide what a select means; the renderer
         // ---- only writes it.
 
-        /// <summary>No columns to select: the query returns no rows and no result sets follow.</summary>
-        public bool IsEmptyProjection => Columns.Count == 0;
+        /// <summary>No columns and no measures to select: the query returns no rows and no result sets follow.</summary>
+        public bool IsEmptyProjection => Columns.Count == 0 && Measures.Count == 0;
+
+        /// <summary>
+        /// The columns a grouped read groups by, written in this order. On a grouped read
+        /// <see cref="Query.Columns"/> holds the same columns, the group keys being what it selects.
+        /// </summary>
+        public List<string> GroupBy = [];
+
+        /// <summary>The figures a grouped read returns after its group keys, in this order.</summary>
+        public List<Measure> Measures = [];
+
+        /// <summary>
+        /// A grouped read: the rows are one per distinct combination of <see cref="GroupBy"/>
+        /// (one row in all when there are no keys), each with its <see cref="Measures"/>.
+        /// </summary>
+        public bool IsAggregate => GroupBy.Count > 0 || Measures.Count > 0;
+
+        /// <summary>
+        /// Set on a row read: the name and conversion of each value of a row, in the order the
+        /// query selects them. A reader labels and converts by this instead of the table's whole
+        /// column list, which is what lets a read select only some columns, or figures that are
+        /// not columns at all. Null on an entity read.
+        /// </summary>
+        public IReadOnlyList<ResultColumn>? ResultColumns { get; set; }
+
+        /// <summary>
+        /// Throws when a grouped read is also asked to order or page: a grouped read returns its
+        /// groups in no particular order, so it is ordered in memory, and is small enough to be.
+        /// </summary>
+        public void EnsureAggregateShape()
+        {
+            if (!IsAggregate)
+                return;
+            if (!IsRoot || LinkedQueries.Count > 0)
+                throw new InvalidQueryException("A grouped read has no child queries.");
+            if (!OrderBy.IsEmpty || Skip > 0 || Take > 0 || WithTotalCount)
+                throw new InvalidQueryException("A grouped read is not ordered or paged; order its groups in memory.");
+            if (!GroupBy.SequenceEqual(Columns))
+                throw new InvalidQueryException("A grouped read selects exactly its group keys.");
+        }
 
         /// <summary>The root of a select batch, as opposed to a child collection query.</summary>
         public bool IsRoot => ParentQuery == null;

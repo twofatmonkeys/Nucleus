@@ -93,7 +93,7 @@ namespace TFM.Nucleus.Data.Schema
             var comparer = dialect.IdentifierComparer;
             var physicalTable = dialect.PhysicalName(table.TableName);
             var existing = dbIndexes
-                .Where(x => comparer.Equals(x.TableName, physicalTable))
+                .Where(x => comparer.Equals(x.TableName, physicalTable) && !IndexNaming.IsTableIndexName(x.IndexName))
                 .GroupBy(x => x.IndexName!, comparer)
                 .ToList();
             var required = table.IndexedColumns.ToList();
@@ -115,6 +115,57 @@ namespace TFM.Nucleus.Data.Schema
                     create.Add(col);
             }
             return (drop, create);
+        }
+
+        /// <summary>
+        /// Compares the [TableIndex] indexes a table declares against the NIX_ indexes the database
+        /// has. An index whose keys, key order or included columns differ is dropped and created
+        /// again; one no longer declared is dropped.
+        /// </summary>
+        public static (List<string> drop, List<TableIndexSchema> create) DiffTableIndexes(
+            TableSchema table, IEnumerable<CatalogIndex> dbIndexes, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            var physicalTable = dialect.PhysicalName(table.TableName);
+            var existing = dbIndexes
+                .Where(x => comparer.Equals(x.TableName, physicalTable) && IndexNaming.IsTableIndexName(x.IndexName))
+                .GroupBy(x => x.IndexName!, comparer)
+                .ToList();
+            List<string> drop = [];
+            List<TableIndexSchema> create = [];
+
+            foreach (var group in existing)
+            {
+                var index = table.TableIndexes.FirstOrDefault(i => comparer.Equals(PhysicalIndexName(table, i, dialect), group.Key));
+                if (index == null || !TableIndexMatches(index, group, dialect))
+                    drop.Add(group.Key);
+            }
+            foreach (var index in table.TableIndexes)
+            {
+                var name = PhysicalIndexName(table, index, dialect);
+                if (!existing.Any(g => comparer.Equals(g.Key, name)) || drop.Contains(name, comparer))
+                    create.Add(index);
+            }
+            return (drop, create);
+        }
+
+        /// <summary>The name the engine stores for a [TableIndex] index.</summary>
+        public static string PhysicalIndexName(TableSchema table, TableIndexSchema index, ISchemaDialect dialect) =>
+            dialect.PhysicalName(IndexNaming.TableIndexName(table, index));
+
+        // The keys in order, all ascending, then the included columns in any order; never unique
+        // or filtered.
+        private static bool TableIndexMatches(TableIndexSchema index, IEnumerable<CatalogIndex> columns, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            var rows = columns.ToList();
+            if (rows.Any(r => r.IsUnique || r.HasFilter || r.IsDescending))
+                return false;
+            var keys = rows.Where(r => !r.IsIncluded).OrderBy(r => r.KeyOrdinal).Select(r => r.ColumnName).ToList();
+            var included = rows.Where(r => r.IsIncluded).Select(r => r.ColumnName).ToList();
+            return keys.SequenceEqual(index.Keys.Select(k => dialect.PhysicalName(k.ColumnName)), comparer) &&
+                   included.Count == index.Include.Count &&
+                   index.Include.All(c => included.Contains(dialect.PhysicalName(c.ColumnName), comparer));
         }
 
         /// <summary>The name the engine stores for a column's index.</summary>

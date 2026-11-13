@@ -34,6 +34,8 @@
             cases["ddl.drop"] = () => SqlServerSchemaDialect.DropTableSql("tbl_X_20260101000000");
             cases["ddl.backfill"] = () => SqlServerSchemaDialect.BackfillTimestampSql("tbl_X");
             cases["ddl.dropindex"] = () => SqlServerSchemaDialect.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X");
+            var indexed = QueryGoldenCorpus.TableOf(typeof(TestIndexedWidget));
+            cases["ddl.tableindex"] = () => SqlServerSchemaDialect.TableIndexSql(indexed, indexed.TableIndexes[0]);
             cases["ddl.fulltext"] = () => string.Join("\n--\n",
                 SqlServerSchemaDialect.DropFullTextCatalogSql("ftc_tbl_X"),
                 SqlServerSchemaDialect.DropFullTextIndexSql("tbl_X"),

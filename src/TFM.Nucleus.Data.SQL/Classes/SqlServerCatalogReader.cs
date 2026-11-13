@@ -33,17 +33,18 @@ namespace TFM.Nucleus.Data.SQL
                 ? ColumnsSql
                 : new SchemaStatement($"{ColumnsSql} WHERE TABLE_NAME = @tableName", new ParameterCollection(new Parameter("tableName", tableName, false)));
 
-        // Reads the key columns of every Nucleus-named nonclustered index (NCI_* and UQ_*). Only
-        // those prefixes are returned so the schema compare and sync never see, drop or recreate
-        // an index a DBA added by hand. [_] is a literal underscore inside LIKE.
+        // Reads every Nucleus-named nonclustered index: the key columns of each column index
+        // (NCI_* and UQ_*), and the key and included columns of each [TableIndex] index (NIX_*).
+        // Only those prefixes are returned so the schema compare and sync never see, drop or
+        // recreate an index a DBA added by hand. [_] is a literal underscore inside LIKE.
         private const string ColumnIndexQuery = @"
-                SELECT t.name AS TableName, i.name AS IndexName, c.name AS ColumnName, i.is_unique, ic.is_descending_key, i.has_filter
+                SELECT t.name AS TableName, i.name AS IndexName, c.name AS ColumnName, i.is_unique, ic.is_descending_key, i.has_filter, ic.key_ordinal, ic.is_included_column
                 FROM sys.indexes i
                 JOIN sys.tables t ON t.object_id = i.object_id
                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-                WHERE i.type = 2 AND i.is_primary_key = 0 AND ic.is_included_column = 0
-                  AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')";
+                WHERE i.type = 2 AND i.is_primary_key = 0
+                  AND ((ic.is_included_column = 0 AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')) OR i.name LIKE 'NIX[_]%')";
 
         private const string FullTextIndexQuery = @"
                 SELECT t.name AS TableName, fc.name AS FullTextCatalogName, i.name AS UniqueIndexName, c.name AS ColumnName
@@ -245,6 +246,8 @@ namespace TFM.Nucleus.Data.SQL
             IsUnique = reader.GetBoolean(3),
             IsDescending = reader.GetBoolean(4),
             HasFilter = reader.GetBoolean(5),
+            KeyOrdinal = reader.GetByte(6),
+            IsIncluded = reader.GetBoolean(7),
         };
 
         private async ValueTask<IReadOnlyList<T>> ReadAll<T>(string query, Func<DbDataReader, T> read, bool async, CancellationToken cancellationToken)

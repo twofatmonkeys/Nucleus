@@ -30,6 +30,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public string Select(SelectQuery q, bool includeChildQueries)
         {
+            if (q.IsAggregate)
+                return AggregateSelect(q);
             if (q.IsEmptyProjection)
                 return "SELECT NULL LIMIT 0";
             var sb = new StringBuilder(RowsSelect(q));
@@ -44,6 +46,37 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 foreach (var link in q.LinkedQueries)
                     sb.Append($";{Environment.NewLine}").Append(link.BuildQuery());
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// A grouped read: the group keys, then each measure under its alias, grouped by the keys.
+        /// With no keys it is one row over every matching row.
+        /// </summary>
+        private string AggregateSelect(SelectQuery q)
+        {
+            q.EnsureAggregateShape();
+            var terms = q.GroupBy.Select(Quote).Concat(q.Measures.Select(MeasureTerm));
+            var sb = new StringBuilder($"SELECT {string.Join(", ", terms)} FROM {TableOf(q)}");
+            if (SelectWhere(q) is { } where)
+                sb.Append(' ').Append(where);
+            if (q.GroupBy.Count > 0)
+                sb.Append(" GROUP BY ").Append(string.Join(", ", q.GroupBy.Select(Quote)));
+            return sb.ToString();
+        }
+
+        private static string MeasureTerm(Measure m)
+        {
+            var column = m.Column == null ? null : Quote(m.Column.ColumnName);
+            var figure = m.Kind switch
+            {
+                MeasureKind.Count => "count(*)",
+                MeasureKind.CountDistinct => $"count(DISTINCT {column})",
+                MeasureKind.Min => $"min({column})",
+                MeasureKind.Max => $"max({column})",
+                MeasureKind.Sum => $"sum({column})",
+                _ => throw new NotSupportedException($"Measure {m.Kind} is not supported by the PostgreSQL provider."),
+            };
+            return $"{figure} AS {Quote(m.Alias)}";
         }
 
         private string RowsSelect(SelectQuery q)

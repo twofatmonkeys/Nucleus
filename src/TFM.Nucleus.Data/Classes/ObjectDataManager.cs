@@ -26,6 +26,14 @@ namespace TFM.Nucleus.Data
         IObjectDataAdaptor<T> Get<T>() where T : ICoreObject<T>, new();
 
         Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new();
+
+        /// <summary>
+        /// A read of rows rather than entities over the rows <paramref name="predicate"/> matches
+        /// (every row when null): chosen columns ordered and paged in the database, or groups with
+        /// counts, minimums, maximums and totals worked out there. See <see cref="RowQuery{T}"/>.
+        /// </summary>
+        RowQuery<T> Rows<T>(Expression<Func<T, bool>>? predicate = null) where T : ICoreObject<T>, new() =>
+            new(DataProvider, predicate);
     }
 
 
@@ -124,9 +132,14 @@ namespace TFM.Nucleus.Data
         }
 
         public IObjectDataAdaptor<T> Get<T>() where T : ICoreObject<T>, new()
-        { 
+        {
             return new ObjectDataAdaptor<T>(this);
         }
+
+        /// <inheritdoc cref="IObjectDataManager.Rows{T}(Expression{Func{T, bool}}?)"/>
+        /// <remarks>Reads through the provider registered for <typeparamref name="T"/>.</remarks>
+        public RowQuery<T> Rows<T>(Expression<Func<T, bool>>? predicate = null) where T : ICoreObject<T>, new() =>
+            new(ProviderFor<T>(), predicate);
 
         public INucleusCollection<T>? Save<T>(T obj) where T : ICoreObject<T>, new() => Save<T>([obj]);
 

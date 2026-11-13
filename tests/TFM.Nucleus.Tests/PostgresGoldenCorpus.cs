@@ -37,6 +37,8 @@ namespace TFM.Nucleus.Tests
             cases["ddl.backfill"] = () => dialect.BackfillTimestamp(widget).Text;
             cases["ddl.index"] = () => string.Join("\n--\n", unique.IndexedColumns.Select(c => dialect.CreateIndex(unique, c).Text));
             cases["ddl.dropindex"] = () => dialect.DropIndex(widget, "NCI_tbl_X_Name").Text;
+            var indexed = QueryGoldenCorpus.TableOf(typeof(TestIndexedWidget));
+            cases["ddl.tableindex"] = () => dialect.CreateTableIndex(indexed, indexed.TableIndexes[0]).Text;
             cases["ddl.fulltext"] = () => dialect.CreateFullTextIndex(allTypes, allTypes["Searchable"]);
             cases["ddl.notify"] = () => string.Join("\n--\n", dialect.CreateNotifyFunction(), dialect.CreateNotifyTrigger(widget));
 

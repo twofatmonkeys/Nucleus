@@ -34,6 +34,28 @@ namespace TFM.Nucleus.Tests
             return query.BuildQuery();
         }
 
+        /// <summary>A row read of chosen columns, as RowQuery builds one: no child queries.</summary>
+        private string Rows<T>(Action<SelectQuery> configure) where T : ICoreObject
+        {
+            var query = new SelectQuery(renderer, Table<T>(), AnyTable);
+            query.LinkedQueries.Clear();
+            configure(query);
+            return query.BuildQuery();
+        }
+
+        /// <summary>A grouped row read over <paramref name="keys"/> with the measures given.</summary>
+        private string Grouped<T>(string[] keys, Action<SelectQuery>? configure, params (MeasureKind Kind, string? Column, string Alias)[] measures) where T : ICoreObject
+        {
+            var table = Table<T>();
+            var query = new SelectQuery(renderer, table, AnyTable);
+            query.LinkedQueries.Clear();
+            query.Columns = [.. keys];
+            query.GroupBy = [.. keys];
+            query.Measures = [.. measures.Select(m => new Measure(m.Kind, m.Column == null ? null : table[m.Column], m.Alias))];
+            configure?.Invoke(query);
+            return query.BuildQuery();
+        }
+
         private string Where<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject =>
             new SelectQuery(renderer, Table<T>(), AnyTable).Parse(predicate.Body).BuildQuery();
 
@@ -122,6 +144,21 @@ namespace TFM.Nucleus.Tests
                 ["select.soft.children"] = () => ParentWithChild<TestSoftWidget, TestSoftChild>(p => p.Where.And("Name", "a")).BuildQuery(),
                 ["select.soft.children.includedeleted"] = () => ParentWithChild<TestSoftWidget, TestSoftChild>(p => p.IncludeDeleted = true).BuildQuery(),
                 ["select.alltypes"] = () => Select<TestAllTypesWidget>(),
+
+                // ---- Row reads: chosen columns, ordered and paged; groups with measures
+                ["rows.columns"] = () => Rows<TestWidget>(q => q.Columns = ["Quantity", "Name"]),
+                ["rows.columns.top.ordered"] = () => Rows<TestWidget>(q => { q.Columns = ["Name"]; q.Take = 5; q.AddOrderBy("Quantity", descending: true); q.AddOrderBy("ID"); }),
+                ["rows.columns.paged.count"] = () => Rows<TestWidget>(q => { q.Columns = ["Name"]; q.Skip = 10; q.Take = 5; q.WithTotalCount = true; q.AddOrderBy("Name"); q.Where.And("Quantity", 3); }),
+                ["rows.columns.soft"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["Name"]; q.Where.And("Name", "a"); }),
+                ["rows.grouped"] = () => Grouped<TestWidget>(["Name"], q => q.Where.And(new Parameter("Quantity", 1, Operator.GreaterThan)),
+                    (MeasureKind.Count, null, "Rows"),
+                    (MeasureKind.CountDistinct, "Quantity", "Kinds"),
+                    (MeasureKind.Min, "Quantity", "Least"),
+                    (MeasureKind.Max, "Quantity", "Most"),
+                    (MeasureKind.Sum, "Quantity", "Total")),
+                ["rows.grouped.keys"] = () => Grouped<TestWidget>(["Name", "Quantity"], null, (MeasureKind.Count, null, "Rows")),
+                ["rows.grouped.total"] = () => Grouped<TestWidget>([], q => q.Where.And("Name", "a"), (MeasureKind.Count, null, "Rows")),
+                ["rows.grouped.soft"] = () => Grouped<TestSoftWidget>(["Name"], null, (MeasureKind.Count, null, "Rows")),
 
                 // ---- Terms
                 ["term.equals"] = () => Term(new Parameter("Name", "a")),

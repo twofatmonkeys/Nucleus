@@ -79,6 +79,14 @@ namespace TFM.Nucleus.Data.PostgreSQL
             }
         }
 
+        protected override void ReadResultRow(DbDataReader reader, object?[] row, System.Collections.Generic.IReadOnlyList<ResultColumn> columns)
+        {
+            reader.GetValues(row!);
+            for (var i = 0; i < row.Length && i < columns.Count; i++)
+                if (columns[i].Column is { } column)
+                    row[i] = PostgresTypes.FromDb(row[i], column.DataType);
+        }
+
         protected override object? ReadOutputValue(object? value, IDataColumnSchema? column) =>
             column == null ? value : PostgresTypes.FromDb(value, column.DataType);
 

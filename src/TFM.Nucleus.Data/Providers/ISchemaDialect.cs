@@ -58,6 +58,13 @@ namespace TFM.Nucleus.Data.Providers
 
         SchemaStatement DropIndex(TableSchema table, string physicalIndexName);
 
+        /// <summary>
+        /// Creates a [TableIndex] index: its keys in order, ascending, carrying its included
+        /// columns. A dialect that does not implement this refuses entities that declare one.
+        /// </summary>
+        SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index) =>
+            throw new NotSupportedException($"{GetType().Name} does not support [TableIndex] indexes.");
+
         /// <summary>True when building a unique index failed because existing rows hold duplicate keys.</summary>
         bool IsDuplicateKeyOnIndexBuild(Exception exception);
 

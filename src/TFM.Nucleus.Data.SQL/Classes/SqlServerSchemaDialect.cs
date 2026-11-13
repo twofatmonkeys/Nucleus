@@ -57,6 +57,8 @@ namespace TFM.Nucleus.Data.SQL
 
         public SchemaStatement DropIndex(TableSchema table, string physicalIndexName) => DropColumnIndexSql(physicalIndexName, table.TableName);
 
+        public SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index) => TableIndexSql(table, index);
+
         // SQL Server error 1505: CREATE UNIQUE INDEX terminated because a duplicate key was found.
         public bool IsDuplicateKeyOnIndexBuild(Exception exception)
         {
@@ -145,6 +147,17 @@ namespace TFM.Nucleus.Data.SQL
                        "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
             return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
                    $"([{col.ColumnName}] {sortOrder}) " +
+                   "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
+                   "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+        }
+
+        /// <summary>The CREATE INDEX statement for a [TableIndex] index: its keys ascending, then its included columns.</summary>
+        internal static string TableIndexSql(TableSchema table, TableIndexSchema index)
+        {
+            var name = IndexNaming.TableIndexName(table, index);
+            var keys = string.Join(", ", index.Keys.Select(k => $"[{k.ColumnName}] ASC"));
+            var include = index.Include.Count == 0 ? "" : $" INCLUDE ({string.Join(", ", index.Include.Select(c => $"[{c.ColumnName}]"))})";
+            return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]({keys}){include} " +
                    "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
                    "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
         }

@@ -17,6 +17,27 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresEnumWhereIntegrationTests(PostgresFixture fixture) : EnumWhereIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresRowQueryIntegrationTests(PostgresFixture fixture) : RowQueryIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresTableIndexIntegrationTests(PostgresFixture fixture) : TableIndexIntegrationTests(fixture)
+    {
+        protected override string DropIndexSql(string table, string index) => $"DROP INDEX \"public\".\"{index}\"";
+
+        // Positions past indnkeyatts are the INCLUDE columns.
+        protected override string IndexColumnsSql(string table, string index) =>
+            "SELECT string_agg(CASE WHEN k.n > ix.indnkeyatts THEN '+' ELSE '' END || a.attname, ',' ORDER BY k.n > ix.indnkeyatts, CASE WHEN k.n > ix.indnkeyatts THEN 0 ELSE k.n END, a.attname) " +
+            "FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid " +
+            "CROSS JOIN LATERAL unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, n) " +
+            "JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum " +
+            $"WHERE i.relname = '{index}'";
+
+        protected override Task ExecuteAsync(string sql) => PostgresScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => PostgresScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresExcludeIntegrationTests(PostgresFixture fixture) : ExcludeIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

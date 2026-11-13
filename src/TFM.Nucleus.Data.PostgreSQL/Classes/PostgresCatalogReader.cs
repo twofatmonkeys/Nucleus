@@ -26,21 +26,23 @@ namespace TFM.Nucleus.Data.PostgreSQL
             $"FROM information_schema.columns WHERE table_schema = {Literal(schema)}" +
             (tableName == null ? "" : $" AND table_name = {Literal(tableName)}");
 
-        // One row per key column of every index carrying a Nucleus prefix (NCI_ or UQ_), so a
-        // stale multi-column index shows as more than one row and gets rebuilt. An expression
-        // index has no key column and never matches. indkey keeps its 0-based subscripts when
-        // cast to an array, so the 1-based column number counts from the array's lower bound.
+        // One row per column of every index carrying a Nucleus prefix (NCI_, UQ_ or NIX_), so a
+        // stale multi-column column index shows as more than one row and gets rebuilt. An
+        // expression index has no key column and never matches. indkey keeps its 0-based
+        // subscripts when cast to an array, so the 1-based column number counts from the array's
+        // lower bound; positions past indnkeyatts are INCLUDE columns, reported as ordinal 0.
         private static string IndexQuery(string schema) =>
             "SELECT t.relname, i.relname, a.attname, ix.indisunique, " +
             "coalesce(pg_index_column_has_property(i.oid, array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1, 'desc'), false), " +
-            "ix.indpred IS NOT NULL " +
+            "ix.indpred IS NOT NULL, " +
+            "array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1 AS position, ix.indnkeyatts " +
             "FROM pg_index ix " +
             "JOIN pg_class i ON i.oid = ix.indexrelid " +
             "JOIN pg_class t ON t.oid = ix.indrelid " +
             "JOIN pg_namespace n ON n.oid = t.relnamespace " +
             "JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) " +
             $"WHERE n.nspname = {Literal(schema)} AND NOT ix.indisprimary " +
-            @"AND (i.relname LIKE 'NCI\_%' OR i.relname LIKE 'UQ\_%')";
+            @"AND (i.relname LIKE 'NCI\_%' OR i.relname LIKE 'UQ\_%' OR i.relname LIKE 'NIX\_%')";
 
         public async ValueTask<bool> DatabaseExistsAsync(bool async, CancellationToken cancellationToken)
         {
@@ -98,6 +100,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 IsUnique = r.GetBoolean(3),
                 IsDescending = r.GetBoolean(4),
                 HasFilter = r.GetBoolean(5),
+                KeyOrdinal = r.GetInt32(6) <= r.GetInt16(7) ? r.GetInt32(6) : 0,
+                IsIncluded = r.GetInt32(6) > r.GetInt16(7),
             }, async, cancellationToken);
 
         /// <summary>The (table, index) names of every full-text index in the schema.</summary>

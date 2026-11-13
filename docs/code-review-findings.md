@@ -114,10 +114,34 @@ same store deletes different rows for such a page id on the two engines.
 ### Pruning versions still loads their content
 
 `NucleusBinderyStore.PruneVersionsAsync` loads every version of a page, JSON included, to order
-them and choose which to delete. Ordering happens in memory because the provider translates none,
-so avoiding the load needs column projection, which Nucleus does not have.
+them and choose which to delete. Ordering happens in memory because the provider translates none.
+Row reads (November 2026, below) now give it a way out: `Rows<BinderyPageVersion>(...)
+.Select(v => v.ID, ...).OrderByDescending(...)` reads only the ids and the ordering columns. The store
+has not been changed to use them yet.
 
 ## Fixed
+
+### No way to choose columns, order, page or group in the database (November 2026)
+
+The LINQ adaptor translates one `Where` and nothing else, and `CountAsync` counted by loading
+every row, so any report over a large table read every column of every matching row and grouped
+in memory. A consumer's admin page that summarised a week of an activity table (about 1M rows,
+840 MB of long text) took 277 seconds to render; the same summary as one grouped query took 0.4
+seconds. Column indexes were single-column only, so such a read could not be covered either.
+
+`IObjectDataManager.Rows<T>(predicate)` (a default interface member, so other implementations
+still compile) returns a `RowQuery<T>`: chosen columns, ordered and paged in the database, or
+groups with `Count`, `CountDistinct`, `Min`, `Max` and `Sum`, read as `ResultRow`s rather than
+entities so a partial row can never be saved over a full one. It is built on `SelectQuery` (new
+`GroupBy`, `Measures` and `ResultColumns`), so the filter, the live-row filter and the paging
+rules are the ones every read already uses; each renderer adds only the grouped select, and
+`DbDataContext` labels and converts a row read by its own result columns
+(`ReadResultRow`, which the PostgreSQL context overrides to convert dates as `ReadRow` does).
+`[TableIndex(name, keys..., Include = [...])]` declares an index over several columns, `NIX_<table>_<name>`,
+compared (keys in order, included columns as a set) and synced with the column indexes, never
+rebuilding the table. Cover: the `rows.*` and `ddl.tableindex` goldens on both providers,
+`TableIndexTests` (unit), and `RowQueryIntegrationTests` and `TableIndexIntegrationTests` on
+both providers.
 
 ### Schema updates rebuilt large tables and timed out (November 2026)
 

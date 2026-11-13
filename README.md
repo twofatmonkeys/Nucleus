@@ -345,7 +345,7 @@ The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `
 
 `Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
 
-On initialise the provider compares the `NCI_*` and `UQ_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
+On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
 
 ### Class-level behaviour
 
@@ -356,8 +356,18 @@ On initialise the provider compares the `NCI_*` and `UQ_*` indexes in the databa
 | `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless `IncludeDeleted` is set on the query. |
 | `[SuppressDB]` | Excludes the type from schema management entirely. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
+| `[TableIndex(name, keys..., Include = [...])]` | An index over several columns, named `NIX_<table>_<name>`. Repeat it for more than one. See below. |
 
 Deletion is opt-in. A type without `[Deletable]` cannot be deleted and any attempt throws.
+
+`[TableIndex]` declares an index over several columns, by property name:
+
+```csharp
+[TableIndex("KindTime", nameof(Kind), nameof(OccurredUtc), Include = [nameof(Subject), nameof(SessionId)])]
+public class Visit : CoreObject<Visit> { ... }
+```
+
+The keys order the index, first to last, each ascending, so a read that filters on the first key, or on the first and a range of the second, finds its rows without scanning the table. The included columns are carried in the index without ordering it, so a read that needs only key and included columns (a [row read](#row-reads) of them, say) is answered from the index alone. Keys cannot be long text (`DataLength = -1`); included columns can. A name used twice on the type, a property that is not a stored column, a column named twice or a long text key fails when the schema is built. The index is created on SQL Server as a nonclustered index and on PostgreSQL (11 or later) with `INCLUDE`; it is compared and synced like a column index, so changing its keys or included columns drops and creates it again, and removing the attribute drops it. Creating one over a large table blocks writes to the table while it builds, and the time it took is logged.
 
 ### Relationships
 
@@ -448,7 +458,38 @@ Override these on an entity to run logic at defined points:
 
 ## Async query operators
 
-`ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. Order, page and project in memory, or use `ToPagedResultAsync`. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
+`ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. To choose columns, order, page or group in the database, use a [row read](#row-reads); otherwise order, page and project in memory, or use `ToPagedResultAsync`. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
+
+## Row reads
+
+`IObjectDataManager.Rows<T>(predicate)` reads rows of values rather than entities, over the rows the predicate matches (the same single `Where` a load translates; every row when it is null). Only what is asked for is read, so a long text column that is never selected is never transferred, and nothing is materialised as an entity.
+
+```csharp
+// The newest 100 visits, two columns each, and how many match in all: one round trip.
+var page = await data.Rows<Visit>(v => v.OccurredUtc >= from)
+    .Select(v => v.OccurredUtc, v => v.Path)
+    .OrderByDescending(v => v.OccurredUtc)
+    .ToPageAsync(skip: 0, take: 100, cancellationToken);
+
+// One row per kind and subject, with figures worked out in the database.
+var groups = await data.Rows<Visit>(v => v.OccurredUtc >= from)
+    .GroupBy(v => v.Kind, v => v.Subject)
+    .Count("Visits")
+    .CountDistinct(v => v.SessionId, "Sessions")
+    .Max(v => v.OccurredUtc, "Last")
+    .ToListAsync(cancellationToken);
+
+foreach (var g in groups)
+    Console.WriteLine($"{g.Get<VisitKind>("Kind")} {g.Get<string>("Subject")}: {g.Get<long>("Visits")} by {g.Get<long>("Sessions")}");
+```
+
+- **Columns:** `Select(...)` names the properties each row returns. `OrderBy`, `OrderByDescending`, `ThenBy` and `ThenByDescending` order the rows in the database.
+- **Groups:** `GroupBy(...)` returns one row per distinct combination of the keys, each named by its property, with the measures asked for: `Count(alias)`, `CountDistinct(property, alias)`, `Min`, `Max` and `Sum`. Measures without `GroupBy` are one row over every match. A grouped read is not ordered or paged (order its groups in memory) and does not `Select` as well. A measure's alias is a plain identifier (letters, digits, underscores, starting with a letter or underscore) and must not repeat a key's name.
+- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; the read must be ordered and not grouped) and `CountAsync` (a real `COUNT` in the database, which the LINQ `CountAsync` is not: that one loads every row).
+- **Values:** `ResultRow.Get<T>(name)` converts each value: a database null is the type's default, an integer becomes an enum, a number becomes the numeric type asked for. A count is a `long`; a minimum or maximum has the column's type (a date stays a `DateTimeOffset` on every engine); a sum is the number the engine returns. `row[name]` is the value as read.
+- **Rules:** soft-deleted rows are left out as in any read. Child collections are never read. The rows cannot be saved: a partial entity would write nulls over the columns it never read. A predicate that matches nothing returns no rows without a round trip.
+
+A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the columns a row read needs lets the database answer it from the index alone.
 
 ## Registration reference
 
@@ -529,6 +570,16 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 ```
 
 ## Behaviour changes
+
+These came in with row reads and `[TableIndex]`.
+
+- **Indexes named `NIX_*` are managed.** The schema check and sync now read, create and drop
+  `NIX_<table>_<name>` indexes as well as `NCI_*` and `UQ_*`, so a hand-made index whose name
+  starts `NIX_` on a Nucleus table is dropped unless an entity declares it. The prefix was chosen
+  to be unlike the common `IX_`, which stays untouched like every other name.
+- **Nothing else changes for existing code.** `Rows<T>` is new, the LINQ adaptor still translates
+  only `Where`, and its `CountAsync` still loads the rows it counts; use `Rows<T>(...).CountAsync()`
+  for a count in the database.
 
 These came in with the fix for schema updates on large tables.
 

@@ -146,6 +146,14 @@ $nucleus$",
         public SchemaStatement DropIndex(TableSchema table, string physicalIndexName) =>
             $"DROP INDEX {Quote(Schema)}.{Quote(physicalIndexName)}";
 
+        /// <summary>A [TableIndex] index: its keys ascending, then its included columns (PostgreSQL 11 and later).</summary>
+        public SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index)
+        {
+            var keys = string.Join(", ", index.Keys.Select(k => $"{Quote(k.ColumnName)} ASC"));
+            var include = index.Include.Count == 0 ? "" : $" INCLUDE ({string.Join(", ", index.Include.Select(c => Quote(c.ColumnName)))})";
+            return $"CREATE INDEX {Quote(IndexNaming.TableIndexName(table, index))} ON {TableName(table.TableName)} ({keys}){include}";
+        }
+
         public bool IsDuplicateKeyOnIndexBuild(Exception exception) => PostgresErrors.TryGetUniqueViolation(exception, out _);
 
         // ---- Full-text search and change notification objects.

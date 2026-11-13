@@ -110,6 +110,13 @@ namespace TFM.Nucleus.Data.Schema
                             table.TableName, string.Join(", ", create.Select(c => SchemaComparer.PhysicalIndexName(table, c, Dialect))), string.Join(", ", drop));
                         indexesMatch = false;
                     }
+                    var (dropTable, createTable) = SchemaComparer.DiffTableIndexes(table, snapshot.Indexes, Dialect);
+                    if (dropTable.Count > 0 || createTable.Count > 0)
+                    {
+                        _logger?.LogWarning("Table index schema is not current for table: {tablename}. Missing or changed: {missing}. Unexpected: {unexpected}",
+                            table.TableName, string.Join(", ", createTable.Select(i => SchemaComparer.PhysicalIndexName(table, i, Dialect))), string.Join(", ", dropTable));
+                        indexesMatch = false;
+                    }
                 }
                 if (Dialect.Extras is { } extras && !await extras.AreCurrentAsync(tables, async, cancellationToken))
                     indexesMatch = false;
@@ -279,6 +286,23 @@ namespace TFM.Nucleus.Data.Schema
                     {
                         throw DuplicateKeyFailure(table, col, ex);
                     }
+                }
+                var (dropTable, createTable) = SchemaComparer.DiffTableIndexes(table, dbIndexes, Dialect);
+                foreach (var indexName in dropTable)
+                {
+                    _logger?.LogInformation("Dropping table index {index} on table {tablename}.", indexName, table.TableName);
+                    await _store.Catalog.ExecuteAsync(Dialect.DropIndex(table, indexName), async, cancellationToken);
+                }
+                foreach (var index in createTable)
+                {
+                    // Building an index over a large table takes a while and blocks writes to it
+                    // meanwhile, so the time it took is logged: a slow start can then be explained.
+                    var name = SchemaComparer.PhysicalIndexName(table, index, Dialect);
+                    _logger?.LogInformation("Creating table index {index} on table {tablename}.", name, table.TableName);
+                    var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                    await _store.Catalog.ExecuteAsync(Dialect.CreateTableIndex(table, index), async, cancellationToken);
+                    _logger?.LogInformation("Created table index {index} on table {tablename} in {seconds:0.0} s.", name, table.TableName,
+                        System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
                 }
             }
         }

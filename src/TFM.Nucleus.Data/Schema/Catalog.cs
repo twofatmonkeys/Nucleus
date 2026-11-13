@@ -14,7 +14,12 @@ namespace TFM.Nucleus.Data.Schema
         public bool IsNullable = true;
     }
 
-    /// <summary>One key column of a Nucleus-named index as a provider's catalog reports it.</summary>
+    /// <summary>
+    /// One column of a Nucleus-named index as a provider's catalog reports it. A column index
+    /// has one key column; a [TableIndex] index has its keys, numbered by
+    /// <see cref="KeyOrdinal"/> from 1, and its included columns, which have
+    /// <see cref="IsIncluded"/> set.
+    /// </summary>
     public sealed class CatalogIndex
     {
         public string? TableName;
@@ -23,6 +28,12 @@ namespace TFM.Nucleus.Data.Schema
         public bool IsUnique;
         public bool IsDescending;
         public bool HasFilter;
+
+        /// <summary>The key column's place in the index, from 1; 0 for an included column.</summary>
+        public int KeyOrdinal;
+
+        /// <summary>The column is carried by the index without ordering it.</summary>
+        public bool IsIncluded;
     }
 
     /// <summary>What a provider found in the database: table names, columns and Nucleus-named indexes.</summary>

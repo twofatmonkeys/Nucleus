@@ -29,6 +29,8 @@ namespace TFM.Nucleus.Data.SQL
 
         public string Select(SelectQuery q, bool includeChildQueries)
         {
+            if (q.IsAggregate)
+                return AggregateSelect(q);
             if (q.IsEmptyProjection)
                 return ("SELECT TOP 0 NULL");
             var sb = q.IsPaged ? PagedSelect(q) : PlainSelect(q);
@@ -44,6 +46,37 @@ namespace TFM.Nucleus.Data.SQL
                 foreach (var link in q.LinkedQueries)
                     sb.Append($"; {Environment.NewLine}").Append(link.BuildQuery());
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// A grouped read: the group keys, then each measure under its alias, grouped by the keys.
+        /// With no keys it is one row over every matching row.
+        /// </summary>
+        private string AggregateSelect(SelectQuery q)
+        {
+            q.EnsureAggregateShape();
+            var terms = q.GroupBy.Select(c => $"[{c}]").Concat(q.Measures.Select(MeasureTerm));
+            var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{NoLock(q)}");
+            if (SelectWhere(q) is { } where)
+                sb.Append(' ').Append(where);
+            if (q.GroupBy.Count > 0)
+                sb.Append(" GROUP BY ").Append(string.Join(" ,", q.GroupBy.Select(c => $"[{c}]")));
+            return sb.ToString();
+        }
+
+        private static string MeasureTerm(Measure m)
+        {
+            var column = m.Column == null ? null : $"[{m.Column.ColumnName}]";
+            var figure = m.Kind switch
+            {
+                MeasureKind.Count => "COUNT_BIG(*)",
+                MeasureKind.CountDistinct => $"COUNT_BIG(DISTINCT {column})",
+                MeasureKind.Min => $"MIN({column})",
+                MeasureKind.Max => $"MAX({column})",
+                MeasureKind.Sum => $"SUM({column})",
+                _ => throw new NotSupportedException($"Measure {m.Kind} is not supported by the SQL Server provider."),
+            };
+            return $"{figure} AS [{m.Alias}]";
         }
 
         private static string? OrderByClause(OrderByCollection orderBy)

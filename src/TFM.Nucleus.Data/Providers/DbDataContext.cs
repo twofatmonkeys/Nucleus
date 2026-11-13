@@ -101,6 +101,27 @@ namespace TFM.Nucleus.Data.Providers
         protected virtual void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema) => reader.GetValues(row!);
 
         /// <summary>
+        /// Copies the current row of a row read into <paramref name="row"/>: value i is
+        /// <paramref name="columns"/>[i], converted by its column where it has one, as
+        /// <see cref="ReadRow"/> converts a loaded value. The default keeps the values as read.
+        /// </summary>
+        protected virtual void ReadResultRow(DbDataReader reader, object?[] row, IReadOnlyList<ResultColumn> columns) => reader.GetValues(row!);
+
+        /// <summary>The names a read's rows are labelled with: its result columns on a row read, otherwise the table's properties.</summary>
+        private static string[] RowNames(Query query) => query is SelectQuery { ResultColumns: { } columns }
+            ? [.. columns.Select(c => c.Name)]
+            : [.. query.TableSchema!.Columns.Select(x => x.PropertySchema.Name)];
+
+        /// <summary>Reads the current row as <see cref="RowNames"/> labels it.</summary>
+        private void ReadAnyRow(DbDataReader reader, object?[] row, Query query)
+        {
+            if (query is SelectQuery { ResultColumns: { } columns })
+                ReadResultRow(reader, row, columns);
+            else
+                ReadRow(reader, row, query.TableSchema);
+        }
+
+        /// <summary>
         /// A value a write returned for <paramref name="column"/>, as the column's property expects
         /// it, as <see cref="ReadRow"/> converts a loaded value. The default keeps it as read.
         /// </summary>
@@ -561,14 +582,16 @@ namespace TFM.Nucleus.Data.Providers
                 command.CommandText = dbQuery.BuildQuery();
                 PrepareCommand(command);
                 BindParameters(command, dbQuery.AllQueryParameters);
-                var dataSet = DataSet.Initialize(dbQuery.TableSchema);
+                var dataSet = dbQuery is SelectQuery { ResultColumns: not null }
+                    ? DataSet.Initialize(dbQuery.TableName ?? "", RowNames(dbQuery))
+                    : DataSet.Initialize(dbQuery.TableSchema);
                 using var reader = async
                     ? await command.ExecuteReaderAsync(CommandBehavior.CloseConnection, token)
                     : command.ExecuteReader(CommandBehavior.CloseConnection);
                 if (reader.HasRows)
                 {
                     while (async ? await reader.ReadAsync(token) : reader.Read())
-                        ReadRow(reader, dataSet.GetNewRow(), dbQuery.TableSchema);
+                        ReadAnyRow(reader, dataSet.GetNewRow(), dbQuery);
                 }
                 if (dbQuery is SelectQuery { WithTotalCount: true } &&
                     (async ? await reader.NextResultAsync(token) : reader.NextResult()) &&
@@ -619,7 +642,7 @@ namespace TFM.Nucleus.Data.Providers
             PrepareCommand(command);
             BindParameters(command, dbQuery.AllQueryParameters);
 
-            var row = new StreamingRow([.. dbQuery.TableSchema!.Columns.Select(x => x.PropertySchema.Name)]);
+            var row = new StreamingRow(RowNames(dbQuery));
 
             DbDataReader? reader = null;
             try
@@ -637,7 +660,7 @@ namespace TFM.Nucleus.Data.Providers
                 {
                     while (await reader.ReadAsync(cancellationToken))
                     {
-                        ReadRow(reader, row.Values, dbQuery.TableSchema);
+                        ReadAnyRow(reader, row.Values, dbQuery);
                         yield return row;
                     }
                 }

@@ -17,6 +17,27 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerEnumWhereIntegrationTests(SqlServerFixture fixture) : EnumWhereIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerRowQueryIntegrationTests(SqlServerFixture fixture) : RowQueryIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerTableIndexIntegrationTests(SqlServerFixture fixture) : TableIndexIntegrationTests(fixture)
+    {
+        protected override string DropIndexSql(string table, string index) => $"DROP INDEX [{index}] ON [dbo].[{table}]";
+
+        // FOR XML PATH rather than STRING_AGG, which the test database's compatibility level lacks.
+        protected override string IndexColumnsSql(string table, string index) =>
+            "SELECT STUFF((SELECT ',' + CASE WHEN ic.is_included_column = 1 THEN '+' ELSE '' END + c.name " +
+            "FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id " +
+            "JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id " +
+            $"WHERE i.object_id = OBJECT_ID(N'dbo.{table}') AND i.name = N'{index}' " +
+            "ORDER BY ic.is_included_column, ic.key_ordinal, c.name FOR XML PATH('')), 1, 1, '')";
+
+        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerExcludeIntegrationTests(SqlServerFixture fixture) : ExcludeIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

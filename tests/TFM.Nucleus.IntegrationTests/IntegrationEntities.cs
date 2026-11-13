@@ -180,6 +180,40 @@ namespace TFM.Nucleus.IntegrationTests
         Standard = 1,
         Premium = 2,
     }
+
+    /// <summary>
+    /// Rows for the row read suite: a group key of each kind (text, enum, nullable enum, Guid),
+    /// a date for the minimum and maximum, a number for the total and a long text column that a
+    /// row read can leave unread. Soft deleted, so the live-row filter is covered too.
+    /// </summary>
+    [Deletable(DeleteBehavior.Soft)]
+    [TableIndex("BatchAt", nameof(Batch), nameof(At), Include = [nameof(Name), nameof(Amount), nameof(Notes)])]
+    public class IntRowItem : CoreObject<IntRowItem>
+    {
+        [DatabaseColumn(Indexed = true)]
+        public string? Batch { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public IntWidgetKind Kind { get => GetValue<IntWidgetKind>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public IntWidgetKind? OptionalKind { get => GetValue<IntWidgetKind?>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public Guid Session { get => GetValue<Guid>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public DateTimeOffset At { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Amount { get => GetValue<int>(); set => SetValue(value); }
+
+        [DatabaseColumn(DataType.Unicode, -1)]
+        public string? Notes { get => GetValue<string>(); set => SetValue(value); }
+    }
 }
 
 namespace TFM.Nucleus.IntegrationTests

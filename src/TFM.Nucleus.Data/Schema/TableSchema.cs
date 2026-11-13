@@ -44,6 +44,9 @@ namespace TFM.Nucleus.Data.Schema
         /// <summary>The columns that carry an index of their own.</summary>
         public IEnumerable<ColumnSchema> IndexedColumns => Columns.Where(c => c.HasColumnIndex);
 
+        /// <summary>The indexes over several columns the type declares with [TableIndex], in declaration order.</summary>
+        public IReadOnlyList<TableIndexSchema> TableIndexes { get; }
+
         /// <summary>The logical table name of an entity type: tbl_ and its full name, separators replaced.</summary>
         public static string LogicalName(IObjectSchema objectSchema) =>
             $"tbl_{objectSchema.FullName.Replace('.', '_').Replace('+', '_')}";
@@ -76,6 +79,39 @@ namespace TFM.Nucleus.Data.Schema
                     "The primary key is reserved for the ID column CoreObject provides.");
             IdentityColumn = pkColumns[0];
             EnsureColumnNamesAreUsable(objectSchema);
+            TableIndexes = BuildTableIndexes(objectSchema);
+        }
+
+        /// <summary>
+        /// The [TableIndex] declarations as indexes over this table's columns. A name used twice,
+        /// a property that is not a stored column, a column named twice in one index, or a long
+        /// text key fails here at schema build, not at the first CREATE INDEX.
+        /// </summary>
+        private List<TableIndexSchema> BuildTableIndexes(IObjectSchema objectSchema)
+        {
+            var indexes = new List<TableIndexSchema>();
+            var attributes = objectSchema.Type.GetCustomAttributes(typeof(TableIndexAttribute), inherit: true).Cast<TableIndexAttribute>();
+            foreach (var attribute in attributes.OrderBy(a => a.Name, StringComparer.Ordinal))
+            {
+                string Where() => $"[TableIndex(\"{attribute.Name}\")] on '{objectSchema.FullName}'";
+                if (!TableIndexSchema.IsName(attribute.Name))
+                    throw new InvalidOperationException($"{Where()} needs a name of letters, digits and underscores.");
+                if (indexes.Any(i => i.Name.Equals(attribute.Name, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException($"{Where()} uses a name another [TableIndex] on the type already has.");
+                if (attribute.Keys.Length == 0)
+                    throw new InvalidOperationException($"{Where()} needs at least one key property.");
+                ColumnSchema Column(string property) => FindByPropertyName(property)
+                    ?? throw new InvalidOperationException($"{Where()} names '{property}', which is not a stored column of the type.");
+                var keys = attribute.Keys.Select(Column).ToList();
+                var include = (attribute.Include ?? []).Select(Column).ToList();
+                var all = keys.Concat(include).ToList();
+                if (all.Distinct().Count() != all.Count)
+                    throw new InvalidOperationException($"{Where()} names a column more than once.");
+                if (keys.FirstOrDefault(k => k.IsMax) is { } longKey)
+                    throw new InvalidOperationException($"{Where()} keys on '{longKey.PropertyName}', a long text column, which cannot be an index key; include it instead.");
+                indexes.Add(new TableIndexSchema(attribute.Name, keys, include));
+            }
+            return indexes;
         }
 
         /// <summary>
@@ -161,8 +197,47 @@ namespace TFM.Nucleus.Data.Schema
         public const string IndexPrefix = "NCI_";
         public const string UniqueIndexPrefix = "UQ_";
 
+        /// <summary>The prefix of an index over several columns declared with [TableIndex].</summary>
+        public const string TableIndexPrefix = "NIX_";
+
         /// <summary>The logical name of a column's index: the prefix, the table and the column.</summary>
         public static string ColumnIndexName(TableSchema table, ColumnSchema column) =>
             $"{(column.Unique ? UniqueIndexPrefix : IndexPrefix)}{table.TableName}_{column.ColumnName}";
+
+        /// <summary>The logical name of a [TableIndex] index: the prefix, the table and the index's own name.</summary>
+        public static string TableIndexName(TableSchema table, TableIndexSchema index) =>
+            $"{TableIndexPrefix}{table.TableName}_{index.Name}";
+
+        /// <summary>True when a stored index name is one of the [TableIndex] indexes Nucleus manages.</summary>
+        public static bool IsTableIndexName(string? indexName) =>
+            indexName != null && indexName.StartsWith(TableIndexPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// An index over several columns of one table, from a [TableIndex] declaration: the key
+    /// columns in order, then the columns it carries without ordering by them.
+    /// </summary>
+    public sealed class TableIndexSchema
+    {
+        private static readonly System.Text.RegularExpressions.Regex NamePattern = new("^[A-Za-z0-9_]{1,100}$");
+
+        public TableIndexSchema(string name, IReadOnlyList<ColumnSchema> keys, IReadOnlyList<ColumnSchema> include)
+        {
+            Name = name;
+            Keys = keys;
+            Include = include;
+        }
+
+        /// <summary>The index's own name, as declared.</summary>
+        public string Name { get; }
+
+        /// <summary>The columns the index is ordered by, first to last, each ascending.</summary>
+        public IReadOnlyList<ColumnSchema> Keys { get; }
+
+        /// <summary>The columns carried in the index, in declaration order.</summary>
+        public IReadOnlyList<ColumnSchema> Include { get; }
+
+        /// <summary>True when <paramref name="name"/> can be an index's own name.</summary>
+        public static bool IsName(string? name) => name != null && NamePattern.IsMatch(name);
     }
 }
