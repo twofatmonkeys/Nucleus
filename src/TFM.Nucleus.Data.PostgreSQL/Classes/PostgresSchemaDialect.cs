@@ -114,6 +114,38 @@ $nucleus$",
             ];
         }
 
+        /// <summary>
+        /// Renames the legacy table, drops its change notification trigger (it notifies the old
+        /// table's channel; the extras sync creates the new one), and renames the primary key
+        /// (which renames its constraint) and every index the entity would have under the old name
+        /// to the name it has under the new one. Each rename is IF EXISTS, so an index the old
+        /// table never had is skipped and created by the index sync, and an index the entity no
+        /// longer declares keeps its old name until the sync drops it. The identity sequence keeps
+        /// its name: PostgreSQL picks a free one for any later table.
+        /// </summary>
+        public IReadOnlyList<SchemaStatement> AdoptTable(string legacyTableName, TableSchema table)
+        {
+            var newName = table.TableName;
+            List<SchemaStatement> statements =
+            [
+                $"ALTER TABLE {TableName(legacyTableName)} RENAME TO {Quote(newName)}",
+                $"DROP TRIGGER IF EXISTS {Quote(NotifyTriggerName(legacyTableName))} ON {TableName(newName)}",
+            ];
+            void Rename(string oldIndex, string newIndex)
+            {
+                if (Physical(oldIndex) != Physical(newIndex))
+                    statements.Add($"ALTER INDEX IF EXISTS {Quote(Schema)}.{Quote(oldIndex)} RENAME TO {Quote(newIndex)}");
+            }
+            Rename($"PK_{legacyTableName}", $"PK_{newName}");
+            foreach (var column in table.IndexedColumns)
+                Rename(IndexNaming.ColumnIndexName(legacyTableName, column), IndexNaming.ColumnIndexName(newName, column));
+            foreach (var index in table.TableIndexes)
+                Rename(IndexNaming.TableIndexName(legacyTableName, index), IndexNaming.TableIndexName(newName, index));
+            foreach (var column in table.Columns.Where(c => c.FullTextSearch))
+                Rename(FullTextIndexName(legacyTableName, column), FullTextIndexName(newName, column));
+            return statements;
+        }
+
         public SchemaStatement CopyRows(string sourceTableName, string destTableName, IReadOnlyList<string> columns, bool orderByClusterId)
         {
             var list = string.Join(", ", columns.Select(Quote));
@@ -158,9 +190,13 @@ $nucleus$",
 
         // ---- Full-text search and change notification objects.
 
-        internal static string FullTextIndexName(TableSchema table, ColumnSchema column) => Physical($"{FullTextIndexPrefix}{table.TableName}_{column.ColumnName}");
+        internal static string FullTextIndexName(TableSchema table, ColumnSchema column) => FullTextIndexName(table.TableName, column);
 
-        internal static string NotifyTriggerName(TableSchema table) => Physical($"{NotifyTriggerPrefix}{table.TableName}");
+        internal static string FullTextIndexName(string tableName, ColumnSchema column) => Physical($"{FullTextIndexPrefix}{tableName}_{column.ColumnName}");
+
+        internal static string NotifyTriggerName(TableSchema table) => NotifyTriggerName(table.TableName);
+
+        internal static string NotifyTriggerName(string tableName) => Physical($"{NotifyTriggerPrefix}{tableName}");
 
         /// <summary>The LISTEN channel a table's trigger notifies on every write.</summary>
         internal static string NotifyChannel(string tableName) => Physical($"{NotifyChannelPrefix}{tableName}");

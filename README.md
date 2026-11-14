@@ -357,6 +357,9 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 | `[SuppressDB]` | Excludes the type from schema management entirely. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
 | `[TableIndex(name, keys..., Include = [...])]` | An index over several columns, named `NIX_<table>_<name>`. Repeat it for more than one. See below. |
+| `[DatabaseTable("tbl_Name")]` | The table name, used as written in place of the one the naming policy would give. Not inherited. See [Table names](#table-names). |
+| `[TableNaming(style, levels)]` | The naming policy of this type's table, in place of the provider's. Inherited, so it can sit on a root. See [Table names](#table-names). |
+| `[LegacyTableNames("tbl_Old", ...)]` | Earlier names of the type's table. A missing table is renamed from the one of them that exists. Not inherited. See [Table names](#table-names). |
 
 Deletion is opt-in. A type without `[Deletable]` cannot be deleted and any attempt throws.
 
@@ -368,6 +371,36 @@ public class Visit : CoreObject<Visit> { ... }
 ```
 
 The keys order the index, first to last, each ascending, so a read that filters on the first key, or on the first and a range of the second, finds its rows without scanning the table. The included columns are carried in the index without ordering it, so a read that needs only key and included columns (a [row read](#row-reads) of them, say) is answered from the index alone. Keys cannot be long text (`DataLength = -1`); included columns can. A name used twice on the type, a property that is not a stored column, a column named twice or a long text key fails when the schema is built. The index is created on SQL Server as a nonclustered index and on PostgreSQL (11 or later) with `INCLUDE`; it is compared and synced like a column index, so changing its keys or included columns drops and creates it again, and removing the attribute drops it. Creating one over a large table blocks writes to the table while it builds, and the time it took is logged.
+
+### Table names
+
+A table is named, in order of precedence, by the type's `[DatabaseTable]`, then by its own (or an inherited) `[TableNaming]` policy, then by its provider's `TableNaming` option. The default policy, `TableNamingPolicy.FullName`, gives every table the name it always had: `tbl_` and the type's full name with each `.` and `+` replaced by `_`, so `TFM.Nucleus.Bindery.BinderyDocument` is `tbl_TFM_Nucleus_Bindery_BinderyDocument`. `TableNamingPolicy.ObjectName(levels)` keeps only the last `levels` parts of the full name, a nested type's outer type counting as a part: `ObjectName(1)` names it `tbl_BinderyDocument` and `ObjectName(2)` `tbl_Bindery_BinderyDocument`. More levels than the name has gives the full name.
+
+```csharp
+services.AddNucleusSQLDataProvider(options =>
+{
+    options.TableNaming = TableNamingPolicy.ObjectName(2);
+    options.RenameFullNameTables = true; // adopt each existing full-name table
+});
+
+[TableNaming(TableNamingStyle.ObjectName, 1)]          // every entity under this root
+public abstract class AppRoot<T> : CoreObject<T> where T : CoreObject<T> { }
+
+[DatabaseTable("tbl_Orders")]                          // this name, whatever the policy
+[LegacyTableNames("tbl_Order", "tbl_SalesOrder")]      // and the names it had before
+public class Order : AppRoot<Order> { ... }
+```
+
+A `[DatabaseTable]` name is the whole table name, prefix included: letters, digits and underscores, starting with a letter or underscore, at most 128 characters. It is not inherited, because a root and the entities under it each have a table and an inherited name would give them one. `[TableNaming]` is inherited, since a policy still gives each type a name of its own, and a type's own attribute wins over its root's. Index and constraint names follow the table name (`NCI_<table>_<column>` and so on), and on PostgreSQL a name over 63 bytes is shortened as usual. Two types that end up with one table name, a `[LegacyTableNames]` entry that is another type's table, and an old name two types both claim each fail at provider initialisation, naming the types.
+
+**Changing a name does not move the data by itself.** On a database that already has tables, a new name makes the schema sync look for a table that is not there, and by default it creates an empty one and leaves the old table, rows and all, where it was. Two things make it rename the old table instead, inside the schema transaction, keeping its rows and its object id (nothing is copied):
+
+- `[LegacyTableNames]` on the entity lists the names its table had. It applies under any policy.
+- `RenameFullNameTables` on the provider adopts the table under the entity's full-name form, the name every table had before policies existed, whenever the configured name differs from it. Set it when turning on a shorter policy, or when adding `[DatabaseTable]` to an existing entity.
+
+The rename covers the table's primary key, constraints and Nucleus-named indexes, which take the new table's names, so no index is rebuilt; on PostgreSQL the old change notification trigger is dropped and the new one created. The table is then brought up to date like any existing table: columns it lacks are added in place, and a changed column type rebuilds it. On SQL Server a full-text index cannot change inside a transaction, so it moves with the table and is recreated in the new table's catalog by the full-text sync.
+
+If more than one of a missing table's old tables exists, nothing is renamed: initialisation fails, nothing is changed, and the error names the tables. Nucleus does not merge tables, because their rows can share IDs, their children point at parents by ID, and their columns can differ, so which rows to keep is a decision for a person. Move the rows you want into one of them, drop the others, and initialise again. If the entity's table exists and an old one does too, the old table is left alone and a warning is logged. Nothing is renamed while the schema is read-only; the check logs what an update would rename. Two processes starting together against a database that still needs a rename can both try it, and the second fails its initialisation and succeeds on its next start, as a racing table create does.
 
 ### Relationships
 
@@ -536,6 +569,8 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
+| `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](#table-names). |
+| `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](#table-names). |
 
 Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
 
@@ -557,6 +592,8 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
+| `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
+| `RenameFullNameTables` | `false` | As for SQL Server. |
 
 ## Unique violations
 
@@ -570,6 +607,19 @@ catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)
 ```
 
 ## Behaviour changes
+
+These came in with table naming.
+
+- **Nothing is renamed by default.** The default policy is the full name, `RenameFullNameTables` is
+  off, and an entity without the new attributes keeps the table it had.
+- **Two types with one table name fail at initialisation.** Two types whose full names differ only
+  in where the dots fall (`A.B_C` and `A_B.C` both name `tbl_A_B_C`) used to share a table without
+  a word. They now fail when the schema is built, naming both; give one a `[DatabaseTable]`.
+- **A SQL Server full-text catalog still holding another table's index is kept.** The sync drops
+  `ftc_*` catalogs no entity needs, and dropping one that still held a full-text index (an old
+  table's, left behind) failed the sync. The catalog is now kept and a warning logged. An index of
+  one of the provider's own tables found in another table's catalog (one an adopted table brought
+  along) is dropped and recreated in its own.
 
 These came in with row reads and `[TableIndex]`.
 

@@ -24,6 +24,10 @@ namespace TFM.Nucleus.Data.SQL
 
         public bool ReadOnlySchema => _provider.NucleusOptions.ReadOnlySchema;
 
+        public TableNamingPolicy TableNaming => _provider.Options.TableNaming;
+
+        public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
+
         public ISchemaDialect Dialect { get; }
 
         public ICatalogReader Catalog => _catalog;

@@ -1,5 +1,6 @@
 ﻿using System;
 using Microsoft.Extensions.Options;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data.Providers
 {
@@ -66,6 +67,28 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>The command timeout of each bulk copy and bulk statement, in seconds.</summary>
         public int BulkCopyTimeoutSeconds { get; set; } = 60;
+
+        private TableNamingPolicy _tableNaming = TableNamingPolicy.FullName;
+
+        /// <summary>
+        /// How this provider names the tables of entities that declare neither [DatabaseTable] nor
+        /// [TableNaming]. <see cref="TableNamingPolicy.FullName"/> by default, which is how every
+        /// table was named before policies existed. Changing it on a database that has tables
+        /// makes new empty tables unless <see cref="RenameFullNameTables"/> is set or the old names
+        /// are listed in [LegacyTableNames].
+        /// </summary>
+        public TableNamingPolicy TableNaming
+        {
+            get => _tableNaming;
+            set => _tableNaming = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        /// <summary>
+        /// When an entity's table is missing and a table under its full-name form exists (tbl_ and
+        /// the type's full name), the schema update renames that table to the entity's table name
+        /// instead of creating an empty one. Off by default. Has no effect while the schema is read-only.
+        /// </summary>
+        public bool RenameFullNameTables { get; set; }
     }
 
     /// <summary>Copies NucleusOptions.AppName into every (named) instance of a provider's options.</summary>

@@ -19,6 +19,9 @@
                 SqlServerSchemaDialect.RenameTableSql("tbl_X", "tbl_X_20260101000000"),
                 SqlServerSchemaDialect.RenameDefaultConstraintsSql("p1"),
                 SqlServerSchemaDialect.RenameIndexesSql);
+            // A table renamed from an old name: the table, its default constraints, its indexes.
+            cases["ddl.adopt"] = () => string.Join("\n--\n",
+                new SqlServerSchemaDialect(null).AdoptTable("tbl_OldUniqueWidget", QueryGoldenCorpus.TableOf(typeof(TestUniqueWidget))).Select(s => s.Text));
             cases["ddl.copy"] = () => string.Join("\n--\n",
                 SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true),
                 SqlServerSchemaDialect.CopyTableDataSql("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false));

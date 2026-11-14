@@ -5,6 +5,15 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     /// <summary>Runs a statement against the PostgreSQL test database outside Nucleus, for a test's own setup.</summary>
     public static class PostgresScript
     {
+        /// <summary>Drops columns from a table in public; dropping a column drops its indexes with it.</summary>
+        public static string DropColumnsSql(string table, params string[] columns) =>
+            $"ALTER TABLE \"public\".\"{table}\" {string.Join(", ", columns.Select(c => $"DROP COLUMN \"{c}\""))}";
+
+        /// <summary>A query returning the table's oid as a bigint, which only a rebuild changes; null when there is no such table.</summary>
+        public static string TableIdSql(string table) => $"SELECT to_regclass('\"public\".\"{table}\"')::oid::bigint";
+
+        public static string DeleteAllSql(string table) => $"DELETE FROM \"public\".\"{table}\"";
+
         public static async Task ExecuteAsync(TestConfig.DatabaseSettings settings, string sql, CancellationToken token)
         {
             await using var connection = await OpenAsync(settings, token);

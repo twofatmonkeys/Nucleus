@@ -102,17 +102,43 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerAddColumnIntegrationTests(SqlServerFixture fixture) : AddColumnIntegrationTests(fixture)
     {
         // A column cannot be dropped while an index or a default constraint depends on it.
-        protected override string DropColumnsSql(string table, params string[] columns) => string.Concat(columns.Select(c =>
-            $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'NCI_{table}_{c}' AND object_id = OBJECT_ID(N'dbo.{table}')) DROP INDEX [NCI_{table}_{c}] ON [dbo].[{table}]; " +
-            $"IF OBJECT_ID(N'dbo.DF_{table}_{c}', N'D') IS NOT NULL ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [DF_{table}_{c}]; " +
-            $"ALTER TABLE [dbo].[{table}] DROP COLUMN [{c}]; "));
+        protected override string DropColumnsSql(string table, params string[] columns) => SqlServerScript.DropColumnsSql(table, columns);
 
         protected override string NarrowColumnSql(string table, string column, int length) =>
             $"ALTER TABLE [dbo].[{table}] ALTER COLUMN [{column}] varchar({length}) NULL";
 
-        protected override string TableIdSql(string table) => $"SELECT CAST(OBJECT_ID(N'dbo.{table}') AS bigint)";
+        protected override string TableIdSql(string table) => SqlServerScript.TableIdSql(table);
 
-        protected override string DeleteAllSql(string table) => $"DELETE FROM [dbo].[{table}]";
+        protected override string DeleteAllSql(string table) => SqlServerScript.DeleteAllSql(table);
+
+        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerTableNamingIntegrationTests(SqlServerFixture fixture) : TableNamingIntegrationTests(fixture)
+    {
+        protected override string TableIdSql(string table) => SqlServerScript.TableIdSql(table);
+
+        protected override string DeleteAllSql(string table) => SqlServerScript.DeleteAllSql(table);
+
+        protected override string DropColumnsSql(string table, params string[] columns) => SqlServerScript.DropColumnsSql(table, columns);
+
+        // DROP TABLE IF EXISTS and STRING_AGG need a newer compatibility level than the test database may have.
+        protected override string DropTableIfExistsSql(string table) => $"IF OBJECT_ID(N'dbo.{table}', N'U') IS NOT NULL DROP TABLE [dbo].[{table}]";
+
+        protected override string RenameTableSql(string from, string to) => $"EXEC sp_rename N'dbo.{from}', N'{to}'";
+
+        protected override string CopyTableSql(string from, string to) => $"SELECT * INTO [dbo].[{to}] FROM [dbo].[{from}]";
+
+        protected override string RowCountSql(string table) => $"SELECT COUNT_BIG(*) FROM [dbo].[{table}]";
+
+        // Indexes (the primary key's among them), and the constraints and triggers the table owns.
+        protected override string OwnedObjectNamesSql(string table) =>
+            $"SELECT STUFF((SELECT ',' + name FROM (" +
+            $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.{table}') AND name IS NOT NULL " +
+            $"UNION ALL SELECT name FROM sys.objects WHERE parent_object_id = OBJECT_ID(N'dbo.{table}')) n FOR XML PATH('')), 1, 1, '')";
 
         protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
 

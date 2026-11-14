@@ -96,6 +96,10 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public bool ReadOnlySchema => _provider.NucleusOptions.ReadOnlySchema;
 
+        public TableNamingPolicy TableNaming => _provider.Options.TableNaming;
+
+        public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
+
         public ISchemaDialect Dialect => _dialect;
 
         public ICatalogReader Catalog => _catalog;

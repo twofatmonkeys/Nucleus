@@ -254,4 +254,40 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
+
+    /// <summary>
+    /// The root of the table naming suite's entities. A stack rooted here stores only them, so a
+    /// naming policy set on it renames no other suite's table.
+    /// </summary>
+    public abstract class IntNamingRoot<T> : CoreObject<T> where T : CoreObject<T> { }
+
+    /// <summary>
+    /// A table the naming suite adopts from its full-name form under ObjectName(1). The long class
+    /// name makes the full-name form's index names longer than PostgreSQL's 63 bytes, so the
+    /// rename starts from shortened names.
+    /// </summary>
+    public class IntAdoptedItemWithALongName : IntNamingRoot<IntAdoptedItemWithALongName>
+    {
+        [DatabaseColumn(Indexed = true)]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int? Quantity { get => GetValue<int?>(); set => SetValue(value); }
+    }
+
+    /// <summary>A pinned table with two old names, which the naming suite creates by hand.</summary>
+    [DatabaseTable(Table)]
+    [LegacyTableNames(OldTable, OlderTable)]
+    public class IntLegacyItem : IntNamingRoot<IntLegacyItem>
+    {
+        public const string Table = "tbl_IntLegacyItem";
+        public const string OldTable = "tbl_IntLegacyItemOld";
+        public const string OlderTable = "tbl_IntLegacyItemOlder";
+
+        [DatabaseColumn(Indexed = true)]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int? Quantity { get => GetValue<int?>(); set => SetValue(value); }
+    }
 }
