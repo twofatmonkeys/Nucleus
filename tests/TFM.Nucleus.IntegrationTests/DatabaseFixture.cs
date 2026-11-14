@@ -33,6 +33,19 @@ namespace TFM.Nucleus.IntegrationTests
         /// <summary>Registers this provider against the test database, with its options changed by <paramref name="configure"/>.</summary>
         protected abstract void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure);
 
+        /// <summary>Registers this provider rooted at <paramref name="rootType"/>, so it stores only the entities under that root.</summary>
+        protected abstract void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure);
+
+        /// <summary>Points a provider's options at the test database, then applies <paramref name="configure"/>.</summary>
+        protected static void UseTestDatabase(RelationalProviderOptions options, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure)
+        {
+            options.Server = settings.Server;
+            options.Database = settings.Database;
+            options.Username = settings.Username;
+            options.Password = settings.Password;
+            configure(options);
+        }
+
         public async ValueTask InitializeAsync()
         {
             if (Settings == null)
@@ -46,6 +59,17 @@ namespace TFM.Nucleus.IntegrationTests
         {
             var settings = RequireSettings();
             return StartStackAsync(services => AddProvider(services, settings, configure));
+        }
+
+        /// <summary>
+        /// A second stack on the same database whose only provider is rooted at
+        /// <paramref name="rootType"/>, so its options (a naming policy, say) touch no table but
+        /// those of the entities under that root.
+        /// </summary>
+        public Task<TestStack> StartRootedStackAsync(Type rootType, Action<RelationalProviderOptions> configure)
+        {
+            var settings = RequireSettings();
+            return StartStackAsync(services => AddRootedProvider(services, settings, rootType, configure));
         }
 
         /// <summary>
@@ -129,14 +153,10 @@ namespace TFM.Nucleus.IntegrationTests
         protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
 
         protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusSQLDataProvider(options =>
-            {
-                options.Server = settings.Server;
-                options.Database = settings.Database;
-                options.Username = settings.Username;
-                options.Password = settings.Password;
-                configure(options);
-            });
+            services.AddNucleusSQLDataProvider(options => UseTestDatabase(options, settings, configure));
+
+        protected override void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure) =>
+            services.AddNucleusSQLDataProvider(rootType, options => UseTestDatabase(options, settings, configure));
 
         /// <summary>A second stack on the same database with its SQL Server settings changed by <paramref name="configure"/>.</summary>
         public Task<TestStack> StartStackAsync(Action<SQLConfiguration> configure) =>
@@ -157,14 +177,10 @@ namespace TFM.Nucleus.IntegrationTests
         protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
 
         protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusPostgresDataProvider(options =>
-            {
-                options.Server = settings.Server;
-                options.Database = settings.Database;
-                options.Username = settings.Username;
-                options.Password = settings.Password;
-                configure(options);
-            });
+            services.AddNucleusPostgresDataProvider(options => UseTestDatabase(options, settings, configure));
+
+        protected override void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure) =>
+            services.AddNucleusPostgresDataProvider(rootType, options => UseTestDatabase(options, settings, configure));
     }
 
     [CollectionDefinition(Name)]

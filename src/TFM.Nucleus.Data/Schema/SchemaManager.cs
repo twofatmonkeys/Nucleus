@@ -68,7 +68,11 @@ namespace TFM.Nucleus.Data.Schema
             return Status;
         }
 
-        /// <summary>A table per database-enabled entity type under the provider's root.</summary>
+        /// <summary>
+        /// A table per database-enabled entity type under the provider's root, named by the
+        /// provider's naming policy unless the type names its own. Two types with one table name,
+        /// or a type whose old name is another type's table or another type's old name, fail here.
+        /// </summary>
         public List<TableSchema> BuildSchema()
         {
             // A rooted provider only builds/migrates tables for entity types under its root.
@@ -76,9 +80,87 @@ namespace TFM.Nucleus.Data.Schema
                 .Where(x => x.IsDatabaseEnabled && DataProviderRegistry.IsUnderRoot(x.Type, _store.RootType)))
             {
                 if (!TableCache.ContainsKey(objSchema.Type))
-                    TableCache[objSchema.Type] = new TableSchema(objSchema);
+                    TableCache[objSchema.Type] = new TableSchema(objSchema, _store.TableNaming);
             }
-            return [.. TableCache.Values];
+            List<TableSchema> tables = [.. TableCache.Values];
+            EnsureTableNamesAreDistinct(tables);
+            return tables;
+        }
+
+        /// <summary>
+        /// Names are compared without regard to case, so the entities are valid on every provider,
+        /// and again as this engine stores them, so a shortened name cannot collide either.
+        /// </summary>
+        private void EnsureTableNamesAreDistinct(IReadOnlyList<TableSchema> tables)
+        {
+            var owners = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
+            var physicalOwners = new Dictionary<string, TableSchema>(Dialect.IdentifierComparer);
+            foreach (var table in tables.OrderBy(t => t.ObjectSchema.FullName, StringComparer.Ordinal))
+            {
+                if (owners.TryGetValue(table.TableName, out var other) ||
+                    physicalOwners.TryGetValue(Dialect.PhysicalName(table.TableName), out other))
+                    throw new InvalidOperationException(
+                        $"Types '{other.ObjectSchema.FullName}' and '{table.ObjectSchema.FullName}' both map to table '{table.TableName}'. " +
+                        "Give one of them its own name with [DatabaseTable], or a naming policy that keeps more levels.");
+                owners[table.TableName] = table;
+                physicalOwners[Dialect.PhysicalName(table.TableName)] = table;
+            }
+
+            var claims = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
+            foreach (var table in tables.OrderBy(t => t.ObjectSchema.FullName, StringComparer.Ordinal))
+                foreach (var name in AdoptionCandidates(table))
+                {
+                    if (owners.TryGetValue(name, out var owner) || physicalOwners.TryGetValue(Dialect.PhysicalName(name), out owner))
+                        throw new InvalidOperationException(
+                            $"'{table.ObjectSchema.FullName}' would adopt table '{name}' as an old name, but that is the table of '{owner.ObjectSchema.FullName}'. " +
+                            "Renaming it would take that type's rows. Remove the name from [LegacyTableNames], or rename one of the types' tables.");
+                    if (claims.TryGetValue(name, out var claimant))
+                        throw new InvalidOperationException(
+                            $"Types '{claimant.ObjectSchema.FullName}' and '{table.ObjectSchema.FullName}' both claim table '{name}' as an old name. " +
+                            "Only one of them can adopt it.");
+                    claims[name] = table;
+                }
+        }
+
+        /// <summary>
+        /// The old names a missing table is adopted from: its [LegacyTableNames], then its
+        /// full-name form when the provider renames full-name tables and the name has changed.
+        /// </summary>
+        private List<string> AdoptionCandidates(TableSchema table)
+        {
+            List<string> names = [.. table.LegacyTableNames];
+            if (_store.RenameFullNameTables &&
+                !table.FullTableName.Equals(table.TableName, StringComparison.OrdinalIgnoreCase) &&
+                !names.Contains(table.FullTableName, StringComparer.OrdinalIgnoreCase))
+                names.Add(table.FullTableName);
+            return names;
+        }
+
+        /// <summary>The old names of <paramref name="table"/> that exist as tables in <paramref name="snapshot"/>.</summary>
+        private List<string> PresentAdoptionCandidates(TableSchema table, CatalogSnapshot snapshot) =>
+            [.. AdoptionCandidates(table).Where(name => snapshot.Tables.Contains(Dialect.PhysicalName(name), Dialect.IdentifierComparer))];
+
+        /// <summary>
+        /// Reports what the update would do with old tables: adopt the one old table of a missing
+        /// table, refuse when there are several, and leave alone an old table whose successor exists.
+        /// </summary>
+        private void LogAdoptions(IReadOnlyList<TableSchema> tables, CatalogSnapshot snapshot)
+        {
+            foreach (var table in tables)
+            {
+                var present = PresentAdoptionCandidates(table, snapshot);
+                if (present.Count == 0)
+                    continue;
+                if (table.ExistsInDatabase)
+                    _logger?.LogWarning("Table {tablename} exists, so its old table {legacy} is left as it is. Move or drop its rows by hand.",
+                        table.TableName, string.Join(", ", present));
+                else if (present.Count == 1)
+                    _logger?.LogInformation("Table {tablename} is missing; the schema update renames its old table {legacy} to it.",
+                        table.TableName, present[0]);
+                else
+                    _logger?.LogWarning("Table {tablename} is missing and several of its old tables exist ({legacy}); the schema update refuses to choose one.",
+                        table.TableName, string.Join(", ", present));
+            }
         }
 
         public IEnumerable<TableSchema> GetTables() => Initialized ? TableCache.Values : BuildSchema();
@@ -94,7 +176,9 @@ namespace TFM.Nucleus.Data.Schema
             {
                 var snapshot = await _store.Catalog.ReadAsync(async, cancellationToken);
                 var tables = GetTables().ToList();
-                if (!SchemaComparer.CompareTables(tables, snapshot, Dialect, _logger))
+                var tablesCurrent = SchemaComparer.CompareTables(tables, snapshot, Dialect, _logger);
+                LogAdoptions(tables, snapshot);
+                if (!tablesCurrent)
                 {
                     _logger?.LogWarning("Database schema is not current.");
                     return EDataSchemaStatus.NotCurrent;
@@ -150,6 +234,7 @@ namespace TFM.Nucleus.Data.Schema
             try
             {
                 var tables = GetTables().ToList();
+                await AdoptLegacyTables(transaction, tables, async, cancellationToken);
                 foreach (var table in tables.Where(x => !x.IsCurrent))
                 {
                     try
@@ -192,6 +277,44 @@ namespace TFM.Nucleus.Data.Schema
                 await transaction.DisposeAsync();
             else
                 transaction.Dispose();
+        }
+
+        /// <summary>
+        /// Renames to its table the one old table of each missing table, inside the schema
+        /// transaction, then compares it again so the rest of the update treats it as an existing
+        /// table: columns it lacks are added, a changed column rebuilds it. Several old tables of one
+        /// table fail the update, which rolls everything back: their rows cannot be merged safely.
+        /// </summary>
+        private async ValueTask AdoptLegacyTables(ISchemaTransaction transaction, IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            var missing = tables.Where(t => !t.ExistsInDatabase && AdoptionCandidates(t).Count > 0).ToList();
+            if (missing.Count == 0)
+                return;
+            var snapshot = await _store.Catalog.ReadAsync(async, cancellationToken);
+            foreach (var table in missing)
+            {
+                var physical = Dialect.PhysicalName(table.TableName);
+                // The table may have appeared since the check, from another process starting up.
+                if (snapshot.Tables.Contains(physical, Dialect.IdentifierComparer))
+                    continue;
+                var present = PresentAdoptionCandidates(table, snapshot);
+                if (present.Count == 0)
+                    continue;
+                if (present.Count > 1)
+                    throw new InvalidOperationException(
+                        $"Table '{table.TableName}' of '{table.ObjectSchema.FullName}' is missing, and more than one of its old tables exists: " +
+                        $"{string.Join(", ", present)}. Nucleus does not merge tables, because their rows can share IDs and their columns can differ. " +
+                        "Move the rows you want to keep into one of them, drop the others, and start again. Nothing was changed.");
+
+                _logger?.LogInformation("Renaming table {legacy} to {tablename} for the '{objectName}' object.", present[0], table.TableName, table.ObjectSchema.FullName);
+                foreach (var statement in Dialect.AdoptTable(present[0], table))
+                    await transaction.ExecuteAsync(statement, async, cancellationToken);
+
+                var columns = await transaction.ReadColumnsAsync(physical, async, cancellationToken);
+                if (columns.Count == 0)
+                    throw new InvalidOperationException($"Table '{present[0]}' was renamed to '{table.TableName}', but the renamed table cannot be read back.");
+                SchemaComparer.CompareTables([table], new CatalogSnapshot([physical], columns, []), Dialect, _logger);
+            }
         }
 
         /// <summary>

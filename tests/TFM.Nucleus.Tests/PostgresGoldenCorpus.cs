@@ -25,6 +25,14 @@ namespace TFM.Nucleus.Tests
             var allTypes = QueryGoldenCorpus.TableOf(typeof(TestAllTypesWidget));
 
             cases["ddl.rename"] = () => Join(dialect.RenameForRebuild(widget, "tbl_TFM_Nucleus_Tests_TestWidget_20260101000000"));
+            // A table renamed from an old name: its trigger dropped, its key and indexes renamed,
+            // column and [TableIndex] indexes, full-text ones, and names shortened past 63 bytes.
+            var indexedForAdopt = QueryGoldenCorpus.TableOf(typeof(TestIndexedWidget));
+            var touch = QueryGoldenCorpus.TableOf(typeof(TFM.Nucleus.Attribution.AttributionTouchRecord));
+            cases["ddl.adopt"] = () => Join(dialect.AdoptTable("tbl_OldUniqueWidget", unique));
+            cases["ddl.adopt.tableindex"] = () => Join(dialect.AdoptTable("tbl_OldIndexedWidget", indexedForAdopt));
+            cases["ddl.adopt.fulltext"] = () => Join(dialect.AdoptTable("tbl_OldAllTypesWidget", allTypes));
+            cases["ddl.adopt.long"] = () => Join(dialect.AdoptTable("tbl_AttributionTouchRecord", touch));
             cases["ddl.copy"] = () => string.Join("\n--\n",
                 dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name", "Timestamp"], orderByClusterId: true).Text,
                 dialect.CopyRows("tbl_X_20260101000000", "tbl_X", ["ID", "Name"], orderByClusterId: false).Text);

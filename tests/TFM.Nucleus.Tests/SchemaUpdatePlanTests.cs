@@ -243,60 +243,6 @@ namespace TFM.Nucleus.Tests
 
             Assert.StartsWith("EXEC sp_rename ", store.InTransaction[0], StringComparison.Ordinal);
         }
-
-        /// <summary>A SQL Server schema store over a fixed catalog that records every statement it is asked to run.</summary>
-        private sealed class RecordingSchemaStore(CatalogSnapshot catalog) : ISchemaStore, ICatalogReader, IObjectSchemaProvider
-        {
-            public List<string> InTransaction { get; } = [];
-            public List<string> OutsideTransaction { get; } = [];
-            public CatalogSnapshot Snapshot { get; } = catalog;
-
-            public SchemaManager Manager() => new(this, this, null);
-
-            public Type? RootType => typeof(TestGrowingWidget);
-            public bool ReadOnlySchema => false;
-            public ISchemaDialect Dialect { get; } = new SqlServerSchemaDialect(null);
-            public ICatalogReader Catalog => this;
-
-            public ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken) =>
-                ValueTask.FromResult<ISchemaTransaction>(new Transaction(this));
-
-            public ValueTask<bool> DatabaseExistsAsync(bool async, CancellationToken cancellationToken) => ValueTask.FromResult(true);
-            public ValueTask CreateDatabaseAsync(bool async, CancellationToken cancellationToken) => throw new InvalidOperationException("The database exists.");
-            public ValueTask<CatalogSnapshot> ReadAsync(bool async, CancellationToken cancellationToken) => ValueTask.FromResult(Snapshot);
-            public ValueTask<IReadOnlyList<CatalogIndex>> ReadIndexesAsync(bool async, CancellationToken cancellationToken) => ValueTask.FromResult(Snapshot.Indexes);
-
-            public ValueTask ExecuteAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
-            {
-                OutsideTransaction.Add(statement.Text);
-                return ValueTask.CompletedTask;
-            }
-
-            public IObjectSchema? Get<T>() => Get(typeof(T));
-            public IObjectSchema? Get(Type type) => type == typeof(TestGrowingWidget) ? ObjectSchema.Get(type) : null;
-            public bool TryGet<T>(out IObjectSchema? schema) => TryGet(typeof(T), out schema);
-            public bool TryGet(Type type, out IObjectSchema? schema) => (schema = Get(type)) != null;
-            public IEnumerable<IObjectSchema>? GetAll() => [ObjectSchema.Get(typeof(TestGrowingWidget))];
-
-            private sealed class Transaction(RecordingSchemaStore store) : ISchemaTransaction
-            {
-                public ValueTask ExecuteAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
-                {
-                    store.InTransaction.Add(statement.Text);
-                    return ValueTask.CompletedTask;
-                }
-
-                // The renamed table has the columns the catalog has; the new one has every column.
-                public ValueTask<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(string tableName, bool async, CancellationToken cancellationToken) =>
-                    ValueTask.FromResult(store.Dialect.IdentifierComparer.Equals(tableName, Growing().TableName)
-                        ? SchemaCatalog.Current("sqlserver", Growing()).Columns
-                        : store.Snapshot.Columns);
-
-                public void Rollback() => throw new InvalidOperationException("The update failed and rolled back.");
-                public void Dispose() { }
-                public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-            }
-        }
     }
 
     /// <summary>A catalog as a provider would report a table that matches its schema, and edits of it.</summary>

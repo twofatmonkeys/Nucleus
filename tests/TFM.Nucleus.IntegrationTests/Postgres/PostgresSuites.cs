@@ -102,15 +102,46 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresAddColumnIntegrationTests(PostgresFixture fixture) : AddColumnIntegrationTests(fixture)
     {
         // Dropping a column drops its indexes with it. The provider's tables live in public.
-        protected override string DropColumnsSql(string table, params string[] columns) =>
-            $"ALTER TABLE \"public\".\"{table}\" {string.Join(", ", columns.Select(c => $"DROP COLUMN \"{c}\""))}";
+        protected override string DropColumnsSql(string table, params string[] columns) => PostgresScript.DropColumnsSql(table, columns);
 
         protected override string NarrowColumnSql(string table, string column, int length) =>
             $"ALTER TABLE \"public\".\"{table}\" ALTER COLUMN \"{column}\" TYPE varchar({length})";
 
-        protected override string TableIdSql(string table) => $"SELECT '\"public\".\"{table}\"'::regclass::oid::bigint";
+        protected override string TableIdSql(string table) => PostgresScript.TableIdSql(table);
 
-        protected override string DeleteAllSql(string table) => $"DELETE FROM \"public\".\"{table}\"";
+        protected override string DeleteAllSql(string table) => PostgresScript.DeleteAllSql(table);
+
+        protected override Task ExecuteAsync(string sql) => PostgresScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => PostgresScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+    }
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresTableNamingIntegrationTests(PostgresFixture fixture) : TableNamingIntegrationTests(fixture)
+    {
+        protected override string TableIdSql(string table) => PostgresScript.TableIdSql(table);
+
+        protected override string DeleteAllSql(string table) => PostgresScript.DeleteAllSql(table);
+
+        protected override string DropColumnsSql(string table, params string[] columns) => PostgresScript.DropColumnsSql(table, columns);
+
+        protected override string DropTableIfExistsSql(string table) => $"DROP TABLE IF EXISTS \"public\".\"{table}\"";
+
+        protected override string RenameTableSql(string from, string to) => $"ALTER TABLE \"public\".\"{from}\" RENAME TO \"{to}\"";
+
+        protected override string CopyTableSql(string from, string to) => $"CREATE TABLE \"public\".\"{to}\" AS TABLE \"public\".\"{from}\"";
+
+        protected override string RowCountSql(string table) => $"SELECT count(*) FROM \"public\".\"{table}\"";
+
+        // Indexes (the primary key's among them), constraints and user triggers of the table.
+        protected override string OwnedObjectNamesSql(string table)
+        {
+            var oid = $"to_regclass('\"public\".\"{table}\"')";
+            return $"SELECT string_agg(name, ',') FROM (" +
+                   $"SELECT i.relname::text AS name FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = {oid} " +
+                   $"UNION ALL SELECT conname::text FROM pg_constraint WHERE conrelid = {oid} " +
+                   $"UNION ALL SELECT tgname::text FROM pg_trigger WHERE tgrelid = {oid} AND NOT tgisinternal) n";
+        }
 
         protected override Task ExecuteAsync(string sql) => PostgresScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
 

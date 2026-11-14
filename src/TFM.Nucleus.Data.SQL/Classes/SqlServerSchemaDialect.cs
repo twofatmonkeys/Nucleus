@@ -41,6 +41,21 @@ namespace TFM.Nucleus.Data.SQL
             ];
         }
 
+        /// <summary>
+        /// Renames the legacy table, then its default constraints and indexes (the primary key and
+        /// the clustered index among them), replacing the old table name inside each name with the
+        /// new one, as a rebuild's rename does. A full-text index cannot change inside a
+        /// transaction, so it moves with the table and the full-text sync re-homes it.
+        /// </summary>
+        public IReadOnlyList<SchemaStatement> AdoptTable(string legacyTableName, TableSchema table) =>
+        [
+            RenameTableSql(legacyTableName, table.TableName),
+            new SchemaStatement(RenameDefaultConstraintsSql("tblname", "REPLACE(name, @legacyTableName, @tblname)"), new ParameterCollection(
+                new Parameter("tblname", table.TableName, false), new Parameter("legacyTableName", legacyTableName, false))),
+            new SchemaStatement(RenameIndexesSql, new ParameterCollection(
+                new Parameter("tempTableName", table.TableName, false), new Parameter("tblname", legacyTableName, false))),
+        ];
+
         // A FILESTREAM column needs the table to have a FILESTREAM filegroup, which only a table
         // created with one has, so a table gaining one is rebuilt.
         public IReadOnlyList<SchemaStatement>? AddColumns(TableSchema table, IReadOnlyList<ColumnSchema> columns, IReadOnlyList<string> softDeleteColumns) =>
@@ -165,16 +180,25 @@ namespace TFM.Nucleus.Data.SQL
         internal static string RenameTableSql(string tableName, string tempTableName) =>
             $"EXEC sp_rename '{tableName}', '{tempTableName}'";
 
-        /// <summary>Renames the default constraints of the renamed table; binds the temp table name to <paramref name="tempTableVariable"/>.</summary>
-        internal static string RenameDefaultConstraintsSql(string tempTableVariable) => @$"DECLARE @sql NVARCHAR(MAX) = '';
+        /// <summary>
+        /// Renames the default constraints of the renamed table, whose name is bound to
+        /// <paramref name="tableVariable"/>, to <paramref name="newNameExpression"/>, an expression
+        /// over each constraint's name: a rebuild appends _temp, an adoption replaces the old table
+        /// name with the new one.
+        /// </summary>
+        internal static string RenameDefaultConstraintsSql(string tableVariable, string newNameExpression = "name + '_temp'") => @$"DECLARE @sql NVARCHAR(MAX) = '';
 
-SELECT @sql = @sql + 'EXEC sp_rename N''dbo.[' + name + ']'', N''' + name + '_temp'', N''OBJECT'';' + CHAR(13)
+SELECT @sql = @sql + 'EXEC sp_rename N''dbo.[' + name + ']'', N''' + {newNameExpression} + ''', N''OBJECT'';' + CHAR(13)
 FROM sys.objects
-WHERE parent_object_id = OBJECT_ID(@{tempTableVariable}) AND type = 'D';
+WHERE parent_object_id = OBJECT_ID(@{tableVariable}) AND type = 'D';
 
 EXEC sp_executesql @sql;";
 
-        /// <summary>Renames the indexes of the renamed table; binds @tempTableName and @tblname.</summary>
+        /// <summary>
+        /// Renames the indexes of the renamed table @tempTableName, replacing @tblname inside each
+        /// name with @tempTableName. A rebuild binds the temp name and the table's own name; an
+        /// adoption binds the table's new name and its legacy name.
+        /// </summary>
         internal const string RenameIndexesSql = @"DECLARE @sql NVARCHAR(MAX) = '';
 
 SELECT @sql = @sql + 'EXEC sp_rename N''dbo.' + @tempTableName + '.' + name + ''', N''' + REPLACE(name, @tblname, @tempTableName) + ''', N''INDEX'';' + CHAR(13)
@@ -244,7 +268,12 @@ EXEC sp_executesql @sql;";
         private static bool FullTextColumnsMatch(TableSchema table, IReadOnlyList<SqlServerCatalogReader.FullTextIndexColumn> dtIndexes)
         {
             var ftColumns = table.Columns.Where(x => x.FullTextSearch).Select(x => x.ColumnName).ToList();
-            var existingFtColumns = dtIndexes.Where(x => x.TableName == table.TableName).Select(x => x.ColumnName).ToList();
+            var existing = dtIndexes.Where(x => x.TableName == table.TableName).ToList();
+            // A table adopted under a new name brings its full-text index along, still in the
+            // catalog of its old name; it is not current until it lives in the table's own catalog.
+            if (existing.Any(x => x.CatalogName != $"ftc_{table.TableName}"))
+                return false;
+            var existingFtColumns = existing.Select(x => x.ColumnName).ToList();
             if (existingFtColumns.Count != ftColumns.Count)
                 return false;
             //check if any columns are missing, then if any extra columns exist
@@ -255,11 +284,25 @@ EXEC sp_executesql @sql;";
         {
             //drop any unused full-text indexes
             var dbCatalogs = await catalog.ReadFullTextCatalogsAsync(async, cancellationToken);
+            var housed = await catalog.ReadFullTextIndexesAsync(async, cancellationToken);
             foreach (var ftc in dbCatalogs.Where(x => x.StartsWith("ftc_")))
             {
                 var tblname = ftc.Substring(4); //remove 'ftc_' prefix
                 if (!tables.Any(x => x.TableName == tblname && x.HasFullTextSearch))
                 {
+                    // A catalog holding an index cannot be dropped. An index of one of these tables
+                    // is one an adopted table brought from its old name, and is recreated in the
+                    // table's own catalog below. Another table's index (an old table left behind)
+                    // keeps its catalog.
+                    var housedTables = housed.Where(x => x.CatalogName == ftc).Select(x => x.TableName).Distinct().ToList();
+                    foreach (var tableName in housedTables.Where(t => tables.Any(x => x.TableName == t)))
+                        await catalog.ExecuteAsync(SqlServerSchemaDialect.DropFullTextIndexSql(tableName), async, cancellationToken);
+                    if (housedTables.Any(t => !tables.Any(x => x.TableName == t)))
+                    {
+                        logger?.LogWarning("Full-text catalog {catalog} is kept: it still holds the full-text index of table {tablename}.",
+                            ftc, string.Join(", ", housedTables.Where(t => !tables.Any(x => x.TableName == t))));
+                        continue;
+                    }
                     //drop full-text catalog
                     await catalog.ExecuteAsync(SqlServerSchemaDialect.DropFullTextCatalogSql(ftc), async, cancellationToken);
                 }

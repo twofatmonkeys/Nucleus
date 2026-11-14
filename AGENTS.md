@@ -127,7 +127,15 @@ a query carries the provider's `IQueryRenderer`, which only writes it. The schem
 only lacks columns has them added in place (`ISchemaDialect.AddColumns`, decided by
 `SchemaComparer.PlanUpdate`); only a changed column type rebuilds and copies the rows, because a
 rebuild takes time in proportion to the table. Schema statements run under
-`SchemaCommandTimeoutSeconds`, not the driver default. The provider
+`SchemaCommandTimeoutSeconds`, not the driver default. A table's name is resolved once, in
+`TableSchema.LogicalName`: `[DatabaseTable]` (not inherited), then the type's `[TableNaming]`
+(inherited), then the provider's `RelationalProviderOptions.TableNaming` (`TableNamingPolicy`,
+full name by default), which reaches `SchemaManager` through `ISchemaStore` like `ReadOnlySchema`;
+everything else reads `TableSchema.TableName`. `BuildSchema` refuses two types with one table name
+and an old name that is another type's table. A missing table with exactly one old table present
+(`[LegacyTableNames]`, or its full-name form when `RenameFullNameTables` is set) is renamed by
+`ISchemaDialect.AdoptTable` inside the schema transaction, compared again and updated like any
+existing table; several old tables fail the update rather than being merged. The provider
 SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation

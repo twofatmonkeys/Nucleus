@@ -38,6 +38,17 @@ namespace TFM.Nucleus.Data.Providers
         IReadOnlyList<SchemaStatement> RenameForRebuild(TableSchema table, string tempTableName);
 
         /// <summary>
+        /// Renames the existing table <paramref name="legacyTableName"/> (a logical name) to
+        /// <paramref name="table"/>'s name, and gives the primary key, constraints and
+        /// Nucleus-named indexes it carries the names they would have had if it had been created
+        /// under the new name, so nothing is rebuilt and the old names are free again. Runs in the
+        /// schema transaction. Objects the engine cannot rename there are left for the index and
+        /// extras sync to replace. A dialect that does not implement this refuses to adopt a table.
+        /// </summary>
+        IReadOnlyList<SchemaStatement> AdoptTable(string legacyTableName, TableSchema table) =>
+            throw new NotSupportedException($"{GetType().Name} cannot rename an existing table to adopt it.");
+
+        /// <summary>
         /// Adds columns to an existing table without touching its rows: the entity
         /// <paramref name="columns"/>, created NULL as <see cref="CreateTable"/> creates them, and the
         /// soft-delete system columns named in <paramref name="softDeleteColumns"/>. Returns null
@@ -112,6 +123,12 @@ namespace TFM.Nucleus.Data.Providers
         ISchemaDialect Dialect { get; }
 
         ICatalogReader Catalog { get; }
+
+        /// <summary>How the provider names the tables of entities that do not name their own.</summary>
+        TableNamingPolicy TableNaming => TableNamingPolicy.FullName;
+
+        /// <summary>A missing table is renamed from its full-name form when a table under that name exists.</summary>
+        bool RenameFullNameTables => false;
 
         /// <summary>A transaction for table rebuilds, which commits on dispose unless rolled back.</summary>
         ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken);
