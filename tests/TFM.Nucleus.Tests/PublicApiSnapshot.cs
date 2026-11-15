@@ -1799,6 +1799,7 @@
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public System.Threading.Tasks.Task<TFM.Nucleus.Testing.NucleusTestLock> LockAsync(System.String, System.Threading.CancellationToken = ...)",
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public System.Threading.Tasks.Task<TFM.Nucleus.Testing.NucleusTestLock> SchemaLockAsync(System.Threading.CancellationToken = ...)",
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public System.Threading.Tasks.Task<TFM.Nucleus.Testing.NucleusTestStack> StartRootedStackAsync(System.Type, System.Action<TFM.Nucleus.Data.Providers.RelationalProviderOptions> = ...)",
+                "  TFM.Nucleus.Testing.NucleusTestDatabase::public System.Threading.Tasks.Task<TFM.Nucleus.Testing.NucleusTestStack> StartSharedStackAsync(System.Threading.CancellationToken = ...)",
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public System.Threading.Tasks.Task<TFM.Nucleus.Testing.NucleusTestStack> StartStackAsync(System.Action<TFM.Nucleus.Data.Providers.RelationalProviderOptions> = ...)",
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public TFM.Nucleus.Testing.NucleusTestDatabaseSettings RequireSettings()",
                 "  TFM.Nucleus.Testing.NucleusTestDatabase::public abstract System.String CopyTableSql(System.String, System.String)",

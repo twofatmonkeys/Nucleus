@@ -25,10 +25,8 @@ namespace TFM.Nucleus.IntegrationTests
 
         public async ValueTask InitializeAsync()
         {
-            if (!Database.IsConfigured)
-                return;
-            using var schema = await Database.SchemaLockAsync();
-            _stack = await Database.StartStackAsync();
+            if (Database.IsConfigured)
+                _stack = await Database.StartSharedStackAsync();
         }
 
         /// <summary>A second stack on the same database with its options changed by <paramref name="configure"/>.</summary>

@@ -70,6 +70,18 @@ public abstract class NucleusTestDatabase
     }
 
     /// <summary>
+    /// Starts a stack while holding <see cref="SchemaLockAsync"/>, the way a fixture boots the
+    /// stack its suites share, so the net8.0 and net10.0 runs never initialise one schema at once.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The database is not configured, or the schema initialisation failed.</exception>
+    public async Task<NucleusTestStack> StartSharedStackAsync(CancellationToken token = default)
+    {
+        RequireSettings();
+        using var schema = await SchemaLockAsync(token);
+        return await StartStackAsync();
+    }
+
+    /// <summary>
     /// A stack whose only provider is rooted at <paramref name="rootType"/>, so its options (a
     /// naming policy, say) touch no table but those of the entities under that root.
     /// </summary>
