@@ -2,7 +2,7 @@
 
   <!-- The test harness packages and the IsPackable/IsTestProject settings come from
        ..\Directory.Build.props. These tests need a live SQL Server: configuration comes from
-       NUCLEUS_TEST_* environment variables or the user secrets store below, and every test
+       NUCLEUS_TEST_* environment variables or the user secrets store below (read by TFM.Nucleus.Testing), and every test
        skips cleanly when no server is configured. -->
 
   <PropertyGroup>
@@ -12,13 +12,9 @@
   <ItemGroup>
     <!-- Package references are pinned per target framework so each run exercises the assemblies
          built for that runtime. -->
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="8.0.0" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="8.0.1" Condition="'$(TargetFramework)' == 'net8.0'" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" Condition="'$(TargetFramework)' == 'net8.0'" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" Condition="'$(TargetFramework)' == 'net8.0'" />
 
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
 
@@ -46,6 +42,7 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Testing\TFM.Nucleus.Testing.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Bindery\TFM.Nucleus.Bindery.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.S3Library\TFM.Nucleus.S3Library.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Stencil\TFM.Nucleus.Stencil.csproj" />

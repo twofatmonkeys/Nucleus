@@ -1,64 +1,41 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Testing;
 
 namespace TFM.Nucleus.IntegrationTests
 {
     /// <summary>
-    /// Boots the full stack (AddNucleus plus one provider) against that provider's test database
-    /// and initializes the schema once for the collection. When the provider's database is not
-    /// configured the fixture stays unconfigured and each test skips instead of failing, so
-    /// `dotnet test` passes on machines without a test database (CI included). Every neutral
-    /// suite is an abstract class run once per provider by a sealed subclass in that provider's
-    /// collection.
+    /// The xunit v3 shim over one <see cref="NucleusTestDatabase"/> from TFM.Nucleus.Testing: boots
+    /// the full stack once for the collection and turns "not configured" into a dynamic skip, so
+    /// `dotnet test` passes on machines without a test database (CI included). Every neutral suite
+    /// is an abstract class run once per provider by a sealed subclass in that provider's collection.
     /// </summary>
-    public abstract class DatabaseFixture : IAsyncLifetime
+    public abstract class DatabaseFixture(NucleusTestDatabase database) : IAsyncLifetime
     {
-        public TestConfig.DatabaseSettings? Settings { get; }
+        private NucleusTestStack? _stack;
+
+        /// <summary>The provider's test database: settings, stacks, locks and raw statements.</summary>
+        public NucleusTestDatabase Database { get; } = database;
+
+        public NucleusTestDatabaseSettings? Settings => Database.Settings;
         public IDataProvider? Provider => _stack?.Provider;
         public ObjectDataManager? Manager => _stack?.Manager;
-        private TestStack? _stack;
-
-        protected DatabaseFixture(TestConfig.DatabaseSettings? settings)
-        {
-            Settings = settings;
-        }
 
         /// <summary>The provider, in skip messages and lock names.</summary>
-        public abstract string ProviderName { get; }
-
-        /// <summary>How to configure this provider's test database, for the skip message.</summary>
-        protected abstract string ConfigurationHint { get; }
-
-        /// <summary>Registers this provider against the test database, with its options changed by <paramref name="configure"/>.</summary>
-        protected abstract void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure);
-
-        /// <summary>Registers this provider rooted at <paramref name="rootType"/>, so it stores only the entities under that root.</summary>
-        protected abstract void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure);
-
-        /// <summary>Points a provider's options at the test database, then applies <paramref name="configure"/>.</summary>
-        protected static void UseTestDatabase(RelationalProviderOptions options, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure)
-        {
-            options.Server = settings.Server;
-            options.Database = settings.Database;
-            options.Username = settings.Username;
-            options.Password = settings.Password;
-            configure(options);
-        }
+        public string ProviderName => Database.ProviderName;
 
         public async ValueTask InitializeAsync()
         {
-            if (Settings == null)
+            if (!Database.IsConfigured)
                 return;
-            using var schema = await SchemaLockAsync();
-            _stack = await StartStackAsync(services => AddProvider(services, Settings, _ => { }));
+            using var schema = await Database.SchemaLockAsync();
+            _stack = await Database.StartStackAsync();
         }
 
         /// <summary>A second stack on the same database with its options changed by <paramref name="configure"/>.</summary>
-        public Task<TestStack> StartStackAsync(Action<RelationalProviderOptions> configure)
+        public Task<NucleusTestStack> StartStackAsync(Action<RelationalProviderOptions> configure)
         {
-            var settings = RequireSettings();
-            return StartStackAsync(services => AddProvider(services, settings, configure));
+            RequireSettings();
+            return Database.StartStackAsync(configure);
         }
 
         /// <summary>
@@ -66,38 +43,10 @@ namespace TFM.Nucleus.IntegrationTests
         /// <paramref name="rootType"/>, so its options (a naming policy, say) touch no table but
         /// those of the entities under that root.
         /// </summary>
-        public Task<TestStack> StartRootedStackAsync(Type rootType, Action<RelationalProviderOptions> configure)
+        public Task<NucleusTestStack> StartRootedStackAsync(Type rootType, Action<RelationalProviderOptions> configure)
         {
-            var settings = RequireSettings();
-            return StartStackAsync(services => AddRootedProvider(services, settings, rootType, configure));
-        }
-
-        /// <summary>
-        /// Boots AddNucleus plus the provider <paramref name="addProvider"/> registers and
-        /// initialises its schema. The fixture's own stack is one; a test that needs the provider
-        /// configured differently starts another and disposes it.
-        /// </summary>
-        protected async Task<TestStack> StartStackAsync(Action<IServiceCollection> addProvider)
-        {
-            var services = new ServiceCollection();
-            var log = new CapturingLoggerProvider();
-            services.AddLogging(builder => builder.AddProvider(log));
-            services.AddNucleus();
-            addProvider(services);
-            var built = services.BuildServiceProvider();
-            try
-            {
-                var provider = built.GetRequiredService<IDataProvider>();
-                var status = await provider.InitializeAsync();
-                if (status != DataProviderStatus.Ok)
-                    throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}{Environment.NewLine}{string.Join(Environment.NewLine, log.Entries)}");
-                return new TestStack(built, provider, new ObjectDataManager(provider, built.GetRequiredService<IObjectSchemaProvider>(), null));
-            }
-            catch
-            {
-                built.Dispose();
-                throw;
-            }
+            RequireSettings();
+            return Database.StartRootedStackAsync(rootType, configure);
         }
 
         public ValueTask DisposeAsync()
@@ -108,10 +57,10 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         /// <summary>Returns the settings, or dynamically skips the calling test when unconfigured.</summary>
-        public TestConfig.DatabaseSettings RequireSettings()
+        public NucleusTestDatabaseSettings RequireSettings()
         {
-            Assert.SkipWhen(Settings == null, $"{ProviderName} test database not configured - {ConfigurationHint}");
-            return Settings!;
+            Assert.SkipWhen(!Database.IsConfigured, Database.SkipReason ?? "");
+            return Database.RequireSettings();
         }
 
         /// <summary>Returns the initialized manager, or dynamically skips when unconfigured.</summary>
@@ -121,46 +70,25 @@ namespace TFM.Nucleus.IntegrationTests
             return Manager!;
         }
 
-        /// <summary>
-        /// The cross-process lock of a suite that resets its tables, per provider: the net8.0 and
-        /// net10.0 runs share a database, but two providers never do.
-        /// </summary>
-        internal Task<TestDatabaseLock> LockAsync(string suite) => TestDatabaseLock.AcquireAsync($"{suite}-{ProviderName}");
+        /// <summary>The cross-process lock of a suite that resets its tables, per provider.</summary>
+        internal Task<NucleusTestLock> LockAsync(string suite) => Database.LockAsync(suite);
 
-        /// <summary>
-        /// The cross-process lock over the database's schema, per provider. Hold it to change a
-        /// table's shape with raw DDL, to start a stack (which updates the schema), or to check the
-        /// whole schema is current, so the net8.0 and net10.0 runs never see each other's tables
-        /// half changed. It is not reentrant: take it once per test, around the whole change.
-        /// </summary>
-        internal Task<TestDatabaseLock> SchemaLockAsync() => LockAsync("schema");
-    }
-
-    /// <summary>A booted Nucleus stack over one provider; disposing it disposes its services.</summary>
-    public sealed class TestStack(ServiceProvider services, IDataProvider provider, ObjectDataManager manager) : IDisposable
-    {
-        public IDataProvider Provider { get; } = provider;
-        public ObjectDataManager Manager { get; } = manager;
-
-        public void Dispose() => services.Dispose();
+        /// <summary>The cross-process lock over the database's schema, per provider. Not reentrant.</summary>
+        internal Task<NucleusTestLock> SchemaLockAsync() => Database.SchemaLockAsync();
     }
 
     /// <summary>SQL Server, configured by the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.</summary>
-    public sealed class SqlServerFixture() : DatabaseFixture(TestConfig.TryGetSettings())
+    public sealed class SqlServerFixture() : DatabaseFixture(NucleusTestDatabase.SqlServer)
     {
-        public override string ProviderName => "sqlserver";
-
-        protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
-
-        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusSQLDataProvider(options => UseTestDatabase(options, settings, configure));
-
-        protected override void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusSQLDataProvider(rootType, options => UseTestDatabase(options, settings, configure));
+        /// <summary>The SQL Server test database, typed for its SQL Server-only members.</summary>
+        public SqlServerTestDatabase SqlServer => NucleusTestDatabase.SqlServer;
 
         /// <summary>A second stack on the same database with its SQL Server settings changed by <paramref name="configure"/>.</summary>
-        public Task<TestStack> StartStackAsync(Action<SQLConfiguration> configure) =>
-            StartStackAsync((RelationalProviderOptions options) => configure((SQLConfiguration)options));
+        public Task<NucleusTestStack> StartStackAsync(Action<SQLConfiguration> configure)
+        {
+            RequireSettings();
+            return SqlServer.StartStackAsync(configure);
+        }
     }
 
     [CollectionDefinition(Name)]
@@ -170,18 +98,7 @@ namespace TFM.Nucleus.IntegrationTests
     }
 
     /// <summary>PostgreSQL, configured by the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.</summary>
-    public sealed class PostgresFixture() : DatabaseFixture(TestConfig.TryGetPostgresSettings())
-    {
-        public override string ProviderName => "postgres";
-
-        protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
-
-        protected override void AddProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusPostgresDataProvider(options => UseTestDatabase(options, settings, configure));
-
-        protected override void AddRootedProvider(IServiceCollection services, TestConfig.DatabaseSettings settings, Type rootType, Action<RelationalProviderOptions> configure) =>
-            services.AddNucleusPostgresDataProvider(rootType, options => UseTestDatabase(options, settings, configure));
-    }
+    public sealed class PostgresFixture() : DatabaseFixture(NucleusTestDatabase.Postgres);
 
     [CollectionDefinition(Name)]
     public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>

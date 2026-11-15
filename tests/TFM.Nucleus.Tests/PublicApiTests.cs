@@ -17,6 +17,7 @@ namespace TFM.Nucleus.Tests
             typeof(ObjectDataManager).Assembly,                          // TFM.Nucleus.Data
             typeof(SQLConfiguration).Assembly,                           // TFM.Nucleus.Data.SQL
             typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly,
+            typeof(TFM.Nucleus.Testing.NucleusTestDatabase).Assembly,     // TFM.Nucleus.Testing
             typeof(TFM.Nucleus.Bindery.NucleusBinderyStore).Assembly,
             typeof(TFM.Nucleus.S3Library.NucleusS3AssetStore).Assembly,
             typeof(TFM.Nucleus.Stencil.NucleusTemplateStore).Assembly,

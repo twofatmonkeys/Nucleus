@@ -50,7 +50,7 @@ namespace TFM.Nucleus.IntegrationTests
         private async Task<string[]> OwnedObjectNamesAsync(string table) =>
             (await ScalarAsync(OwnedObjectNamesSql(table)) as string ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
 
-        private Task<TestStack> StartAsync(Action<RelationalProviderOptions>? configure = null) =>
+        private Task<NucleusTestStack> StartAsync(Action<RelationalProviderOptions>? configure = null) =>
             Fixture.StartRootedStackAsync(typeof(IntNamingRoot<>), configure ?? (_ => { }));
 
         /// <summary>

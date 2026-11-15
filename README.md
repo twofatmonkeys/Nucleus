@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Nine packages ship from it, all on one version.
+This repository holds the whole family. Ten packages ship from it, all on one version.
 
 ## Packages
 
@@ -13,12 +13,13 @@ This repository holds the whole family. Nine packages ship from it, all on one v
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](#provider-seam)). Contains no SQL, proven by a tripwire test. |
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
 | `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](#postgresql). |
+| `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server and PostgreSQL test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](#testing-against-a-live-database). |
 | `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
 | `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
 | `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
 | `TFM.Nucleus.Attribution` | Keeps [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution)'s marketing touches and frozen sales in Nucleus tables: `NucleusAttributionStore` implements `IAttributionStore` over three entities, with touch writes that are safe to retry and sale replacement on one transaction. Provider neutral; see [Attribution](#attribution). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside the providers over the same three. The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and the Bindery, S3Library, Stencil and Attribution stores work over either.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside the providers over the same three. The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and the Bindery, S3Library, Stencil and Attribution stores work over either. `Testing` sits above both providers, because a test picks its database too.
 
 ## Install
 
@@ -286,6 +287,31 @@ run, by predicate; the store itself never deletes one.
 
 TFM.Attribution ships no contract test package, so the store's rules are tested directly against
 the integration test database (`tests\TFM.Nucleus.IntegrationTests\Attribution`).
+
+## Testing against a live database
+
+`TFM.Nucleus.Testing` is what this repo's integration tests run on, packaged so a store that lives in another repo can be tested against the same databases the same way. It references no test framework: each framework's shim turns "not configured" into its own skip.
+
+```csharp
+using TFM.Nucleus.Testing;
+
+var database = NucleusTestDatabase.SqlServer;          // or NucleusTestDatabase.Postgres
+if (!database.IsConfigured)
+    return;                                            // skip with database.SkipReason, your framework's way
+
+using (await database.SchemaLockAsync())               // the net8.0 and net10.0 runs share the database
+using var stack = await database.StartStackAsync();    // AddNucleus + the provider, schema initialised
+var store = new MyStore(stack.Manager);
+```
+
+| Type | What it gives a test |
+|---|---|
+| `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server) and `Nucleus:Postgres:*` user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*` and `NUCLEUS_PG_TEST_*` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
+| `NucleusTestDatabase` | `SqlServer` and `Postgres`: `IsConfigured`, `SkipReason`, `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
+| `NucleusTestStack` | A booted stack: `Provider`, `Manager` (what a store under test is given), `Log` (the warnings and errors it logged) and `Services`. Dispose it. |
+| `NucleusTestLock` | A cross-process lock held as an exclusively opened temp file, so the two target framework runs of a suite never reset each other's rows. Waits up to five minutes. |
+
+Stacks find entities the way an application does, from every assembly beside the entry assembly, so a store's test project initialises the store's tables just by referencing the store. The schema lock is not reentrant: take it once per test, around the whole change.
 
 ## Entity base classes
 
@@ -757,6 +783,7 @@ src\TFM.Nucleus\                 entity core
 src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Data.PostgreSQL\ PostgreSQL provider
+src\TFM.Nucleus.Testing\         live-database test support
 src\TFM.Nucleus.Bindery\         TFM.Bindery page store
 src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
 src\TFM.Nucleus.Stencil\          TFM.Stencil template store

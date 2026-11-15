@@ -15,12 +15,12 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
         [Fact]
         public async Task ReadBack_OnATableWithATrigger_ExplainsTheRefusal()
         {
-            var settings = fixture.RequireSettings();
+            fixture.RequireSettings();
             var manager = fixture.RequireManager();
             const string table = "tbl_TFM_Nucleus_IntegrationTests_IntTriggeredRow";
             var trigger = $"trg_{Guid.NewGuid():N}";
             using var gate = await fixture.LockAsync("output-trigger");
-            await SqlServerScript.ExecuteAsync(settings, $"CREATE TRIGGER [dbo].[{trigger}] ON [dbo].[{table}] AFTER INSERT AS BEGIN SET NOCOUNT ON; END", Ct);
+            await fixture.Database.ExecuteAsync($"CREATE TRIGGER [dbo].[{trigger}] ON [dbo].[{table}] AFTER INSERT AS BEGIN SET NOCOUNT ON; END", Ct);
             try
             {
                 var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntTriggeredRow { Name = "triggered" }));
@@ -33,7 +33,7 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             }
             finally
             {
-                await SqlServerScript.ExecuteAsync(settings, $"DROP TRIGGER [dbo].[{trigger}]", Ct);
+                await fixture.Database.ExecuteAsync($"DROP TRIGGER [dbo].[{trigger}]", Ct);
             }
         }
     }

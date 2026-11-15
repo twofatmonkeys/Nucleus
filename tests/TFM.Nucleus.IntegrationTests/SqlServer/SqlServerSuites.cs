@@ -32,9 +32,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             $"WHERE i.object_id = OBJECT_ID(N'dbo.{table}') AND i.name = N'{index}' " +
             "ORDER BY ic.is_included_column, ic.key_ordinal, c.name FOR XML PATH('')), 1, 1, '')";
 
-        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 
-        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
 
     [Collection(SqlServerCollection.Name)]
@@ -102,46 +102,46 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerAddColumnIntegrationTests(SqlServerFixture fixture) : AddColumnIntegrationTests(fixture)
     {
         // A column cannot be dropped while an index or a default constraint depends on it.
-        protected override string DropColumnsSql(string table, params string[] columns) => SqlServerScript.DropColumnsSql(table, columns);
+        protected override string DropColumnsSql(string table, params string[] columns) => Fixture.Database.DropColumnsSql(table, columns);
 
         protected override string NarrowColumnSql(string table, string column, int length) =>
             $"ALTER TABLE [dbo].[{table}] ALTER COLUMN [{column}] varchar({length}) NULL";
 
-        protected override string TableIdSql(string table) => SqlServerScript.TableIdSql(table);
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
 
-        protected override string DeleteAllSql(string table) => SqlServerScript.DeleteAllSql(table);
+        protected override string DeleteAllSql(string table) => Fixture.Database.DeleteAllSql(table);
 
-        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 
-        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerTableNamingIntegrationTests(SqlServerFixture fixture) : TableNamingIntegrationTests(fixture)
     {
-        protected override string TableIdSql(string table) => SqlServerScript.TableIdSql(table);
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
 
-        protected override string DeleteAllSql(string table) => SqlServerScript.DeleteAllSql(table);
+        protected override string DeleteAllSql(string table) => Fixture.Database.DeleteAllSql(table);
 
-        protected override string DropColumnsSql(string table, params string[] columns) => SqlServerScript.DropColumnsSql(table, columns);
+        protected override string DropColumnsSql(string table, params string[] columns) => Fixture.Database.DropColumnsSql(table, columns);
 
-        // DROP TABLE IF EXISTS and STRING_AGG need a newer compatibility level than the test database may have.
-        protected override string DropTableIfExistsSql(string table) => $"IF OBJECT_ID(N'dbo.{table}', N'U') IS NOT NULL DROP TABLE [dbo].[{table}]";
+        protected override string DropTableIfExistsSql(string table) => Fixture.Database.DropTableIfExistsSql(table);
 
-        protected override string RenameTableSql(string from, string to) => $"EXEC sp_rename N'dbo.{from}', N'{to}'";
+        protected override string RenameTableSql(string from, string to) => Fixture.Database.RenameTableSql(from, to);
 
-        protected override string CopyTableSql(string from, string to) => $"SELECT * INTO [dbo].[{to}] FROM [dbo].[{from}]";
+        protected override string CopyTableSql(string from, string to) => Fixture.Database.CopyTableSql(from, to);
 
-        protected override string RowCountSql(string table) => $"SELECT COUNT_BIG(*) FROM [dbo].[{table}]";
+        protected override string RowCountSql(string table) => Fixture.Database.RowCountSql(table);
 
         // Indexes (the primary key's among them), and the constraints and triggers the table owns.
+        // FOR XML PATH because STRING_AGG needs a newer compatibility level than the test database may have.
         protected override string OwnedObjectNamesSql(string table) =>
             $"SELECT STUFF((SELECT ',' + name FROM (" +
             $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.{table}') AND name IS NOT NULL " +
             $"UNION ALL SELECT name FROM sys.objects WHERE parent_object_id = OBJECT_ID(N'dbo.{table}')) n FOR XML PATH('')), 1, 1, '')";
 
-        protected override Task ExecuteAsync(string sql) => SqlServerScript.ExecuteAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 
-        protected override Task<object?> ScalarAsync(string sql) => SqlServerScript.ScalarAsync(Fixture.RequireSettings(), sql, Ct);
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
 }

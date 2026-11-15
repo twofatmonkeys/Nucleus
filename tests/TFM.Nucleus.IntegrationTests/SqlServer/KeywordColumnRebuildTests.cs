@@ -17,23 +17,23 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
         [Fact]
         public async Task KeywordColumns_SurviveARebuild_WithTheirRows()
         {
-            var settings = fixture.RequireSettings();
+            fixture.RequireSettings();
             fixture.RequireManager();
             var id = Guid.NewGuid();
             using var schema = await fixture.SchemaLockAsync();
 
             // The shared stack made the table current. Give Note a type the entity does not have,
             // holding one row, so the next start must rebuild it.
-            await SqlServerScript.ExecuteAsync(settings,
+            await fixture.Database.ExecuteAsync(
                 $"ALTER TABLE [dbo].[{Table}] ALTER COLUMN [Note] nvarchar(100) NULL; " +
                 $"INSERT INTO [dbo].[{Table}] ([ID], [By], [Order], [Note], [Timestamp]) VALUES ('{id}', N'Sam', 3, N'kept', SYSDATETIMEOFFSET());", Ct);
-            var tableId = await TableIdAsync(settings);
+            var tableId = await TableIdAsync();
             try
             {
                 using var stack = await fixture.StartStackAsync(_ => { });
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
-                Assert.NotEqual(tableId, await TableIdAsync(settings));
+                Assert.NotEqual(tableId, await TableIdAsync());
                 var row = stack.Manager.LoadByID<IntKeywordItem>(id);
                 Assert.NotNull(row);
                 Assert.Equal("Sam", row!.By);
@@ -42,11 +42,11 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             }
             finally
             {
-                await SqlServerScript.ExecuteAsync(settings, $"DELETE FROM [dbo].[{Table}] WHERE [ID] = '{id}';", Ct);
+                await fixture.Database.ExecuteAsync($"DELETE FROM [dbo].[{Table}] WHERE [ID] = '{id}';", Ct);
             }
         }
 
-        private static async Task<long> TableIdAsync(TestConfig.DatabaseSettings settings) =>
-            Convert.ToInt64(await SqlServerScript.ScalarAsync(settings, $"SELECT CAST(OBJECT_ID(N'dbo.{Table}') AS bigint)", Ct));
+        private async Task<long> TableIdAsync() =>
+            Convert.ToInt64(await fixture.Database.ScalarAsync($"SELECT CAST(OBJECT_ID(N'dbo.{Table}') AS bigint)", Ct));
     }
 }

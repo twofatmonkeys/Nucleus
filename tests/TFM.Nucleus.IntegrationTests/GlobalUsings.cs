@@ -4,3 +4,4 @@ global using TFM.Nucleus.Data.Queries;
 global using TFM.Nucleus.Data.Schema;
 global using TFM.Nucleus.Data.SQL;
 global using Xunit;
+global using TFM.Nucleus.Testing;

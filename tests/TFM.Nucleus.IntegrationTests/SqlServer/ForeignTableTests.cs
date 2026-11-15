@@ -13,10 +13,10 @@
         [Fact]
         public async Task ForeignColumnOfAnUnknownType_DoesNotFailInitialisation()
         {
-            var settings = fixture.RequireSettings();
+            fixture.RequireSettings();
             var table = $"foreign_{Guid.NewGuid():N}";
             using var schema = await fixture.SchemaLockAsync();
-            await SqlServerScript.ExecuteAsync(settings, $"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Anything] sql_variant NULL)", Ct);
+            await fixture.Database.ExecuteAsync($"CREATE TABLE [dbo].[{table}] ([Id] int NOT NULL, [Anything] sql_variant NULL)", Ct);
             try
             {
                 using var stack = await fixture.StartStackAsync(_ => { });
@@ -25,7 +25,7 @@
             }
             finally
             {
-                await SqlServerScript.ExecuteAsync(settings, $"DROP TABLE [dbo].[{table}]", Ct);
+                await fixture.Database.ExecuteAsync($"DROP TABLE [dbo].[{table}]", Ct);
             }
         }
     }

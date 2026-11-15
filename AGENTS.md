@@ -4,7 +4,7 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as nine packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as ten packages that version and
 release together.
 
 | Package | Source | Role |
@@ -14,6 +14,7 @@ release together.
 | `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer, the shared query and schema model, and the provider SDK. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
 | `TFM.Nucleus.Data.PostgreSQL` | `src\TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql). |
+| `TFM.Nucleus.Testing` | `src\TFM.Nucleus.Testing` | Live-database test support, framework neutral: test database settings, a booted stack per provider, cross-process locks, raw setup statements. What this repo's integration tests and every store repo's tests run on. |
 | `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
 | `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
 | `TFM.Nucleus.Stencil` | `src\TFM.Nucleus.Stencil` | TFM.Stencil's template bundle store (used by TFM.Mailroom and TFM.Paperwork) over Nucleus entities. Provider neutral; depends on `TFM.Stencil.Abstractions` from the feed. |
@@ -34,6 +35,8 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), and
 `Bindery`, `S3Library`, `Stencil` and `Attribution` sit beside the providers over the same three.
+`Testing` sits above both providers: it registers them and holds the raw SQL a test sets a table up
+with, so it is deliberately outside `ProviderSeamTests`, like a provider.
 Neither provider references the other. Direction is enforced by project references and by
 `ProviderSeamTests`, which also scans the compiled string literals of the neutral and store
 assemblies for SQL and provider names; `ProviderSurfaceTests` holds each provider's public surface
@@ -216,8 +219,11 @@ tests. SQL Server needs a disposable database configured through the `NUCLEUS_TE
 `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` environment variables
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
 `Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
-A provider with no settings skips cleanly, which is what happens in CI. A fixture whose
-initialisation fails includes the stack's warnings and errors in its message. The net8.0 and
+A provider with no settings skips cleanly, which is what happens in CI. Settings, stack boot, locks
+and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer` and `.Postgres`);
+`DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
+configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
+stack whose initialisation fails includes its warnings and errors in the message. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
 stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
 for its duration; the lock is not reentrant, so take it once per test. The save benchmarks
@@ -265,7 +271,7 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The nine packages
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The ten packages
   share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version,
   `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version, `TFM.Nucleus.Stencil` a
   `TFM.Stencil.Abstractions` version and `TFM.Nucleus.Attribution` a `TFM.Attribution` version (two identical per-TFM lines in each csproj); a release of
@@ -286,5 +292,5 @@ warning in new code fails CI.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all nine packages and is the reference documentation consumers see on the feed.
+  all ten packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.

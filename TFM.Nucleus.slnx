@@ -26,6 +26,7 @@
   <Project Path="src/TFM.Nucleus.Data/TFM.Nucleus.Data.csproj" />
   <Project Path="src/TFM.Nucleus.Data.SQL/TFM.Nucleus.Data.SQL.csproj" />
   <Project Path="src/TFM.Nucleus.Data.PostgreSQL/TFM.Nucleus.Data.PostgreSQL.csproj" />
+  <Project Path="src/TFM.Nucleus.Testing/TFM.Nucleus.Testing.csproj" />
   <Project Path="src/TFM.Nucleus.Bindery/TFM.Nucleus.Bindery.csproj" />
   <Project Path="src/TFM.Nucleus.S3Library/TFM.Nucleus.S3Library.csproj" />
   <Project Path="src/TFM.Nucleus.Stencil/TFM.Nucleus.Stencil.csproj" />
