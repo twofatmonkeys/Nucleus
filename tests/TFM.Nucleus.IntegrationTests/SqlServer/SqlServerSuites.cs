@@ -86,17 +86,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerSaveBenchmarks(SqlServerFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
-    [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerAttributionStoreTests(SqlServerFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);
 
-    [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerBinderyStoreContractTests(SqlServerFixture fixture) : Bindery.NucleusBinderyStoreContractTests(fixture);
 
-    [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerS3AssetStoreContractTests(SqlServerFixture fixture) : S3Library.NucleusS3AssetStoreContractTests(fixture);
 
-    [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerTemplateStoreContractTests(SqlServerFixture fixture) : Stencil.NucleusTemplateStoreContractTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerAddColumnIntegrationTests(SqlServerFixture fixture) : AddColumnIntegrationTests(fixture)

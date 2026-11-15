@@ -5,12 +5,12 @@ namespace TFM.Nucleus.Data
     /// <summary>How a table name is made from an entity type's name.</summary>
     public enum TableNamingStyle
     {
-        /// <summary>tbl_ and the type's full name, namespace included: tbl_TFM_Nucleus_Bindery_BinderyDocument.</summary>
+        /// <summary>tbl_ and the type's full name, namespace included: Shop.Billing.Invoice is tbl_Shop_Billing_Invoice.</summary>
         FullName = 0,
 
         /// <summary>
-        /// tbl_ and the last levels of the type's full name: with 1 level tbl_BinderyDocument, with 2
-        /// tbl_Bindery_BinderyDocument. A nested type's outer type counts as a level.
+        /// tbl_ and the last levels of the type's full name: with 1 level tbl_Invoice, with 2
+        /// tbl_Billing_Invoice. A nested type's outer type counts as a level.
         /// </summary>
         ObjectName = 1,
     }

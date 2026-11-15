@@ -86,17 +86,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresSaveBenchmarks(PostgresFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
 
-    [Collection(PostgresCollection.Name)]
-    public sealed class PostgresAttributionStoreTests(PostgresFixture fixture) : Attribution.NucleusAttributionStoreTests(fixture);
 
-    [Collection(PostgresCollection.Name)]
-    public sealed class PostgresBinderyStoreContractTests(PostgresFixture fixture) : Bindery.NucleusBinderyStoreContractTests(fixture);
 
-    [Collection(PostgresCollection.Name)]
-    public sealed class PostgresS3AssetStoreContractTests(PostgresFixture fixture) : S3Library.NucleusS3AssetStoreContractTests(fixture);
 
-    [Collection(PostgresCollection.Name)]
-    public sealed class PostgresTemplateStoreContractTests(PostgresFixture fixture) : Stencil.NucleusTemplateStoreContractTests(fixture);
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresAddColumnIntegrationTests(PostgresFixture fixture) : AddColumnIntegrationTests(fixture)

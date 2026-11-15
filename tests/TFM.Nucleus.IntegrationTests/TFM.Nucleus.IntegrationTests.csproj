@@ -18,22 +18,6 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
 
-    <!-- Bindery's page store contract as framework-neutral cases, driven from xunit theories. The
-         MSTest shim is not referenced on purpose. Same version as the store pins. -->
-    <PackageReference Include="TFM.Bindery.Testing" Version="1.26.250.3" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="TFM.Bindery.Testing" Version="1.26.250.3" Condition="'$(TargetFramework)' == 'net10.0'" />
-
-    <!-- TFM.S3Library's store contract as framework-neutral cases. Pinned to the same version as
-         the store's TFM.S3Library.Abstractions reference: a newer Testing package would lift
-         Abstractions underneath the store without anyone noticing. -->
-    <PackageReference Include="TFM.S3Library.Testing" Version="1.26.250.3" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="TFM.S3Library.Testing" Version="1.26.250.3" Condition="'$(TargetFramework)' == 'net10.0'" />
-
-    <!-- TFM.Stencil's store contract as framework-neutral cases. Pinned to the same version as
-         the store's TFM.Stencil.Abstractions reference: a newer Testing package would lift
-         Abstractions underneath the store without anyone noticing. -->
-    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net8.0'" />
-    <PackageReference Include="TFM.Stencil.Testing" Version="1.26.304.1" Condition="'$(TargetFramework)' == 'net10.0'" />
   </ItemGroup>
 
   <ItemGroup>
@@ -43,10 +27,6 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Testing\TFM.Nucleus.Testing.csproj" />
-    <ProjectReference Include="..\..\src\TFM.Nucleus.Bindery\TFM.Nucleus.Bindery.csproj" />
-    <ProjectReference Include="..\..\src\TFM.Nucleus.S3Library\TFM.Nucleus.S3Library.csproj" />
-    <ProjectReference Include="..\..\src\TFM.Nucleus.Stencil\TFM.Nucleus.Stencil.csproj" />
-    <ProjectReference Include="..\..\src\TFM.Nucleus.Attribution\TFM.Nucleus.Attribution.csproj" />
   </ItemGroup>
 
 </Project>

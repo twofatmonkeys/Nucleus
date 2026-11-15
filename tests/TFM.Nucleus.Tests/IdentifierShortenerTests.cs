@@ -52,13 +52,36 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void PostgresDialect_UsesTheShortenedNameForIndexes()
         {
-            var table = new TableSchema(ObjectSchema.Get<TFM.Nucleus.Attribution.AttributionTouchRecord>());
+            var table = new TableSchema(ObjectSchema.Get<TestLongNamedTouchRecordForIdentifiers>());
             var dialect = new TFM.Nucleus.Data.PostgreSQL.PostgresSchemaDialect("public", null);
 
             var physical = SchemaComparer.PhysicalIndexName(table, table["SessionId"], dialect);
 
-            Assert.Equal(IdentifierShortener.Shorten("NCI_tbl_TFM_Nucleus_Attribution_AttributionTouchRecord_SessionId", 63), physical);
+            Assert.Equal(IdentifierShortener.Shorten("NCI_tbl_TFM_Nucleus_Tests_TestLongNamedTouchRecordForIdentifiers_SessionId", 63), physical);
             Assert.Contains($"\"{physical}\"", dialect.CreateIndex(table, table["SessionId"]).Text);
         }
+    }
+}
+
+namespace TFM.Nucleus.Tests
+{
+    /// <summary>
+    /// A table whose generated names run past PostgreSQL's 63 bytes: the shape of a real touch
+    /// table, with a unique id, two indexed lookup columns and text, under a long full name.
+    /// </summary>
+    [Deletable(DeleteBehavior.Hard)]
+    public class TestLongNamedTouchRecordForIdentifiers : CoreObject<TestLongNamedTouchRecordForIdentifiers>
+    {
+        [DatabaseColumn(Unique = true)]
+        public Guid TouchId { get => GetValue<Guid>(); set => SetValue(value); }
+
+        [DatabaseColumn(Indexed = true)]
+        public Guid SessionId { get => GetValue<Guid>(); set => SetValue(value); }
+
+        [DatabaseColumn(Indexed = true)]
+        public DateTimeOffset Touched { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
+
+        [DatabaseColumn(DataType.Unicode, 64)]
+        public string? Source { get => GetValue<string>(); set => SetValue(value); }
     }
 }

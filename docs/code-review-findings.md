@@ -102,23 +102,6 @@ timestamp.
 pipeline", but nothing reads it. Removing a child from a collection and saving the parent leaves
 the child's row in place.
 
-### Bindery page deletes match the page id by collation
-
-`NucleusBinderyStore.DeletePageAsync` deletes versions with `PageId = @pageId`, and `VersionsOf`
-reads them the same way. Under a case-insensitive collation that also matches a page id differing
-only in case. The document lookup filters ordinally; the version paths do not. This predates the
-switch to delete by predicate, which kept the same condition. It is now provider dependent: SQL
-Server's default collation matches without regard to case, PostgreSQL's equality does not, so the
-same store deletes different rows for such a page id on the two engines.
-
-### Pruning versions still loads their content
-
-`NucleusBinderyStore.PruneVersionsAsync` loads every version of a page, JSON included, to order
-them and choose which to delete. Ordering happens in memory because the provider translates none.
-Row reads (November 2026, below) now give it a way out: `Rows<BinderyPageVersion>(...)
-.Select(v => v.ID, ...).OrderByDescending(...)` reads only the ids and the ordering columns. The store
-has not been changed to use them yet.
-
 ## Fixed
 
 ### No way to choose columns, order, page or group in the database (November 2026)

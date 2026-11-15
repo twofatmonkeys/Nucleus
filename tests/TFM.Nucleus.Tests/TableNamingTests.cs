@@ -169,8 +169,8 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
-        public void ObjectName_Two_NamesABinderyDocument_AsTheExampleSays() =>
-            Assert.Equal("tbl_Bindery_BinderyDocument", TableNamingPolicy.ObjectName(2).NameFor(typeof(TFM.Nucleus.Bindery.BinderyDocument)));
+        public void ObjectName_Two_KeepsTheLastNamespaceSegment() =>
+            Assert.Equal("tbl_Tests_TestWidget", TableNamingPolicy.ObjectName(2).NameFor(typeof(TestWidget)));
 
         [Fact]
         public void ObjectName_RefusesFewerThanOneLevel()

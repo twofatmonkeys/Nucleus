@@ -81,23 +81,9 @@ namespace TFM.Nucleus.Tests
             return query.BuildQuery();
         }
 
-        /// <summary>Every database-enabled entity of the four store packages.</summary>
-        public static IEnumerable<Type> StoreEntityTypes() =>
-            new[]
-            {
-                typeof(TFM.Nucleus.Bindery.BinderyDocument).Assembly,
-                typeof(TFM.Nucleus.S3Library.S3AssetRecord).Assembly,
-                typeof(TFM.Nucleus.Stencil.StencilTemplateRecord).Assembly,
-                typeof(TFM.Nucleus.Attribution.AttributionTouchRecord).Assembly,
-            }
-            .SelectMany(a => a.GetTypes())
-            .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(ICoreObject).IsAssignableFrom(t) && ObjectSchema.Get(t).IsDatabaseEnabled)
-            .OrderBy(t => t.FullName, StringComparer.Ordinal);
-
         /// <summary>The entity types whose CREATE TABLE every provider's goldens pin.</summary>
         public static IEnumerable<Type> SchemaTypes() =>
-            new[] { typeof(TestWidget), typeof(TestUniqueWidget), typeof(TestSoftWidget), typeof(TestDeletableChild), typeof(TestAllTypesWidget), typeof(TestSoftParent), typeof(NullableWidget), typeof(TestRenamedWidget), typeof(TestRenamedChild), typeof(TestServerValueWidget) }
-                .Concat(StoreEntityTypes());
+            new[] { typeof(TestWidget), typeof(TestUniqueWidget), typeof(TestSoftWidget), typeof(TestDeletableChild), typeof(TestAllTypesWidget), typeof(TestSoftParent), typeof(NullableWidget), typeof(TestRenamedWidget), typeof(TestRenamedChild), typeof(TestServerValueWidget) };
 
         public static TableSchema TableOf(Type type) => Table(type);
 

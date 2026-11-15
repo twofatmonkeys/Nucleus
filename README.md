@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Ten packages ship from it, all on one version.
+This repository holds the whole family. Six packages ship from it, all on one version.
 
 ## Packages
 
@@ -14,12 +14,8 @@ This repository holds the whole family. Ten packages ship from it, all on one ve
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
 | `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](#postgresql). |
 | `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server and PostgreSQL test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](#testing-against-a-live-database). |
-| `TFM.Nucleus.Bindery` | Keeps [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery.NET)'s pages in Nucleus tables: `NucleusBinderyStore` implements the CMS's page store with version history, direct lookups and change tokens over four entities. Provider neutral; see [Bindery](#bindery). |
-| `TFM.Nucleus.S3Library` | Keeps [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library)'s asset metadata in Nucleus tables: `NucleusS3AssetStore` implements the library's `IS3AssetStore` over three entities, with the version check and the live-path rule enforced by unique indexes. Provider neutral; see [S3Library](#s3library). |
-| `TFM.Nucleus.Stencil` | Keeps [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) template bundles (TFM.Mailroom email templates, TFM.Paperwork PDF templates) in Nucleus tables: `NucleusTemplateStore` implements `ITemplateStore` over two entities, partitioned by collection so every consumer shares one database. Provider neutral; see [Stencil](#stencil). |
-| `TFM.Nucleus.Attribution` | Keeps [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution)'s marketing touches and frozen sales in Nucleus tables: `NucleusAttributionStore` implements `IAttributionStore` over three entities, with touch writes that are safe to retry and sale replacement on one transaction. Provider neutral; see [Attribution](#attribution). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), with `Bindery`, `S3Library`, `Stencil` and `Attribution` beside the providers over the same three. The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and the Bindery, S3Library, Stencil and Attribution stores work over either. `Testing` sits above both providers, because a test picks its database too.
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`). The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and a store written against the neutral layers works over either. `Testing` sits above both providers, because a test picks its database too. See [Stores for other libraries](#stores-for-other-libraries).
 
 ## Install
 
@@ -120,7 +116,7 @@ var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
 
 ## PostgreSQL
 
-`TFM.Nucleus.Data.PostgreSQL` runs the same entities, queries and store packages on PostgreSQL 16
+`TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16
 or later. Everything in this document applies on both providers, except where a section says
 otherwise. These are the differences an application can see:
 
@@ -156,137 +152,23 @@ lacks columns has them added in place, and one whose column types change is rebu
 Server, in one transaction: PostgreSQL's DDL is transactional, so a failed update leaves nothing
 behind. Adding a column, `IsDeleted` with its constant default included, is a catalog-only change.
 
-## Bindery
+## Stores for other libraries
 
-`TFM.Nucleus.Bindery` is the page store for the TFM.Bindery CMS. It ships four entities
-(`BinderyDocument`, holding a page's draft and published JSON in one row; `BinderyPageVersion`,
-the snapshots the editor's history panel restores from; `BinderyBlockTemplate`; and
-`BinderyChangeToken`, one row bumped on every publish so replicas converge) and
-`NucleusBinderyStore`, which implements `IBinderyStore`, `IBinderyVersionStore`,
-`IBinderyPageLookup` and `IBinderyChangeTokenSource`.
+The stores that keep other libraries' data in Nucleus tables live with the library whose contract
+they implement, so a contract change ships with its store instead of forcing a Nucleus release:
 
-```csharp
-builder.Services.AddNucleus();
-builder.Services.AddNucleusData();
-builder.Services.AddNucleusSQLDataProvider();
-builder.Services.AddBindery<NucleusBinderyStore>(bindery => bindery.Options.AuthorizationPolicy = "Editors");
-```
+| Package | Repo | Store |
+|---|---|---|
+| `TFM.Bindery.Nucleus` | [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery) | `NucleusBinderyStore`, the CMS's page store |
+| `TFM.S3Library.Nucleus` | [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library) | `NucleusS3AssetStore`, the media library's asset metadata |
+| `TFM.Stencil.Nucleus` | [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) | `NucleusTemplateStore`, Mailroom and Paperwork templates |
+| `TFM.Attribution.Nucleus` | [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution) | `NucleusAttributionStore`, marketing touches and sales |
 
-The tables are created and migrated at `InitializeDataProviderAsync` like every other entity, so
-`NucleusOptions.ReadOnlySchema` must be false on the first run (`AddNucleus()` sets it so). Publish,
-unpublish and delete each run inside one transactional context together with the change token, so
-a reader never sees a half-published page. Storage failures surface as Bindery's own
-`BinderyException` with the original attached. The store passes `BinderyStoreContract.Cases` from
-`TFM.Bindery.Testing` against the integration test database.
-
-## S3Library
-
-`TFM.Nucleus.S3Library` is the metadata store for the TFM.S3Library media library. It ships three
-entities (`S3AssetRecord`, one row per asset with the collections as JSON; `S3AssetPreviousPath`,
-one row per path an asset used to answer to, so the library's redirect lookup is indexed; and
-`S3AssetVersionClaim`, the version gate) and `NucleusS3AssetStore`, which implements
-`IS3AssetStore`.
-
-```csharp
-builder.Services.AddNucleus();
-builder.Services.AddNucleusData();
-builder.Services.AddNucleusSQLDataProvider();
-builder.Services.AddS3Library<NucleusS3AssetStore>();
-```
-
-The tables are created and migrated at `InitializeDataProviderAsync` like every other entity.
-Nucleus has no optimistic concurrency and cannot report the rows an update affected, so the store enforces the
-contract's two hard rules with unique indexes instead: `S3AssetRecord.LivePath` carries the full
-path while a record is live and null once it is soft-deleted, so the filtered unique index on it
-is exactly "no two live records share a path"; and every save inserts a claim row for the version
-it moves to, in the same transaction as the record write, so two writers racing from one version
-collide on the claim index and exactly one commits. The provider reports a broken unique index as
-a [`UniqueViolationException`](#unique-violations) naming the entity and column, and the store
-turns one on the claim into the library's `S3AssetConcurrencyException`, one on the live path into
-`S3AssetConflictException`, and any other storage failure into `S3LibraryException` with the
-original attached. Ordering,
-paging, the name filter and the count happen in memory over the rows the SQL-side filters select.
-The store passes `S3AssetStoreContract.Cases` from `TFM.S3Library.Testing` against the integration
-test database.
-
-## Stencil
-
-`TFM.Nucleus.Stencil` is the template store for TFM.Stencil-based document packages: TFM.Mailroom
-for email templates and TFM.Paperwork (2.0 and later) for PDF templates. It ships two entities
-(`StencilTemplateRecord`, one row per template with its file manifest as JSON, and
-`StencilTemplateFile`, one row per file holding its bytes) and `NucleusTemplateStore`, which
-implements `ITemplateStore`.
-
-`NucleusTemplateStore` is abstract. Each consumer registers its store by its concrete type, and one
-database holds every consumer's templates, so a host writes one sealed subclass per consumer, each
-naming its own collection:
-
-```csharp
-public sealed class MailroomTemplates(IObjectDataManager data, ILogger<MailroomTemplates>? logger = null)
-    : NucleusTemplateStore(data, "mailroom", logger);
-
-public sealed class PaperworkTemplates(IObjectDataManager data, ILogger<PaperworkTemplates>? logger = null)
-    : NucleusTemplateStore(data, "paperwork", logger);
-
-builder.Services.AddNucleus();
-builder.Services.AddNucleusData();
-builder.Services.AddNucleusSQLDataProvider();
-builder.Services.AddMailroom<MailroomTemplates>();
-builder.Services.AddTfmPaperwork<PaperworkTemplates>();
-```
-
-The tables are created and migrated at `InitializeDataProviderAsync` like every other entity. The
-collection partitions them: the same template key in two collections is two templates, and a
-listing only ever sees its own collection. A collection name is compared case-insensitively and
-cannot contain `:` or `|`.
-
-Keys and paths match case-insensitively, as in Stencil's reference store: both unique keys
-(`{collection}:{key}` on the record, `{recordKey}|{path}` on each file) are stored lowercased, so
-the rule holds under any collation, while the template's key and each file's path read back with
-the casing they were saved with. Listings and counts read record rows only, never file content;
-the name filter, ordering and paging happen in memory. Deletes run by predicate, so removing a
-template never loads its bytes, and they sweep by key, so content the manifest never listed goes
-with the template. Stencil defines no exception type of its own, so a storage failure is logged
-with the operation and key and rethrown unchanged.
-
-The store passes `TemplateStoreContract.Cases` from `TFM.Stencil.Testing` against the integration
-test database.
-
-## Attribution
-
-`TFM.Nucleus.Attribution` is the store for TFM.Attribution, which records where each visit came
-from (utm tags, click ids, referrer) and freezes each sale's share of the credit. It ships three
-entities (`AttributionTouchRecord`, one row per touch; `AttributionSaleRecord`, one row per sale;
-`AttributionShareRecord`, one row per share of a sale) and `NucleusAttributionStore`, which
-implements `IAttributionStore`:
-
-```csharp
-builder.Services.AddNucleus();
-builder.Services.AddNucleusData();
-builder.Services.AddNucleusSQLDataProvider();
-builder.Services.AddAttribution<NucleusAttributionStore>(builder.Configuration);
-```
-
-The tables are created and migrated at `InitializeDataProviderAsync` like every other entity. Every
-column of the library's `AttributionTouch` has a column of its own, sized by the library's
-`MaxLength` constants, and values are clipped to them on the way in. The touch's channel and
-origin, and a share's position, are stored by name, as the library asks: a rename is a data
-migration. The library's own ids live in `TouchId` and `ShareId`, because a Nucleus `ID` cannot be
-set; `Weight` keeps six places (`[DatabaseColumn(Scale = 6)]`).
-
-Only the library's background worker calls the store, and it retries an attempt that fails or runs
-past its timeout. `AddTouchesAsync` is therefore safe to repeat: it skips any touch id already
-stored and inserts the rest in one transaction, and the unique index on `TouchId` turns two
-attempts racing each other into a failure the worker retries. `ReplaceSaleAsync` deletes the sale
-and its shares by predicate and inserts the new record on one transactional context, so a reader
-sees the old record or the new one. `GetSaleAsync` reads a frozen sale back for the host's reports;
-it is not part of the library's contract. Session id lookups are chunked into IN lists of 1,000.
-A storage failure is logged with the operation and rethrown unchanged, and the worker decides
-whether to retry. The touch table is hard deletable so a host can purge old touches, or a backfill
-run, by predicate; the store itself never deletes one.
-
-TFM.Attribution ships no contract test package, so the store's rules are tested directly against
-the integration test database (`tests\TFM.Nucleus.IntegrationTests\Attribution`).
+Until November 2026 they shipped from this repo as `TFM.Nucleus.Bindery`, `TFM.Nucleus.S3Library`,
+`TFM.Nucleus.Stencil` and `TFM.Nucleus.Attribution`. Their entities now pin their tables with
+`[TableNaming(TableNamingStyle.ObjectName, 1)]` and list the old full-name tables in
+`[LegacyTableNames]`, so a site moving to the new packages keeps its rows. Each repo tests its
+store against the same databases through `TFM.Nucleus.Testing`.
 
 ## Testing against a live database
 
@@ -401,7 +283,7 @@ The keys order the index, first to last, each ascending, so a read that filters 
 
 ### Table names
 
-A table is named, in order of precedence, by the type's `[DatabaseTable]`, then by its own (or an inherited) `[TableNaming]` policy, then by its provider's `TableNaming` option. The default policy, `TableNamingPolicy.FullName`, gives every table the name it always had: `tbl_` and the type's full name with each `.` and `+` replaced by `_`, so `TFM.Nucleus.Bindery.BinderyDocument` is `tbl_TFM_Nucleus_Bindery_BinderyDocument`. `TableNamingPolicy.ObjectName(levels)` keeps only the last `levels` parts of the full name, a nested type's outer type counting as a part: `ObjectName(1)` names it `tbl_BinderyDocument` and `ObjectName(2)` `tbl_Bindery_BinderyDocument`. More levels than the name has gives the full name.
+A table is named, in order of precedence, by the type's `[DatabaseTable]`, then by its own (or an inherited) `[TableNaming]` policy, then by its provider's `TableNaming` option. The default policy, `TableNamingPolicy.FullName`, gives every table the name it always had: `tbl_` and the type's full name with each `.` and `+` replaced by `_`, so `Shop.Billing.Invoice` is `tbl_Shop_Billing_Invoice`. `TableNamingPolicy.ObjectName(levels)` keeps only the last `levels` parts of the full name, a nested type's outer type counting as a part: `ObjectName(1)` names it `tbl_Invoice` and `ObjectName(2)` `tbl_Billing_Invoice`. More levels than the name has gives the full name.
 
 ```csharp
 services.AddNucleusSQLDataProvider(options =>
@@ -785,10 +667,6 @@ src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Data.PostgreSQL\ PostgreSQL provider
 src\TFM.Nucleus.Testing\         live-database test support
-src\TFM.Nucleus.Bindery\         TFM.Bindery page store
-src\TFM.Nucleus.S3Library\       TFM.S3Library asset store
-src\TFM.Nucleus.Stencil\          TFM.Stencil template store
-src\TFM.Nucleus.Attribution\      TFM.Attribution touch and sale store
 tests\TFM.Nucleus.Tests\         unit tests, no database
 tests\TFM.Nucleus.IntegrationTests\  live database tests: every suite runs once per provider (SqlServer\ and Postgres\ hold the subclasses and the engine-only tests)
 ```

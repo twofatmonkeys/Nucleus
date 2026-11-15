@@ -57,7 +57,8 @@ namespace TFM.Nucleus.Tests
 
         /// <summary>
         /// The assemblies that must not know which database stores the data: the three core
-        /// layers and the four store packages.
+        /// layers. The store packages that used to sit beside them live with the libraries whose
+        /// contracts they implement, and code against these layers the same way.
         /// </summary>
         public static IEnumerable<System.Reflection.Assembly> NeutralAssemblies() =>
             new[]
@@ -65,10 +66,6 @@ namespace TFM.Nucleus.Tests
                 typeof(IQueryParameter),                                    // TFM.Nucleus.Abstractions
                 typeof(CoreObject),                                         // TFM.Nucleus
                 typeof(Parameter),                                          // TFM.Nucleus.Data
-                typeof(TFM.Nucleus.Bindery.NucleusBinderyStore),
-                typeof(TFM.Nucleus.S3Library.NucleusS3AssetStore),
-                typeof(TFM.Nucleus.Stencil.NucleusTemplateStore),
-                typeof(TFM.Nucleus.Attribution.NucleusAttributionStore),
             }.Select(t => t.Assembly).Distinct();
 
         /// <summary>Every provider package's assembly name, and the engine client it is built on.</summary>

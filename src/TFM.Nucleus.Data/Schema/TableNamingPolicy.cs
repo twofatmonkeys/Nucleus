@@ -27,13 +27,13 @@ namespace TFM.Nucleus.Data.Schema
             Levels = levels;
         }
 
-        /// <summary>tbl_ and the type's full name with its separators replaced: tbl_TFM_Nucleus_Bindery_BinderyDocument.</summary>
+        /// <summary>tbl_ and the type's full name with its separators replaced: Shop.Billing.Invoice is tbl_Shop_Billing_Invoice.</summary>
         public static TableNamingPolicy FullName { get; } = new(TableNamingStyle.FullName, 0);
 
         /// <summary>
         /// tbl_ and the last <paramref name="levels"/> parts of the type's full name, split at each
-        /// namespace dot and nested-type plus: ObjectName(2) names TFM.Nucleus.Bindery.BinderyDocument
-        /// tbl_Bindery_BinderyDocument. More levels than the name has gives the full name.
+        /// namespace dot and nested-type plus: ObjectName(2) names Shop.Billing.Invoice
+        /// tbl_Billing_Invoice. More levels than the name has gives the full name.
         /// </summary>
         public static TableNamingPolicy ObjectName(int levels = 1)
         {

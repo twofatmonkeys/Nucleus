@@ -4,7 +4,7 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as ten packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as six packages that version and
 release together.
 
 | Package | Source | Role |
@@ -15,10 +15,6 @@ release together.
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
 | `TFM.Nucleus.Data.PostgreSQL` | `src\TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql). |
 | `TFM.Nucleus.Testing` | `src\TFM.Nucleus.Testing` | Live-database test support, framework neutral: test database settings, a booted stack per provider, cross-process locks, raw setup statements. What this repo's integration tests and every store repo's tests run on. |
-| `TFM.Nucleus.Bindery` | `src\TFM.Nucleus.Bindery` | TFM.Bindery's page store over Nucleus entities. Provider neutral; depends on `TFM.Bindery` from the feed. |
-| `TFM.Nucleus.S3Library` | `src\TFM.Nucleus.S3Library` | TFM.S3Library's asset metadata store over Nucleus entities. Provider neutral; depends on `TFM.S3Library.Abstractions` from the feed. |
-| `TFM.Nucleus.Stencil` | `src\TFM.Nucleus.Stencil` | TFM.Stencil's template bundle store (used by TFM.Mailroom and TFM.Paperwork) over Nucleus entities. Provider neutral; depends on `TFM.Stencil.Abstractions` from the feed. |
-| `TFM.Nucleus.Attribution` | `src\TFM.Nucleus.Attribution` | TFM.Attribution's touch and sale store over Nucleus entities. Provider neutral; depends on `TFM.Attribution` from the feed. |
 
 Until August 2026 these lived in four separate repositories, with the shared tests and the only
 real documentation in a fifth unversioned folder (`Nucleus.v2`). They were always released in
@@ -34,81 +30,28 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 ## Architecture
 
 Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), and
-`Bindery`, `S3Library`, `Stencil` and `Attribution` sit beside the providers over the same three.
 `Testing` sits above both providers: it registers them and holds the raw SQL a test sets a table up
 with, so it is deliberately outside `ProviderSeamTests`, like a provider.
 Neither provider references the other. Direction is enforced by project references and by
-`ProviderSeamTests`, which also scans the compiled string literals of the neutral and store
+`ProviderSeamTests`, which also scans the compiled string literals of the three neutral
 assemblies for SQL and provider names; `ProviderSurfaceTests` holds each provider's public surface
 to its registration and configuration.
 
-`TFM.Nucleus.Bindery` is the first package here that serves another library: `NucleusBinderyStore`
-implements TFM.Bindery's `IBinderyStore` and its three optional capabilities over four
-`CoreObject` entities (`BinderyDocument`, `BinderyPageVersion`, `BinderyBlockTemplate`,
-`BinderyChangeToken`). The entity and table names are the ones the first consumer site used
-before the package existed, so its rows carry over; the store never references `Data.SQL`, and
-publish, unpublish and delete run on one `ContextOptions.Transactional` context so the change
-token moves with the content. Storage failures are rethrown as `BinderyException` with the
-original attached, per Bindery's contract. Tests run the framework-neutral
-`BinderyStoreContract.Cases` from `TFM.Bindery.Testing` against the integration database
-(`tests\TFM.Nucleus.IntegrationTests\Bindery`).
+The stores that keep other libraries' data in Nucleus tables live with the library whose contract
+they implement, so a contract change ships with its store instead of forcing a Nucleus release:
 
-`TFM.Nucleus.S3Library` is the second: `NucleusS3AssetStore` implements TFM.S3Library's
-`IS3AssetStore` over three entities (`S3AssetRecord`, `S3AssetPreviousPath`,
-`S3AssetVersionClaim`). Two of the contract's rules are enforced by unique indexes rather than by
-code, because Nucleus has no optimistic concurrency and cannot report the rows an update affected. The path rule
-(no two live records share a path, a deleted one may) is the filtered unique index on
-`S3AssetRecord.LivePath`, a column equal to `FullPath` while the record is live and null once it
-is soft-deleted. The version rule is the claim table: every save inserts a row
-`{AssetId:N}:{new version}` inside the same transaction as the record write, so two writers
-racing from one version collide on `UQ_..._S3AssetVersionClaim_Claim` and exactly one commits;
-the previous claim is deleted in the same transaction, leaving one row per asset. Reads run
-outside a transaction and writes inside one, because a transactional context closes its
-connection after a read. A unique violation is the provider-neutral `UniqueViolationException`
-found in the inner-exception chain, matched by the entity and column it names, so the package
-knows no engine; the claim or asset-id index means `S3AssetConcurrencyException`, the live-path
-index means `S3AssetConflictException`, anything else is rethrown as `S3LibraryException` with
-the original attached. Ordering, paging, the name
-filter and the count run in memory over the rows the SQL-side equalities select, since the
-provider translates none of them. Tests run `S3AssetStoreContract.Cases` from
-`TFM.S3Library.Testing` against the integration database
-(`tests\TFM.Nucleus.IntegrationTests\S3Library`), each suite under its own cross-process lock.
+| Package | Repo | Store |
+|---|---|---|
+| `TFM.Bindery.Nucleus` | [TFM.Bindery](https://github.com/twofatmonkeys/TFM.Bindery) | `NucleusBinderyStore`, the CMS's page store |
+| `TFM.S3Library.Nucleus` | [TFM.S3Library](https://github.com/twofatmonkeys/TFM.S3Library) | `NucleusS3AssetStore`, the media library's asset metadata |
+| `TFM.Stencil.Nucleus` | [TFM.Stencil](https://github.com/twofatmonkeys/TFM.Stencil) | `NucleusTemplateStore`, Mailroom and Paperwork templates |
+| `TFM.Attribution.Nucleus` | [TFM.Attribution](https://github.com/twofatmonkeys/TFM.Attribution) | `NucleusAttributionStore`, marketing touches and sales |
 
-`TFM.Nucleus.Stencil` is the third: `NucleusTemplateStore` implements TFM.Stencil's
-`ITemplateStore`, the one store contract TFM.Mailroom and TFM.Paperwork 2.x both take, over two
-entities (`StencilTemplateRecord`, one row per template with the file manifest as JSON, and
-`StencilTemplateFile`, one row per file's bytes). The store is abstract and partitioned by a
-collection name the subclass passes in, because each consumer registers its store by concrete
-type and one database holds every consumer's templates; a host writes one sealed subclass per
-consumer. Both unique keys are composites stored lowercased (`RecordKey` is
-`{collection}:{key}`, `FileKey` is `{recordKey}|{path}`), so uniqueness and lookups are
-case-insensitive under any collation while `Key` and `Path` keep the caller's casing. Files are
-tied to their record by `RecordKey`, not as a Nucleus child collection: a child can only be saved
-through its parent, and the store writes one file at a time. Deletes run by predicate
-(`IDataContext.DeleteWhereAsync`), files first by record key and then the record, so no bytes are
-loaded and a file row left behind by a content save that raced a delete is swept too; a file save
-is a delete by file key and an insert on one transaction, for the same reason. Reads run outside
-a transaction and writes inside one, as in S3Library. Listings read record rows only, and the
-name filter, ordering and paging run in memory. Stencil.Abstractions defines no exception type,
-so a storage failure is logged with the operation and key and rethrown unchanged, and nothing is
-retried. Tests run `TemplateStoreContract.Cases` from `TFM.Stencil.Testing` against the
-integration database (`tests\TFM.Nucleus.IntegrationTests\Stencil`); each test works in a
-collection of its own, so the suite needs no reset and no lock.
-
-`TFM.Nucleus.Attribution` is the fourth: `NucleusAttributionStore` implements TFM.Attribution's
-`IAttributionStore` over three entities (`AttributionTouchRecord`, `AttributionSaleRecord`,
-`AttributionShareRecord`). The library's own ids live in `TouchId` and `ShareId` because a Nucleus
-`ID` cannot be set. Only the library's worker calls the store and it retries, so a touch batch
-first reads which of its ids already exist and inserts only the rest, and the unique `TouchId`
-index turns two racing attempts into a failure the worker retries. A sale is replaced by two
-predicate deletes and an insert on one transactional context. Enums are stored by name, as the
-library documents. Bool, int and decimal columns read as nullable with a default, because a row
-written without the column reads back null. The library ships no contract package, so the tests in
-`tests\TFM.Nucleus.IntegrationTests\Attribution` cover its documented rules directly, on fresh
-ids, with no reset and no lock. The first run of the two frameworks in parallel against a database
-without the tables used to fail schema initialisation in one of them while the other created them.
-Fixture initialisation now holds the schema lock, so the two runs initialise one after the other;
-if a first run still fails, rerun.
+Until November 2026 they shipped from this repo as `TFM.Nucleus.Bindery`, `TFM.Nucleus.S3Library`,
+`TFM.Nucleus.Stencil` and `TFM.Nucleus.Attribution`. Their entities now pin their tables with
+`[TableNaming(TableNamingStyle.ObjectName, 1)]` and list the old full-name tables in
+`[LegacyTableNames]`, so a site moving to the new packages keeps its rows. Each repo tests its
+store against the same databases through `TFM.Nucleus.Testing`.
 
 `Abstractions` holds every interface the other layers speak: `ICoreObject`, `IDataProvider`,
 `IDataContext`, `IObjectSchema`, `IQuery` and the neutral query tokens, plus `NucleusOptions`, the
@@ -202,10 +145,8 @@ dotnet test  TFM.Nucleus.slnx --configuration Release --no-build
 ```
 
 Restore needs `GITHUB_USER` and `GITHUB_TOKEN` in the environment: `nuget.config` reads the
-GitHub Packages credential from them, and `TFM.Bindery`, `TFM.Bindery.Testing`,
-`TFM.S3Library.Abstractions`, `TFM.S3Library.Testing`, `TFM.Stencil.Abstractions` and
-`TFM.Stencil.Testing` come from that feed. Everything else is an
-in-repo project reference or comes from nuget.org.
+GitHub Packages credential from them. Since the store packages moved out (November 2026) nothing
+here restores from that feed; everything is an in-repo project reference or comes from nuget.org.
 
 Warnings become errors only when `ContinuousIntegrationBuild=true`. To reproduce what CI enforces:
 
@@ -223,7 +164,9 @@ A provider with no settings skips cleanly, which is what happens in CI. Settings
 and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer` and `.Postgres`);
 `DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
 configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
-stack whose initialisation fails includes its warnings and errors in the message. The net8.0 and
+stack whose initialisation fails includes its warnings and errors in the message. A fixture boots
+its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
+runs once raced to create the same tables and one of them failed. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
 stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
 for its duration; the lock is not reentrant, so take it once per test. The save benchmarks
@@ -246,15 +189,14 @@ warning in new code fails CI.
 - **Do not put SQL in `Abstractions`, `TFM.Nucleus` or `Data`.** The provider seam is the whole
   reason a second database engine is possible. `ProviderSeamTests` will fail if you do.
 - **Consumers code against `Abstractions` and `Data` only.** An application, and every store
-  package, touches a provider package only to register and configure it, so a deployment picks
+  (they live in the repos of the libraries they serve), touches a provider package only to register and configure it, so a deployment picks
   its database by picking a package. A provider package's public types are its `Add...` extensions,
   its configuration class and the exception its registration throws; everything else is
   `internal`. `ProviderSurfaceTests` holds each provider to that list, so widening it is a
   deliberate review decision.
 - **No engine names in neutral or store assemblies.** No provider type name, error number or
   registration name, in code or in a message. `ProviderSeamTests` scans the compiled strings of
-  `Abstractions`, `TFM.Nucleus`, `Data` and the store packages for SQL keywords and provider
-  names, and checks none of them references a provider or its client. When a store needs to know
+  `Abstractions`, `TFM.Nucleus` and `Data` for SQL keywords and provider names, and checks none of them references a provider or its client. When a store needs to know
   what an engine did (a unique violation, say), add a neutral type to `Abstractions` or `Data` and
   have every provider produce it.
 - **Shared logic lives once, in `Data`.** A provider implements the dialect interfaces and derives
@@ -271,13 +213,8 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The ten packages
-  share one version by design. `TFM.Nucleus.Bindery` additionally pins a `TFM.Bindery` version,
-  `TFM.Nucleus.S3Library` a `TFM.S3Library.Abstractions` version, `TFM.Nucleus.Stencil` a
-  `TFM.Stencil.Abstractions` version and `TFM.Nucleus.Attribution` a `TFM.Attribution` version (two identical per-TFM lines in each csproj); a release of
-  any of those libraries that changes its store contract means a bump here.
-  The integration test project pins the matching `*.Testing` package at the same version as the
-  store's contract pin, or NuGet would lift the contract package underneath the store silently.
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The six packages
+  share one version by design.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
@@ -290,7 +227,7 @@ warning in new code fails CI.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
-  behaviour; a library flag with that meaning takes another name (`S3AssetRecord.SoftDeleted`).
+  behaviour; a library flag with that meaning takes another name (TFM.S3Library.Nucleus's `S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all ten packages and is the reference documentation consumers see on the feed.
+  all six packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.

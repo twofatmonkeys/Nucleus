@@ -18,10 +18,6 @@ namespace TFM.Nucleus.Tests
             typeof(SQLConfiguration).Assembly,                           // TFM.Nucleus.Data.SQL
             typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly,
             typeof(TFM.Nucleus.Testing.NucleusTestDatabase).Assembly,     // TFM.Nucleus.Testing
-            typeof(TFM.Nucleus.Bindery.NucleusBinderyStore).Assembly,
-            typeof(TFM.Nucleus.S3Library.NucleusS3AssetStore).Assembly,
-            typeof(TFM.Nucleus.Stencil.NucleusTemplateStore).Assembly,
-            typeof(TFM.Nucleus.Attribution.NucleusAttributionStore).Assembly,
         ];
 
         public static TheoryData<string> AssemblyNames() => new(ShippingAssemblies().Select(a => a.GetName().Name!));
