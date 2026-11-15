@@ -159,6 +159,26 @@ public abstract class NucleusTestDatabase
     /// <summary>A query returning the table's row count.</summary>
     public abstract string RowCountSql(string table);
 
+    /// <summary>
+    /// Puts each entity's table back under the first of its <c>[LegacyTableNames]</c>, as a site
+    /// still on the old name would have it, dropping any table already under that name first. The
+    /// next stack started adopts the tables again. Hold <see cref="SchemaLockAsync"/>, and the
+    /// lock of every suite that uses these tables, around the whole round trip.
+    /// </summary>
+    /// <exception cref="ArgumentException">An entity declares no legacy table name.</exception>
+    public async Task MoveToLegacyNamesAsync(IEnumerable<Type> entities, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+        foreach (var entity in entities)
+        {
+            var table = NucleusEntityTable.For(entity);
+            var legacy = table.LegacyTableNames.FirstOrDefault()
+                ?? throw new ArgumentException($"{entity.FullName} declares no [LegacyTableNames].", nameof(entities));
+            await ExecuteAsync(DropTableIfExistsSql(legacy), token);
+            await ExecuteAsync(RenameTableSql(table.TableName, legacy), token);
+        }
+    }
+
     /// <summary>The table's object id, or null when there is no such table.</summary>
     public async Task<long?> TableIdAsync(string table, CancellationToken token = default) =>
         await ScalarAsync(TableIdSql(table), token) is { } id ? Convert.ToInt64(id) : null;
