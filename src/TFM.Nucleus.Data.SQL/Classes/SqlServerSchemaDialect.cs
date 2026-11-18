@@ -157,25 +157,36 @@ namespace TFM.Nucleus.Data.SQL
             var sortOrder = col.IndexSortDescending ? "DESC" : "ASC";
             if (col.Unique)
                 return $"CREATE UNIQUE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
-                       $"([{col.ColumnName}] {sortOrder}) WHERE [{col.ColumnName}] IS NOT NULL " +
-                       "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, " +
-                       "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+                       $"([{col.ColumnName}] {sortOrder}) WHERE [{col.ColumnName}] IS NOT NULL " + UniqueIndexOptions;
             return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
-                   $"([{col.ColumnName}] {sortOrder}) " +
-                   "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                   "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+                   $"([{col.ColumnName}] {sortOrder}) " + IndexOptions;
         }
 
-        /// <summary>The CREATE INDEX statement for a [TableIndex] index: its keys ascending, then its included columns.</summary>
+        /// <summary>
+        /// The CREATE INDEX statement for a [TableIndex] index: its keys ascending, then its included
+        /// columns. A unique one is filtered to rows whose keys are all non-null, as a column's unique
+        /// index is to non-null values.
+        /// </summary>
         internal static string TableIndexSql(TableSchema table, TableIndexSchema index)
         {
             var name = IndexNaming.TableIndexName(table, index);
             var keys = string.Join(", ", index.Keys.Select(k => $"[{k.ColumnName}] ASC"));
             var include = index.Include.Count == 0 ? "" : $" INCLUDE ({string.Join(", ", index.Include.Select(c => $"[{c.ColumnName}]"))})";
-            return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]({keys}){include} " +
-                   "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
-                   "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+            if (index.Unique)
+                return $"CREATE UNIQUE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]({keys}){include} " +
+                       $"WHERE {string.Join(" AND ", index.Keys.Select(k => $"[{k.ColumnName}] IS NOT NULL"))} " + UniqueIndexOptions;
+            return $"CREATE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]({keys}){include} " + IndexOptions;
         }
+
+        // The options every nonclustered index Nucleus creates is built with; a unique one also
+        // refuses duplicate keys rather than ignoring them.
+        private const string IndexOptions =
+            "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, " +
+            "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
+
+        private const string UniqueIndexOptions =
+            "WITH(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, " +
+            "DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON[PRIMARY]";
 
         internal static string RenameTableSql(string tableName, string tempTableName) =>
             $"EXEC sp_rename '{tableName}', '{tempTableName}'";

@@ -87,7 +87,11 @@ SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalP
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
 over System.Data.Common. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
-violation into `UniqueViolationException` (Abstractions) naming the entity and column.
+violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
+`[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
+the rule once, on the failure path only. A `[TableIndex]` can be `Unique`, filtered to rows whose
+keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
+fails initialisation without touching the rows.
 
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. `ObjectDataAdaptor<T>`

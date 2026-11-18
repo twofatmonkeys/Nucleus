@@ -37,5 +37,20 @@ namespace TFM.Nucleus.Data
 
         /// <summary>The properties carried in the index without ordering it, so reads of them are answered from the index alone.</summary>
         public string[] Include { get; set; } = [];
+
+        /// <summary>
+        /// True when no two rows may share the same values of every key, the rule a single column's
+        /// <see cref="DatabaseColumnAttribute.Unique"/> gives one column, over all of
+        /// <see cref="Keys"/> together.
+        /// </summary>
+        /// <remarks>
+        /// A row is held to the rule only when every key has a value: a row with any key left null is
+        /// not constrained, on every engine. <see cref="Include"/> columns may be carried as well. A
+        /// write that breaks the rule throws <see cref="UniqueViolationException"/> naming the entity
+        /// and the index (<see cref="UniqueViolationException.IsIndex{T}"/>). Turning it on or off
+        /// drops and creates the index again; if existing rows already break it, initialisation fails
+        /// with a logged error naming the table and index, and no rows are changed.
+        /// </remarks>
+        public bool Unique { get; set; }
     }
 }

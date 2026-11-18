@@ -119,8 +119,8 @@ namespace TFM.Nucleus.Data.Schema
 
         /// <summary>
         /// Compares the [TableIndex] indexes a table declares against the NIX_ indexes the database
-        /// has. An index whose keys, key order or included columns differ is dropped and created
-        /// again; one no longer declared is dropped.
+        /// has. An index whose keys, key order, included columns or uniqueness differ is dropped and
+        /// created again; one no longer declared is dropped.
         /// </summary>
         public static (List<string> drop, List<TableIndexSchema> create) DiffTableIndexes(
             TableSchema table, IEnumerable<CatalogIndex> dbIndexes, ISchemaDialect dialect)
@@ -153,13 +153,14 @@ namespace TFM.Nucleus.Data.Schema
         public static string PhysicalIndexName(TableSchema table, TableIndexSchema index, ISchemaDialect dialect) =>
             dialect.PhysicalName(IndexNaming.TableIndexName(table, index));
 
-        // The keys in order, all ascending, then the included columns in any order; never unique
-        // or filtered.
+        // The keys in order, all ascending, then the included columns in any order. A unique index
+        // is filtered to rows whose keys are all non-null, so a matching unique index has a filter
+        // and a plain one has none, as for a column's index.
         private static bool TableIndexMatches(TableIndexSchema index, IEnumerable<CatalogIndex> columns, ISchemaDialect dialect)
         {
             var comparer = dialect.IdentifierComparer;
             var rows = columns.ToList();
-            if (rows.Any(r => r.IsUnique || r.HasFilter || r.IsDescending))
+            if (rows.Any(r => r.IsUnique != index.Unique || r.HasFilter != index.Unique || r.IsDescending))
                 return false;
             var keys = rows.Where(r => !r.IsIncluded).OrderBy(r => r.KeyOrdinal).Select(r => r.ColumnName).ToList();
             var included = rows.Where(r => r.IsIncluded).Select(r => r.ColumnName).ToList();

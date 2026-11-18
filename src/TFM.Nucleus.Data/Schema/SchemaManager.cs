@@ -407,7 +407,7 @@ namespace TFM.Nucleus.Data.Schema
                     }
                     catch (Exception ex) when (Dialect.IsDuplicateKeyOnIndexBuild(ex))
                     {
-                        throw DuplicateKeyFailure(table, col, ex);
+                        throw DuplicateKeyFailure(table, IndexNaming.ColumnIndexName(table, col), [col], ex);
                     }
                 }
                 var (dropTable, createTable) = SchemaComparer.DiffTableIndexes(table, dbIndexes, Dialect);
@@ -423,18 +423,27 @@ namespace TFM.Nucleus.Data.Schema
                     var name = SchemaComparer.PhysicalIndexName(table, index, Dialect);
                     _logger?.LogInformation("Creating table index {index} on table {tablename}.", name, table.TableName);
                     var started = System.Diagnostics.Stopwatch.GetTimestamp();
-                    await _store.Catalog.ExecuteAsync(Dialect.CreateTableIndex(table, index), async, cancellationToken);
+                    try
+                    {
+                        await _store.Catalog.ExecuteAsync(Dialect.CreateTableIndex(table, index), async, cancellationToken);
+                    }
+                    catch (Exception ex) when (Dialect.IsDuplicateKeyOnIndexBuild(ex))
+                    {
+                        throw DuplicateKeyFailure(table, IndexNaming.TableIndexName(table, index), index.Keys, ex);
+                    }
                     _logger?.LogInformation("Created table index {index} on table {tablename} in {seconds:0.0} s.", name, table.TableName,
                         System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
                 }
             }
         }
 
-        // Existing rows violate a newly required unique index. The data is never touched; the
-        // caller must resolve the duplicates by hand and initialise again.
-        private InvalidOperationException DuplicateKeyFailure(TableSchema table, ColumnSchema col, Exception inner)
+        // Existing rows violate a newly required unique index, a column's or a [TableIndex]. The
+        // data is never touched; the caller must resolve the duplicates by hand and initialise again.
+        private InvalidOperationException DuplicateKeyFailure(TableSchema table, string indexName, IReadOnlyList<ColumnSchema> keys, Exception inner)
         {
-            var message = $"Cannot create unique index on [{table.TableName}].[{col.ColumnName}]: the column already contains duplicate values. " +
+            var columns = string.Join(", ", keys.Select(k => $"[{k.ColumnName}]"));
+            var already = keys.Count == 1 ? "the column already contains duplicate values" : "existing rows already share the same values of those columns";
+            var message = $"Cannot create unique index {indexName} on [{table.TableName}] ({columns}): {already}. " +
                           "Remove or change the duplicate rows and initialise the schema again. No data was modified.";
             _logger?.LogError(inner, "{message}", message);
             return new InvalidOperationException(message, inner);

@@ -32,6 +32,12 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
             "JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum " +
             $"WHERE i.relname = '{index}'";
 
+        protected override string IsUniqueSql(string table, string index) =>
+            $"SELECT ix.indisunique::int FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid WHERE i.relname = '{index}'";
+
+        protected override string CreatePlainIndexSql(string table, string index, params string[] columns) =>
+            $"CREATE INDEX \"{index}\" ON \"public\".\"{table}\" ({string.Join(", ", columns.Select(c => $"\"{c}\" ASC"))})";
+
         protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 
         protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);

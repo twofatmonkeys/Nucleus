@@ -162,6 +162,21 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Code { get => GetValue<string>(); set => SetValue(value); }
     }
 
+    /// <summary>
+    /// A unique rule over two columns, the shape a template's files take: one path per template.
+    /// Its table is changed under the schema lock by the [TableIndex] suite.
+    /// </summary>
+    [Deletable(DeleteBehavior.Hard)]
+    [TableIndex("KeyPath", nameof(TemplateId), nameof(FilePath), Unique = true)]
+    public class IntPathItem : CoreObject<IntPathItem>
+    {
+        [DatabaseColumn]
+        public Guid? TemplateId { get => GetValue<Guid?>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public string? FilePath { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     public class IntKindWidget : CoreObject<IntKindWidget>
     {
         [DatabaseColumn]
