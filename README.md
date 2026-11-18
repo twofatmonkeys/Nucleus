@@ -252,9 +252,9 @@ Each property maps to a column type by its CLR type, or by `DataType` when one i
 
 The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. The same holds below the attributes, for a provider author: `IPropertySchema.IsIndexed` and `IsFullTextSearch` replace `IsNonClusteredIndex` and `HasFullTextIndex`, and `ServerFunction.CurrentDateTime` and `CurrentDateTimeOffset` (with the matching `ServerFunctionKind` values) replace `SysDateTime` and `SysDateTimeOffset`. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
 
-`Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do.
+`Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do. For a rule over several columns together, declare a unique [`[TableIndex]`](#class-level-behaviour) instead.
 
-On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique` and already holds duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the table and column, no rows are modified, and the duplicates must be resolved by hand before initialising again.
+On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique`, or a `[TableIndex]` is made `Unique`, and existing rows already hold duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the index, the table and its columns, no rows are modified, and the duplicates must be resolved by hand before initialising again. The sync drops the index being replaced before it builds the new one, so until then the table has neither.
 
 ### Class-level behaviour
 
@@ -265,7 +265,7 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 | `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless `IncludeDeleted` is set on the query. |
 | `[SuppressDB]` | Excludes the type from schema management entirely. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
-| `[TableIndex(name, keys..., Include = [...])]` | An index over several columns, named `NIX_<table>_<name>`. Repeat it for more than one. See below. |
+| `[TableIndex(name, keys..., Include = [...], Unique = true)]` | An index over several columns, named `NIX_<table>_<name>`, optionally unique over all of its keys together. Repeat it for more than one. See below. |
 | `[DatabaseTable("tbl_Name")]` | The table name, used as written in place of the one the naming policy would give. Not inherited. See [Table names](#table-names). |
 | `[TableNaming(style, levels)]` | The naming policy of this type's table, in place of the provider's. Inherited, so it can sit on a root. See [Table names](#table-names). |
 | `[LegacyTableNames("tbl_Old", ...)]` | Earlier names of the type's table. A missing table is renamed from the one of them that exists. Not inherited. See [Table names](#table-names). |
@@ -280,6 +280,15 @@ public class Visit : CoreObject<Visit> { ... }
 ```
 
 The keys order the index, first to last, each ascending, so a read that filters on the first key, or on the first and a range of the second, finds its rows without scanning the table. The included columns are carried in the index without ordering it, so a read that needs only key and included columns (a [row read](#row-reads) of them, say) is answered from the index alone. Keys cannot be long text (`DataLength = -1`); included columns can. A name used twice on the type, a property that is not a stored column, a column named twice or a long text key fails when the schema is built. The index is created on SQL Server as a nonclustered index and on PostgreSQL (11 or later) with `INCLUDE`; it is compared and synced like a column index, so changing its keys or included columns drops and creates it again, and removing the attribute drops it. Creating one over a large table blocks writes to the table while it builds, and the time it took is logged.
+
+`Unique = true` makes the keys a unique rule taken together, the several-column form of a column's `Unique`:
+
+```csharp
+[TableIndex("TemplatePath", nameof(TemplateId), nameof(FilePath), Unique = true)]
+public class PdfTemplateFile : CoreObject<PdfTemplateFile> { ... }
+```
+
+No two rows may share every key value. The index is filtered to rows whose keys are all non-null (`WHERE [TemplateId] IS NOT NULL AND [FilePath] IS NOT NULL`), so a row with any key left null is not constrained, the same on SQL Server and PostgreSQL. `Include` can be used with it. A write that breaks it throws a [`UniqueViolationException`](#unique-violations) naming the entity and the index. Turning `Unique` on or off drops and creates the index again, never the table. Existing duplicates fail initialisation as described above. With `ReadOnlySchema`, a missing index, or one whose uniqueness differs, reports the schema as not current and nothing is created. On SQL Server the index is filtered, so the `QUOTED_IDENTIFIER` requirement described for `Unique` above applies to the table.
 
 ### Table names
 
@@ -506,16 +515,29 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 
 ## Unique violations
 
-A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType`, `PropertyName` and `ColumnName` name the `[DatabaseColumn(Unique = true)]` property and column whose index was broken, `IndexName` its Nucleus index name, and `Is<T>(name)` tests for one by the property's name or the column's; all of them are null for an index Nucleus does not manage, such as a primary key. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` names the entity, `IndexName` the Nucleus index name, and `PropertyNames` and `ColumnNames` the index's key properties and columns in key order. For a `[DatabaseColumn(Unique = true)]` index, `PropertyName` and `ColumnName` name its one property and column, and `Is<T>(name)` tests for it by either. For a unique `[TableIndex]`, `DeclaredIndexName` is the name it was declared with and `IsIndex<T>(name)` tests for it; `PropertyName` and `ColumnName` are then null, even for one key. For an index Nucleus does not manage, such as a primary key, the names are null and the lists empty. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
 
 ```csharp
 catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
 {
     // another writer took the address first
 }
+
+catch (UniqueViolationException ex) when (ex.IsIndex<PdfTemplateFile>("TemplatePath"))
+{
+    // the template already has a file at that path
+}
 ```
 
 ## Behaviour changes
+
+These came in with unique `[TableIndex]`.
+
+- **Nothing changes for existing entities.** A `[TableIndex]` without `Unique` is created and compared
+  as before, so its `NIX_` index is left alone.
+- **The duplicate-key initialisation error names the index.** When a unique index cannot be built
+  over existing duplicates, the logged error and the exception now name the index as well as the
+  table and its columns, for a column's `UQ_` index too.
 
 These came in with table naming.
 

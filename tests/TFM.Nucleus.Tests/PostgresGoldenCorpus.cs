@@ -47,6 +47,9 @@ namespace TFM.Nucleus.Tests
             cases["ddl.dropindex"] = () => dialect.DropIndex(widget, "NCI_tbl_X_Name").Text;
             var indexed = QueryGoldenCorpus.TableOf(typeof(TestIndexedWidget));
             cases["ddl.tableindex"] = () => dialect.CreateTableIndex(indexed, indexed.TableIndexes[0]).Text;
+            var uniqueIndexed = QueryGoldenCorpus.TableOf(typeof(TestUniqueIndexedWidget));
+            cases["ddl.tableindex.unique"] = () => dialect.CreateTableIndex(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "CodeQuantity")).Text;
+            cases["ddl.tableindex.unique.include"] = () => dialect.CreateTableIndex(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "NameCode")).Text;
             cases["ddl.fulltext"] = () => dialect.CreateFullTextIndex(allTypes, allTypes["Searchable"]);
             cases["ddl.notify"] = () => string.Join("\n--\n", dialect.CreateNotifyFunction(), dialect.CreateNotifyTrigger(widget));
 

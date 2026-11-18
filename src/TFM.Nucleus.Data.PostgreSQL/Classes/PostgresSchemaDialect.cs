@@ -178,12 +178,18 @@ $nucleus$",
         public SchemaStatement DropIndex(TableSchema table, string physicalIndexName) =>
             $"DROP INDEX {Quote(Schema)}.{Quote(physicalIndexName)}";
 
-        /// <summary>A [TableIndex] index: its keys ascending, then its included columns (PostgreSQL 11 and later).</summary>
+        /// <summary>
+        /// A [TableIndex] index: its keys ascending, then its included columns (PostgreSQL 11 and
+        /// later). A unique one is filtered to rows whose keys are all non-null, as on SQL Server.
+        /// </summary>
         public SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index)
         {
             var keys = string.Join(", ", index.Keys.Select(k => $"{Quote(k.ColumnName)} ASC"));
             var include = index.Include.Count == 0 ? "" : $" INCLUDE ({string.Join(", ", index.Include.Select(c => Quote(c.ColumnName)))})";
-            return $"CREATE INDEX {Quote(IndexNaming.TableIndexName(table, index))} ON {TableName(table.TableName)} ({keys}){include}";
+            var target = $"{Quote(IndexNaming.TableIndexName(table, index))} ON {TableName(table.TableName)} ({keys}){include}";
+            return index.Unique
+                ? $"CREATE UNIQUE INDEX {target} WHERE {string.Join(" AND ", index.Keys.Select(k => $"{Quote(k.ColumnName)} IS NOT NULL"))}"
+                : $"CREATE INDEX {target}";
         }
 
         public bool IsDuplicateKeyOnIndexBuild(Exception exception) => PostgresErrors.TryGetUniqueViolation(exception, out _);

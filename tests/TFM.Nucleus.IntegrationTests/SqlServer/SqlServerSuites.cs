@@ -32,6 +32,12 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             $"WHERE i.object_id = OBJECT_ID(N'dbo.{table}') AND i.name = N'{index}' " +
             "ORDER BY ic.is_included_column, ic.key_ordinal, c.name FOR XML PATH('')), 1, 1, '')";
 
+        protected override string IsUniqueSql(string table, string index) =>
+            $"SELECT CAST(is_unique AS int) FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.{table}') AND name = N'{index}'";
+
+        protected override string CreatePlainIndexSql(string table, string index, params string[] columns) =>
+            $"CREATE NONCLUSTERED INDEX [{index}] ON [dbo].[{table}]({string.Join(", ", columns.Select(c => $"[{c}] ASC"))})";
+
         protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 
         protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);

@@ -39,6 +39,9 @@
             cases["ddl.dropindex"] = () => SqlServerSchemaDialect.DropColumnIndexSql("NCI_tbl_X_Name", "tbl_X");
             var indexed = QueryGoldenCorpus.TableOf(typeof(TestIndexedWidget));
             cases["ddl.tableindex"] = () => SqlServerSchemaDialect.TableIndexSql(indexed, indexed.TableIndexes[0]);
+            var uniqueIndexed = QueryGoldenCorpus.TableOf(typeof(TestUniqueIndexedWidget));
+            cases["ddl.tableindex.unique"] = () => SqlServerSchemaDialect.TableIndexSql(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "CodeQuantity"));
+            cases["ddl.tableindex.unique.include"] = () => SqlServerSchemaDialect.TableIndexSql(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "NameCode"));
             cases["ddl.fulltext"] = () => string.Join("\n--\n",
                 SqlServerSchemaDialect.DropFullTextCatalogSql("ftc_tbl_X"),
                 SqlServerSchemaDialect.DropFullTextIndexSql("tbl_X"),

@@ -224,8 +224,9 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>
         /// Wraps a database failure with a message: a unique violation becomes a
-        /// <see cref="UniqueViolationException"/> naming the entity and column of a Nucleus index,
-        /// anything else a plain exception. The original is the inner exception either way.
+        /// <see cref="UniqueViolationException"/> naming the entity and the column or [TableIndex]
+        /// of a Nucleus index, anything else a plain exception. The original is the inner exception
+        /// either way.
         /// </summary>
         public Exception TranslateFailure(string message, Exception exception)
         {
@@ -233,8 +234,13 @@ namespace TFM.Nucleus.Data.Providers
                 return translated;
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
                 return new Exception(message, exception);
-            var (entityType, propertyName, columnName, indexName) = ResolveUniqueIndex(physicalIndexName);
-            return new UniqueViolationException(message, indexName ?? physicalIndexName, entityType, propertyName, columnName, exception);
+            return UniqueIndexResolver.Resolve(Schema.TableCache.Values, SchemaStore.Dialect, physicalIndexName) switch
+            {
+                null => new UniqueViolationException(message, physicalIndexName, null, null, null, exception),
+                { DeclaredIndexName: { } declared } index =>
+                    new UniqueViolationException(message, index.IndexName, index.EntityType, declared, index.PropertyNames, index.ColumnNames, exception),
+                var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception),
+            };
         }
 
         /// <summary>
@@ -242,18 +248,6 @@ namespace TFM.Nucleus.Data.Providers
         /// the explanation; null for any other. The default explains nothing.
         /// </summary>
         protected virtual Exception? TranslateEngineFailure(string message, Exception exception) => null;
-
-        private (Type? EntityType, string? PropertyName, string? ColumnName, string? IndexName) ResolveUniqueIndex(string? physicalIndexName)
-        {
-            if (physicalIndexName == null)
-                return default;
-            var dialect = SchemaStore.Dialect;
-            foreach (var table in Schema.TableCache.Values)
-                foreach (var column in table.IndexedColumns.Where(c => c.Unique))
-                    if (dialect.IdentifierComparer.Equals(SchemaComparer.PhysicalIndexName(table, column, dialect), physicalIndexName))
-                        return (table.ObjectSchema.Type, column.PropertyName, column.ColumnName, IndexNaming.ColumnIndexName(table, column));
-            return default;
-        }
 
         #endregion
 

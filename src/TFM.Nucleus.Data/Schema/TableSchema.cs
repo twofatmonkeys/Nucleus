@@ -194,7 +194,7 @@ namespace TFM.Nucleus.Data.Schema
                     throw new InvalidOperationException($"{Where()} names a column more than once.");
                 if (keys.FirstOrDefault(k => k.IsMax) is { } longKey)
                     throw new InvalidOperationException($"{Where()} keys on '{longKey.PropertyName}', a long text column, which cannot be an index key; include it instead.");
-                indexes.Add(new TableIndexSchema(attribute.Name, keys, include));
+                indexes.Add(new TableIndexSchema(attribute.Name, keys, include, attribute.Unique));
             }
             return indexes;
         }
@@ -313,11 +313,23 @@ namespace TFM.Nucleus.Data.Schema
         private static readonly System.Text.RegularExpressions.Regex NamePattern = new("^[A-Za-z0-9_]{1,100}$");
 
         public TableIndexSchema(string name, IReadOnlyList<ColumnSchema> keys, IReadOnlyList<ColumnSchema> include)
+            : this(name, keys, include, unique: false)
+        {
+        }
+
+        public TableIndexSchema(string name, IReadOnlyList<ColumnSchema> keys, IReadOnlyList<ColumnSchema> include, bool unique)
         {
             Name = name;
             Keys = keys;
             Include = include;
+            Unique = unique;
         }
+
+        /// <summary>
+        /// True when no two rows may share every key value. The index then covers only rows whose
+        /// keys are all non-null, as a column's unique index covers only non-null values.
+        /// </summary>
+        public bool Unique { get; }
 
         /// <summary>The index's own name, as declared.</summary>
         public string Name { get; }
