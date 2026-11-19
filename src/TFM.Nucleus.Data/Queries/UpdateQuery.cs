@@ -42,7 +42,11 @@ namespace TFM.Nucleus.Data.Queries
         }
 
         public static UpdateQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, T obj) where T : ICoreObject<T>, new() => Create(renderer, tableSchema, [obj]);
-        public static UpdateQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<T>? objs) where T : ICoreObject<T>, new()
+        public static UpdateQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
+            Create(renderer, tableSchema, objs?.Cast<ICoreObject>());
+
+        /// <summary>One update per object, the rest linked from the first. Null when there are none.</summary>
+        public static UpdateQuery? Create(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<ICoreObject>? objs)
         {
             if (objs == null || !objs.Any())
                 return null;

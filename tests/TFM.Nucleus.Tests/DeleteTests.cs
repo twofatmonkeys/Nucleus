@@ -40,15 +40,16 @@ namespace TFM.Nucleus.Tests
     }
 
     [Deletable]
-    public class TestParentOfUndeletable : CoreObject<TestParentOfUndeletable>
+    public class TestParentOfUndeclared : CoreObject<TestParentOfUndeclared>
     {
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        public NucleusChildCollection<TestUndeletableChild, TestParentOfUndeletable> Children => GetChildCollection<TestUndeletableChild, TestParentOfUndeletable>();
+        public NucleusChildCollection<TestUndeclaredChild, TestParentOfUndeclared> Children => GetChildCollection<TestUndeclaredChild, TestParentOfUndeclared>();
     }
 
-    public class TestUndeletableChild : CoreChildObject<TestUndeletableChild, TestParentOfUndeletable>
+    /// <summary>No declaration of its own: its rows go with a deleted owner, but it cannot be deleted alone.</summary>
+    public class TestUndeclaredChild : CoreChildObject<TestUndeclaredChild, TestParentOfUndeclared>
     {
         [DatabaseColumn]
         public int Sequence { get => GetValue<int>(); set => SetValue(value); }
@@ -264,11 +265,17 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
-        public void DeleteWhere_UndeletableChildType_ThrowsBeforeRendering()
+        public void DeleteWhere_UndeclaredChildOfADeletableParent_GoesWithIt()
         {
-            var tables = Tables(typeof(TestParentOfUndeletable), typeof(TestUndeletableChild));
+            // Deleting an owner deletes what it owns: an undeclared child type is deletable
+            // through its [Deletable] owner. A child type that forbids it is a schema error
+            // instead (ChildModelTests), so the cascade never meets one.
+            var tables = Tables(typeof(TestParentOfUndeclared), typeof(TestUndeclaredChild));
 
-            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestParentOfUndeletable))!, tables));
+            var query = new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestParentOfUndeclared))!, tables);
+
+            Assert.Equal(typeof(TestUndeclaredChild), Assert.Single(query.TargetsChildrenFirst()).Table.ObjectSchema.Type);
+            Assert.Throws<NotSupportedException>(() => new DeleteWhereQuery(SqlServerQueryRenderer.Instance, tables(typeof(TestUndeclaredChild))!, tables));
         }
 
         [Fact]

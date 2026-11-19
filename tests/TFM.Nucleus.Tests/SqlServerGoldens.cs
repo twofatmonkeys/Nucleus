@@ -35,6 +35,7 @@
             ["delete.ids.secondchunk"] = "UPDATE tbl_TFM_Nucleus_Tests_TestSoftWidget WITH (ROWLOCK) SET [IsDeleted] = @p0,[DeletedAt] = SYSDATETIMEOFFSET() WHERE ([ID] IN (@p1_0)) AND [IsDeleted] = 0;\nSELECT @@ROWCOUNT",
             ["delete.soft"] = "UPDATE tbl_TFM_Nucleus_Tests_TestSoftWidget WITH (ROWLOCK) SET [IsDeleted] = @p0,[DeletedAt] = SYSDATETIMEOFFSET() WHERE ([Name]=@p1) AND [IsDeleted] = 0;\nSELECT @@ROWCOUNT",
             ["delete.soft.cascade"] = "UPDATE tbl_TFM_Nucleus_Tests_TestSoftChild WITH (ROWLOCK) SET [IsDeleted] = @p0,[DeletedAt] = SYSDATETIMEOFFSET() WHERE [Parent] IN (SELECT [ID] FROM tbl_TFM_Nucleus_Tests_TestSoftParent WHERE ([Name]=@p1) AND [IsDeleted] = 0) AND [IsDeleted] = 0;\nUPDATE tbl_TFM_Nucleus_Tests_TestSoftParent WITH (ROWLOCK) SET [IsDeleted] = @p2,[DeletedAt] = SYSDATETIMEOFFSET() WHERE ([Name]=@p1) AND [IsDeleted] = 0;\nSELECT @@ROWCOUNT",
+            ["delete.where.parent"] = "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE ([Parent]=@p0);\nSELECT @@ROWCOUNT",
             ["insert.alltypes"] = "INSERT INTO tbl_TFM_Nucleus_Tests_TestAllTypesWidget([ID],[Ansi],[UnicodeSized],[UnicodeMax],[Count],[Big],[Ratio],[Flag],[When],[Day],[At],[Reference],[Blob],[Money],[Kind],[Linked],[Searchable],[Timestamp]) VALUES (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,SYSDATETIMEOFFSET())",
             ["insert.many"] = "INSERT INTO tbl_TFM_Nucleus_Tests_TestWidget([ID],[Name],[Timestamp]) VALUES (@p0,@p1,SYSDATETIMEOFFSET());\nINSERT INTO tbl_TFM_Nucleus_Tests_TestWidget([ID],[Name],[Timestamp]) VALUES (@p2,@p3,SYSDATETIMEOFFSET());\nINSERT INTO tbl_TFM_Nucleus_Tests_TestWidget([ID],[Name],[Timestamp]) VALUES (@p4,@p5,SYSDATETIMEOFFSET())",
             ["insert.null"] = "INSERT INTO tbl_TFM_Nucleus_Tests_TestWidget([ID],[Name],[Quantity],[Timestamp]) VALUES (@p0,NULL,@p1,SYSDATETIMEOFFSET())",
@@ -112,6 +113,8 @@
             ["where.in"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [ID] IN (@p0_0,@p0_1)",
             ["where.methods"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%' ESCAPE '\\' AND [Name] LIKE '%' + @p1 ESCAPE '\\' AND [Name] LIKE '%' + @p2 + '%' ESCAPE '\\'",
             ["where.or.and"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE (([Name]=@p0) OR ([Name]=@p1)) AND [Quantity]>@p2",
+            ["where.parent.id"] = "SELECT [Sequence] ,[Parent] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent]=@p0 AND [Sequence]>@p1",
+            ["where.parent.in"] = "SELECT [Sequence] ,[Parent] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent] IN (@p0_0,@p0_1)",
             ["where.startswith.wildcard"] = "SELECT [Name] ,[Quantity] ,[ID] ,[Timestamp] FROM tbl_TFM_Nucleus_Tests_TestWidget WHERE [Name] LIKE @p0 + '%' ESCAPE '\\'",
         };
     }

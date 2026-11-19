@@ -3,6 +3,7 @@ namespace TFM.Nucleus.Tests
     /// <summary>
     /// The CoreObject static convenience API must be thin forwarders over the ambient runtime.
     /// </summary>
+    [Collection(AmbientRuntime.Name)]
     public class StaticApiTests
     {
         private static FakeDataProvider InstallRuntime()

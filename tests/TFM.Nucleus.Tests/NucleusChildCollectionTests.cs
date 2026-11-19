@@ -59,8 +59,11 @@ namespace TFM.Nucleus.Tests
             Assert.Throws<CoreObjectException>(() => collection.Add(order));
         }
 
+        // A new child has no row, so removing one is always allowed and leaves nothing to delete.
+        // Removing stored children, and recording them for the save, is covered in ChildModelTests.
+
         [Fact]
-        public void Remove_RecordsChildForRemovalPipeline()
+        public void Remove_NewChild_DropsItAndRaisesEvent()
         {
             var (collection, _, events) = NewTracked();
             var order = new TestOrder();
@@ -71,14 +74,13 @@ namespace TFM.Nucleus.Tests
 
             Assert.True(removed);
             Assert.Empty(collection);
-            var pending = Assert.Single(collection.RemovedChildren);
-            Assert.Same(order, pending);
+            Assert.Empty(collection.RemovedChildren);
             var e = Assert.Single(events);
             Assert.Equal(NotifyCollectionChangedAction.Remove, e.Action);
         }
 
         [Fact]
-        public void RemoveAt_RecordsChildAndRaisesEvent()
+        public void RemoveAt_NewChild_DropsItAndRaisesEvent()
         {
             var (collection, _, events) = NewTracked();
             var order = new TestOrder();
@@ -88,12 +90,12 @@ namespace TFM.Nucleus.Tests
             collection.RemoveAt(0);
 
             Assert.Empty(collection);
-            Assert.Single(collection.RemovedChildren);
+            Assert.Empty(collection.RemovedChildren);
             Assert.Equal(NotifyCollectionChangedAction.Remove, Assert.Single(events).Action);
         }
 
         [Fact]
-        public void Clear_RecordsAllChildrenAndRaisesReset()
+        public void Clear_NewChildren_DropsThemAndRaisesReset()
         {
             var (collection, _, events) = NewTracked();
             collection.Add(new TestOrder());
@@ -103,7 +105,7 @@ namespace TFM.Nucleus.Tests
             collection.Clear();
 
             Assert.Empty(collection);
-            Assert.Equal(2, collection.RemovedChildren.Count);
+            Assert.Empty(collection.RemovedChildren);
             Assert.Equal(NotifyCollectionChangedAction.Reset, Assert.Single(events).Action);
         }
 

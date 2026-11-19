@@ -1,0 +1,27 @@
+{
+  "commit": "980a8fa-dirty",
+  "acceptedOn": "2026-11-19",
+  "scenarios": {
+    "bind 100x10": {
+      "allocatedBytes": 1020976
+    },
+    "delete removed build 50": {
+      "allocatedBytes": 44744
+    },
+    "insert\u002Bupdate build 100": {
+      "allocatedBytes": 638144
+    },
+    "materialise 1000": {
+      "allocatedBytes": 152040
+    },
+    "parse predicate x200": {
+      "allocatedBytes": 4570528
+    },
+    "savegraph walk 100x10x2": {
+      "allocatedBytes": 627544
+    },
+    "validate 100x10x2": {
+      "allocatedBytes": 785640
+    }
+  }
+}

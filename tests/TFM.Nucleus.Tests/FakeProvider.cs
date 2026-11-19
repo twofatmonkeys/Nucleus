@@ -153,6 +153,14 @@ namespace TFM.Nucleus.Tests
             return true;
         }
 
+        /// <summary>Every lazy child collection a load included in this query.</summary>
+        public List<string> IncludedCollections { get; } = [];
+        public bool IncludeChildCollection(string propertyName)
+        {
+            IncludedCollections.Add(propertyName);
+            return true;
+        }
+
         // IInsertQuery / IUpdateQuery
         IInsertQuery IInsertQuery.Create(string tablename) => new FakeQuery(EntityType, FakeQueryKind.Insert);
         IUpdateQuery IUpdateQuery.Create(string tablename, string idColumn, Guid idValue) => new FakeQuery(EntityType, FakeQueryKind.Update);

@@ -25,12 +25,20 @@ namespace TFM.Nucleus.Data
         /// Materialises a data set's rows as <typeparamref name="T"/>, each with the child
         /// collections the query fetched attached.
         /// </summary>
-        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet) where T : ICoreObject<T>, new()
+        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet) where T : ICoreObject<T>, new() =>
+            BuildCollection<T>(query, dataSet, null);
+
+        /// <summary>
+        /// Materialises a data set's rows as <typeparamref name="T"/>, each with the child
+        /// collections the query fetched attached, and its lazy collections, at every depth, left
+        /// to <paramref name="lazyLoader"/> to load on first read.
+        /// </summary>
+        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) where T : ICoreObject<T>, new()
         {
             var collection = dataSet.BuildCollection<T>();
-            var children = FromDataSet(query, dataSet);
+            var children = FromDataSet(query, dataSet, lazyLoader);
             foreach (var obj in collection)
-                Attach(obj, children);
+                Attach(obj, children, lazyLoader);
             return collection;
         }
 
@@ -38,7 +46,13 @@ namespace TFM.Nucleus.Data
         /// The child graph held in a data set's linked result sets, which must mirror the query's
         /// LinkedQueries. Null when the query has no child queries.
         /// </summary>
-        public static Graph? FromDataSet(IQuery query, DataSet dataSet)
+        public static Graph? FromDataSet(IQuery query, DataSet dataSet) => FromDataSet(query, dataSet, null);
+
+        /// <inheritdoc cref="FromDataSet(IQuery, DataSet)"/>
+        /// <param name="query">The select whose child queries the data set mirrors.</param>
+        /// <param name="dataSet">The rows read for the query.</param>
+        /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
+        public static Graph? FromDataSet(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader)
         {
             ArgumentNullException.ThrowIfNull(query);
             ArgumentNullException.ThrowIfNull(dataSet);
@@ -57,10 +71,10 @@ namespace TFM.Nucleus.Data
                 if (CollectionPropertyFor(schema, childQuery) is not { } property)
                     continue;
                 var childSchema = SchemaOf(childQuery);
-                var grandchildren = FromDataSet(childQuery, childRows);
+                var grandchildren = FromDataSet(childQuery, childRows, lazyLoader);
                 var map = new Dictionary<Guid, List<ICoreObject>>();
                 for (int row = 0; row < childRows.RowCount; row++)
-                    AddChild(map, childSchema, childRows.ColumnNames, childRows[row], grandchildren);
+                    AddChild(map, childSchema, childRows.ColumnNames, childRows[row], grandchildren, lazyLoader);
                 graph.Add((property, map));
             }
             return graph;
@@ -70,7 +84,15 @@ namespace TFM.Nucleus.Data
         /// The child graph of a query, fetched by streaming each child query on
         /// <paramref name="context"/>. Null when the query has no child queries.
         /// </summary>
-        public static async Task<Graph?> LoadAsync(IQuery query, IDataContext context, CancellationToken cancellationToken)
+        public static Task<Graph?> LoadAsync(IQuery query, IDataContext context, CancellationToken cancellationToken) =>
+            LoadAsync(query, context, null, cancellationToken);
+
+        /// <inheritdoc cref="LoadAsync(IQuery, IDataContext, CancellationToken)"/>
+        /// <param name="query">The select whose child queries are streamed.</param>
+        /// <param name="context">The context they are streamed on.</param>
+        /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
+        /// <param name="cancellationToken">Cancels the reads.</param>
+        public static async Task<Graph?> LoadAsync(IQuery query, IDataContext context, Action<INucleusChildCollection>? lazyLoader, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(query);
             ArgumentNullException.ThrowIfNull(context);
@@ -84,10 +106,10 @@ namespace TFM.Nucleus.Data
                 if (CollectionPropertyFor(schema, childQuery) is not { } property)
                     continue;
                 var childSchema = SchemaOf(childQuery);
-                var grandchildren = await LoadAsync(childQuery, context, cancellationToken).ConfigureAwait(false);
+                var grandchildren = await LoadAsync(childQuery, context, lazyLoader, cancellationToken).ConfigureAwait(false);
                 var map = new Dictionary<Guid, List<ICoreObject>>();
                 await foreach (var row in context.StreamAsync(childQuery, cancellationToken).ConfigureAwait(false))
-                    AddChild(map, childSchema, row.ColumnNames, row.Values, grandchildren);
+                    AddChild(map, childSchema, row.ColumnNames, row.Values, grandchildren, lazyLoader);
                 graph.Add((property, map));
             }
             return graph;
@@ -95,21 +117,47 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Attaches a parent's children from the graph. Every collection the graph covers is
-        /// attached, empty or not, since the graph is the whole of that collection.
+        /// attached, empty or not, since the graph is the whole of that collection. A lazy
+        /// ([RetrieveOnDemand]) collection the graph does not cover is marked to load itself
+        /// when it is first read.
         /// </summary>
-        public static void Attach(ICoreObject parent, Graph? graph)
+        public static void Attach(ICoreObject parent, Graph? graph) => Attach(parent, graph, null);
+
+        /// <inheritdoc cref="Attach(ICoreObject, Graph?)"/>
+        /// <param name="parent">The object the children belong to.</param>
+        /// <param name="graph">The children read for its level.</param>
+        /// <param name="lazyLoader">
+        /// Loads a lazy collection on first read; the ambient runtime when null.
+        /// </param>
+        public static void Attach(ICoreObject parent, Graph? graph, Action<INucleusChildCollection>? lazyLoader)
         {
             ArgumentNullException.ThrowIfNull(parent);
-            if (graph is null)
+            if (graph is not null)
+                foreach (var (property, map) in graph)
+                    CollectionOf(parent, property).AttachLoaded(map.TryGetValue(parent.ID, out var children) ? children : []);
+            MarkLazy(parent, graph, lazyLoader);
+        }
+
+        private static void MarkLazy(ICoreObject parent, Graph? graph, Action<INucleusChildCollection>? lazyLoader)
+        {
+            var schema = parent.ObjectSchema;
+            if (!schema.HasNucleusChildCollections)
                 return;
-            foreach (var (property, map) in graph)
+            foreach (var property in schema.NucleusChildCollectionProperties ?? [])
             {
-                if (property.Getter?.Invoke(parent, null) is not INucleusChildCollection collection)
-                    throw new InvalidOperationException(
-                        $"{parent.GetType().Name}.{property.Name} did not return a child collection.");
-                collection.AttachLoaded(map.TryGetValue(parent.ID, out var children) ? children : []);
+                if (!property.IsLazyChildCollection || (graph is not null && graph.Any(g => g.Property.Name == property.Name)))
+                    continue;
+                var collection = CollectionOf(parent, property);
+                if (lazyLoader is null)
+                    collection.MarkUnloaded(lazy: true);
+                else
+                    collection.MarkLazy(lazyLoader);
             }
         }
+
+        private static INucleusChildCollection CollectionOf(ICoreObject parent, IPropertySchema property) =>
+            property.Getter?.Invoke(parent, null) as INucleusChildCollection
+            ?? throw new InvalidOperationException($"{parent.GetType().Name}.{property.Name} did not return a child collection.");
 
         /// <summary>
         /// Materialises one child row, attaches its own children, and files it under its parent.
@@ -117,7 +165,7 @@ namespace TFM.Nucleus.Data
         /// child is attached, and the raw ID would otherwise sit where the object belongs.
         /// </summary>
         private static void AddChild(Dictionary<Guid, List<ICoreObject>> map, IObjectSchema childSchema,
-            string[] columns, object?[] values, Graph? grandchildren)
+            string[] columns, object?[] values, Graph? grandchildren, Action<INucleusChildCollection>? lazyLoader)
         {
             var parentColumn = childSchema.ParentObjectProperty?.Name
                 ?? throw new InvalidOperationException($"{childSchema.Name} is used as a child collection but has no [ParentObject] property.");
@@ -135,7 +183,7 @@ namespace TFM.Nucleus.Data
             }
             if (parentId == Guid.Empty)
                 return;
-            Attach(child, grandchildren);
+            Attach(child, grandchildren, lazyLoader);
             if (!map.TryGetValue(parentId, out var list))
                 map[parentId] = list = [];
             list.Add(child);

@@ -327,17 +327,23 @@ namespace TFM.Nucleus.Data
 
         private Parameter HandleComparison(BinaryExpression expression, Operator op)
         {
-            var memberExpression = GetMemberExpression(expression.Left, expression.Right);
-
-            if (memberExpression == null)
-                throw new NotSupportedException("At least one side of comparison must be a member access");
-
-            var valueExpression = ValueSideOf(expression.Left, expression.Right, memberExpression);
-            var memberName = GetMemberName(memberExpression);
+            var (column, valueExpression, columnOnRight) = ColumnAndValue(expression.Left, expression.Right);
+            var memberName = GetMemberName(column);
             var value = GetExpressionValue(valueExpression);
 
-            return new Parameter(memberName, value, op);
+            // 3 < x.Quantity is x.Quantity > 3: the term is always written column first.
+            return new Parameter(memberName, value, columnOnRight ? Mirror(op) : op);
         }
+
+        /// <summary>The operator that keeps a comparison's meaning when its two sides swap.</summary>
+        private static Operator Mirror(Operator op) => op switch
+        {
+            Operator.GreaterThan => Operator.LessThan,
+            Operator.LessThan => Operator.GreaterThan,
+            Operator.GreaterThanOrEqualTo => Operator.LessThanOrEqualTo,
+            Operator.LessThanOrEqualTo => Operator.GreaterThanOrEqualTo,
+            _ => op,
+        };
 
         private Parameter? HandleMethodCall(MethodCallExpression expression)
         {
@@ -458,13 +464,8 @@ namespace TFM.Nucleus.Data
                         }
                     }
 
-                    var memberExpression = GetMemberExpression(expression.Arguments[0], expression.Arguments[1]);
-
-                    if (memberExpression == null)
-                        throw new NotSupportedException("At least one side of comparison must be a member access");
-
-                    var valueExpression = ValueSideOf(expression.Arguments[0], expression.Arguments[1], memberExpression);
-                    var memberName = GetMemberName(memberExpression);
+                    var (column, valueExpression, _) = ColumnAndValue(expression.Arguments[0], expression.Arguments[1]);
+                    var memberName = GetMemberName(column);
                     var value = GetExpressionValue(valueExpression);
 
                     // Determine operator based on case sensitivity and negation
@@ -489,19 +490,21 @@ namespace TFM.Nucleus.Data
 
         private Parameter? HandleMemberAccess(MemberExpression expression)
         {
-            if (expression.Expression?.NodeType != ExpressionType.Parameter)
-            {
-                // This is accessing a variable or field from outside the expression
-                var value = GetExpressionValue(expression);
-                var memberName = GetMemberName(expression);
-                return new Parameter(memberName, value, Operator.Equals);
-            }
-
             // A bare bool column is a condition in its own right: x => x.IsArchived.
             if (IsBooleanColumn(expression, out var member))
                 return new Parameter(GetMemberName(member), true, Operator.Equals);
 
-            return null;
+            if (IsRootedAtParameter(expression))
+            {
+                // Throws the reference message for x.Parent.IsActive; anything else is not a condition.
+                ColumnMember(expression);
+                throw new NotSupportedException($"The condition {expression} is not a bool column of the queried type.");
+            }
+
+            // This is accessing a variable or field from outside the expression
+            var value = GetExpressionValue(expression);
+            var memberName = GetMemberName(expression);
+            return new Parameter(memberName, value, Operator.Equals);
         }
 
         /// <summary>
@@ -520,33 +523,86 @@ namespace TFM.Nucleus.Data
             return expression;
         }
 
-        private MemberExpression? GetMemberExpression(Expression left, Expression right)
+        /// <summary>
+        /// Splits a comparison into its column and its value, on whichever side the column is
+        /// written. A comparison with no column, or with a column on both sides, does not
+        /// translate.
+        /// </summary>
+        private static (MemberExpression Column, Expression Value, bool ColumnOnRight) ColumnAndValue(Expression left, Expression right)
         {
-            if (StripConversions(left) is MemberExpression leftMember && leftMember.Expression?.NodeType == ExpressionType.Parameter)
-                return leftMember;
-            if (StripConversions(right) is MemberExpression rightMember && rightMember.Expression?.NodeType == ExpressionType.Parameter)
-                return rightMember;
-            return null;
+            var leftColumn = ColumnMember(left);
+            var rightColumn = ColumnMember(right);
+            if (leftColumn != null && rightColumn != null)
+                throw new NotSupportedException($"{left} and {right} are both columns. A comparison between two columns does not translate.");
+            if (leftColumn != null)
+                return (leftColumn, right, false);
+            if (rightColumn != null)
+                return (rightColumn, left, true);
+            throw new NotSupportedException("At least one side of comparison must be a member access");
         }
 
         /// <summary>
-        /// The side of a comparison that is not the column. The member may be nested inside a
-        /// Convert, so the sides are matched after stripping rather than by reference to the
-        /// original nodes.
+        /// The member that names a column, or null when the expression is not one. A column is a
+        /// member of the parameter (x.Name), or a referenced entity read through its ID
+        /// (x.Parent.ID, x.Customer.ID): an entity reference is stored as its ID, so its column is
+        /// the reference itself. Any other read through the parameter throws, because it names
+        /// no column of the queried table and dropping or guessing it would change the selection.
         /// </summary>
-        private static Expression ValueSideOf(Expression left, Expression right, MemberExpression member) =>
-            ReferenceEquals(StripConversions(left), member) ? right : left;
+        private static MemberExpression? ColumnMember(Expression expression)
+        {
+            if (StripConversions(expression) is not MemberExpression { Expression: { } owner } member)
+                return null;
+            owner = StripConversions(owner);
+            if (owner is ParameterExpression)
+                return member;
+            if (owner is MemberExpression { Expression: { } referenceOwner } reference
+                && StripConversions(referenceOwner) is ParameterExpression
+                && typeof(ICoreObject).IsAssignableFrom(reference.Type))
+            {
+                if (member.Member.Name == nameof(ICoreObject.ID))
+                    return reference;
+                throw new NotSupportedException(
+                    $"{member} reads {member.Member.Name} of the referenced entity {reference.Member.Name}. Only the ID of a referenced entity translates " +
+                    $"(x.{reference.Member.Name}.ID, or x.{reference.Member.Name} == entity); a column of the referenced entity needs a join, which the parser does not do.");
+            }
+            if (IsRootedAtParameter(owner))
+                throw new NotSupportedException(
+                    $"{member} is not a column of the queried type. Only its own columns and the ID of a referenced entity translate.");
+            return null;
+        }
+
+        /// <summary>A member chain that starts at the predicate's parameter, such as x.Parent.Name.</summary>
+        private static bool IsRootedAtParameter(Expression expression)
+        {
+            while (true)
+            {
+                switch (StripConversions(expression))
+                {
+                    case ParameterExpression:
+                        return true;
+                    case MemberExpression { Expression: { } owner }:
+                        expression = owner;
+                        continue;
+                    default:
+                        return false;
+                }
+            }
+        }
 
         /// <summary>
         /// The column a member maps to. The query's table knows it, inherited properties
-        /// included; a query without a table falls back to the member's own attribute.
+        /// included; a query without a table falls back to the member's own attribute. An entity
+        /// reference read through its ID maps to the reference's column.
         /// </summary>
         private string GetMemberName(Expression expression)
         {
-            if (StripConversions(expression) is MemberExpression member)
+            if ((ColumnMember(expression) ?? StripConversions(expression) as MemberExpression) is { } member)
             {
                 if (_query.DataTableSchema?.FindByPropertyName(member.Member.Name) is { } column)
                     return column.ColumnName;
+                if (_query.DataTableSchema != null && typeof(ICoreObject).IsAssignableFrom(member.Type))
+                    throw new NotSupportedException(
+                        $"{member.Member.Name} references an entity but has no column in {_query.DataTableSchema.TableName}. Mark it [DatabaseColumn] to filter on it.");
                 var attr = member.Member.GetCustomAttribute<DatabaseColumnAttribute>(inherit: true);
                 return string.IsNullOrWhiteSpace(attr?.ColumnName) ? member.Member.Name : attr.ColumnName;
             }
@@ -566,23 +622,29 @@ namespace TFM.Nucleus.Data
         private object? GetExpressionValue(Expression expression)
         {
             if (expression is ConstantExpression constant)
-                return NormalizeEnums(constant.Value);
+                return NormalizeValue(constant.Value);
 
             // Compile and execute the expression to get the value
             var lambda = Expression.Lambda(expression);
-            return NormalizeEnums(lambda.Compile().DynamicInvoke());
+            return NormalizeValue(lambda.Compile().DynamicInvoke());
         }
 
         /// <summary>
-        /// Binds an enum as its underlying integral value, and an enumerable of enums as an
-        /// enumerable of those values, so a term reaches the provider as the type its column
-        /// actually stores rather than relying on the driver to recognise the enum. The write path
-        /// does the same in SqlDataContext.CoerceValueForDataTable; this is the read path.
+        /// Binds a value as the type its column actually stores: an enum as its underlying
+        /// integral value and an entity as its ID, and an enumerable of either as an enumerable of
+        /// those, rather than relying on the driver to recognise them. The write path does the
+        /// same in SqlDataContext.CoerceValueForDataTable and ColumnSchema.GetClrValue; this is
+        /// the read path.
         /// </summary>
-        private static object? NormalizeEnums(object? value)
+        private static object? NormalizeValue(object? value)
         {
-            if (value == null)
-                return null;
+            switch (value)
+            {
+                case null:
+                    return null;
+                case ICoreObject entity:
+                    return entity.ID;
+            }
 
             var type = value.GetType();
             if (type.IsEnum)
@@ -590,24 +652,33 @@ namespace TFM.Nucleus.Data
 
             // Decided from the declared element type, never by enumerating: mapping every
             // enumerable would turn a byte[] term into an object[] and break binary comparisons.
-            if (value is System.Collections.IEnumerable items and not string
-                && EnumElementType(type) is Type elementType)
+            if (value is System.Collections.IEnumerable items and not string && ElementType(type) is Type elementType)
             {
-                var underlying = Enum.GetUnderlyingType(elementType);
-                var mapped = new List<object?>();
-                foreach (var item in items)
-                    mapped.Add(item == null ? null : Convert.ChangeType(item, underlying));
-                return mapped;
+                if (elementType.IsEnum)
+                {
+                    var underlying = Enum.GetUnderlyingType(elementType);
+                    var mapped = new List<object?>();
+                    foreach (var item in items)
+                        mapped.Add(item == null ? null : Convert.ChangeType(item, underlying));
+                    return mapped;
+                }
+                if (typeof(ICoreObject).IsAssignableFrom(elementType))
+                {
+                    var ids = new List<object?>();
+                    foreach (var item in items)
+                        ids.Add(item is ICoreObject entity ? entity.ID : null);
+                    return ids;
+                }
             }
 
             return value;
         }
 
         /// <summary>
-        /// The enum type behind an IEnumerable&lt;TEnum&gt; or IEnumerable&lt;TEnum?&gt;, or null
-        /// when the sequence is of anything else.
+        /// The element type behind an IEnumerable&lt;T&gt; that needs mapping: an enum (or a
+        /// nullable enum, unwrapped) or an entity. Null when the sequence is of anything else.
         /// </summary>
-        private static Type? EnumElementType(Type sequenceType)
+        private static Type? ElementType(Type sequenceType)
         {
             foreach (var candidate in sequenceType.GetInterfaces().Append(sequenceType))
             {
@@ -615,7 +686,7 @@ namespace TFM.Nucleus.Data
                     continue;
                 var element = candidate.GetGenericArguments()[0];
                 element = Nullable.GetUnderlyingType(element) ?? element;
-                if (element.IsEnum)
+                if (element.IsEnum || typeof(ICoreObject).IsAssignableFrom(element))
                     return element;
             }
             return null;

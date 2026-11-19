@@ -45,7 +45,11 @@ namespace TFM.Nucleus.Data.Queries
             return query;
         }
         public static InsertQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, T obj) where T : ICoreObject<T>, new() => Create(renderer, tableSchema, [obj]);
-        public static InsertQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<T>? objs) where T : ICoreObject<T>, new()
+        public static InsertQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
+            Create(renderer, tableSchema, objs?.Cast<ICoreObject>());
+
+        /// <summary>One insert per object, the rest linked from the first. Null when there are none.</summary>
+        public static InsertQuery? Create(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<ICoreObject>? objs)
         {
             if (objs == null || !objs.Any())
                 return null;

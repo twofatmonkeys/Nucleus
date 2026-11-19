@@ -91,6 +91,9 @@ public class Customer : CoreObject<Customer>
     public decimal CreditLimit { get => GetValue<decimal>(); set => SetValue(value); }
 
     public NucleusChildCollection<Order, Customer> Orders => GetChildCollection<Order, Customer>();
+
+    [RetrieveOnDemand]   // lazy: left out of loads, read on first use
+    public NucleusChildCollection<CustomerNote, Customer> Notes => GetChildCollection<CustomerNote, Customer>();
 }
 
 [Deletable(DeleteBehavior.Soft)]
@@ -98,6 +101,12 @@ public class Order : CoreChildObject<Order, Customer>
 {
     [DatabaseColumn]
     public decimal Total { get => GetValue<decimal>(); set => SetValue(value); }
+}
+
+public class CustomerNote : CoreChildObject<CustomerNote, Customer>
+{
+    [DatabaseColumn]
+    public string? Text { get => GetValue<string>(); set => SetValue(value); }
 }
 ```
 
@@ -120,6 +129,9 @@ await order.DeleteAsync();                                            // [Deleta
 // Leave a child collection unloaded, and load it later only if it is needed
 var light = await adaptor.Where(c => c.Name == "Acme").Exclude(c => c.Orders).ToListAsync();
 await light[0].Orders.LoadAsync();
+
+// A lazy ([RetrieveOnDemand]) collection is left out unless included; Include loads it for every row at once
+var listing = await adaptor.Include(c => c.Notes).Where(c => c.CreditLimit > 0).ToListAsync();
 
 // Delete by predicate: no row is loaded, child rows go too, the count comes back
 var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
@@ -328,8 +340,9 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 | Attribute | Effect |
 |---|---|
 | `[Cacheable(refreshInterval, cacheLifetime)]` | Keeps the whole collection plus a Guid index in memory. Both values are in seconds and default to 120 and 900. |
-| `[Deletable(DeleteBehavior.Hard)]` | Deletes physically remove rows. |
+| `[Deletable(DeleteBehavior.Hard)]` | Deletes physically remove rows. `[Deletable]` alone is hard. |
 | `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless `IncludeDeleted` is set on the query. |
+| `[Deletable(false)]` | On a child type: its rows are never deleted, by any route. A declaration above it that would delete them fails the schema. |
 | `[SuppressDB]` | Excludes the type from schema management entirely. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
 | `[TableIndex(name, keys..., Include = [...], Unique = true)]` | An index over several columns, named `NIX_<table>_<name>`, optionally unique over all of its keys together. Repeat it for more than one. See below. |
@@ -337,7 +350,8 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 | `[TableNaming(style, levels)]` | The naming policy of this type's table, in place of the provider's. Inherited, so it can sit on a root. See [Table names](#table-names). |
 | `[LegacyTableNames("tbl_Old", ...)]` | Earlier names of the type's table. A missing table is renamed from the one of them that exists. Not inherited. See [Table names](#table-names). |
 
-Deletion is opt-in. A type without `[Deletable]` cannot be deleted and any attempt throws.
+Deletion is opt-in. Nothing is deleted unless a `[Deletable]` declaration says so: on the type, on
+a child collection property, or on an owner above a child type. See [Deleting](#deleting).
 
 `[TableIndex]` declares an index over several columns, by property name:
 
@@ -391,9 +405,11 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 
 | Attribute | Applies to | Effect |
 |---|---|---|
-| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. Overloads take `forceSave` to cascade the save into the referenced object, and a `linkedIDProperty` name. |
-| `[LinkedChildCollection]` | a collection property | Marks a child collection that is hydrated and cascaded as part of the parent's graph. |
+| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. The referenced type must be stored by the same provider, or the save throws before anything runs. |
+| `[Deletable]` | a `NucleusChildCollection` property | Removing a stored child from the collection and saving the parent deletes the child. See [Deleting](#deleting). |
+| `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](#lazy-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
+| `[LinkedChildCollection]` | a collection property | Obsolete, and has no effect: a child collection is a `NucleusChildCollection` property, found by its type. It was the v1 marker. |
 
 ### Logging and auditing
 
@@ -402,7 +418,7 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 | `[SuppressLogging]` | Omits the type or property from audit summaries. Note it is inherited, so applying it to a base class silences every descendant. |
 | `[AbbreviatedLogging]` | Records that the property changed without recording the values, for long or sensitive data. |
 | `[LinkWhenLogging]` | Includes the linked object's ID in the audit entry. |
-| `[RetrieveOnDemand]` | Intended for lazy per-property loading. Not currently implemented. |
+| `[RetrieveOnDemand]` | On a child collection, makes it lazy (see [Relationships](#relationships)). On any other property it has no effect. |
 
 ## Static API reference
 
@@ -418,38 +434,112 @@ These live on `CoreObject` and forward to the runtime that `AddNucleusData()` pu
 | `LoadWhereAsync<T>(Expression<Func<T, bool>>, CancellationToken)` | `Task<NucleusCollection<T>>` | Async form. |
 | `LoadByID<T>(Guid, params Expression<Func<T, INucleusChildCollection>>[] exclude)` | `T?` | Leaves the selected child collections unloaded. Bypasses the cache when anything is excluded. |
 | `LoadWhere<T>(predicate, params exclude)`, `LoadWhereAsync<T>(predicate, CancellationToken, params exclude)` | as above | The same, for a predicate. |
-| `DeleteWhere<T>(Expression<Func<T, bool>>)`, `DeleteWhereAsync<T>(..., CancellationToken)` | `int`, `Task<int>` | Deletes every matching row without loading any, with its child collection rows, in one transaction. Returns the rows of `T` affected. See [Child collections and deleting](#child-collections-and-deleting). |
+| `DeleteWhere<T>(Expression<Func<T, bool>>)`, `DeleteWhereAsync<T>(..., CancellationToken)` | `int`, `Task<int>` | Deletes every matching row without loading any, with its child collection rows, in one transaction. Returns the rows of `T` affected. See [Deleting](#deleting). |
 | `BulkSave<TObject>(IEnumerable<TObject>)` | `void` | Routes large batches through the provider's bulk engine. |
 
 Instance members on every entity:
 
 | Member | Notes |
 |---|---|
-| `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Runs `Validate()`, then writes only the changed columns. |
+| `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Runs `Validate()`, which also validates the new and changed children and the forceSave links, then writes only the changed columns, the child collections (deleting removed children) and the forceSave links, in one transaction. |
 | `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction; the caller commits or rolls back. |
-| `Delete()`, `DeleteAsync(CancellationToken)` | `[Deletable]` types only. Removes the object's child collection rows by parent ID in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is not `[Deletable]` or is stored by another provider. |
+| `Delete()`, `DeleteAsync(CancellationToken)` | Types with their own `[Deletable]` only. Removes the object's child collection rows at every depth in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is stored by another provider. |
 | `IsNew`, `IsReadOnly`, `HasChanges`, `DataChanged` | Change-tracking state. |
 | `ToJson()`, `DisplayName` | Serialisation and display helpers. |
 
 Equality, `GetHashCode` and the explicit conversion to `Guid` are all based on `ID`.
 
-## Child collections and deleting
+## Child collections
 
-A `NucleusChildCollection` property is loaded with its parent on every load path: `LoadWhere`,
-`LoadByID`, paged loads, and the async LINQ operators. The child rows arrive in the same round trip
-for the non-streaming paths, and loaded children come back unchanged, with `Parent` bound and
-nothing staged. When a load has a `Take` or a page, the child query selects the children of the
-returned parents only.
+Child collections are rows a parent owns: they are created with it, change with it and go with it
+(an order's lines, a roster's shifts, a campaign's recipients). Model them as a
+`NucleusChildCollection<TChild, TParent>` property on the parent, read through
+`GetChildCollection`, with the child deriving from `CoreChildObject<TChild, TParent>`. A child can
+own a collection of its own, so owned rows nest to any depth. A parent holds at most one collection
+of each child type; two fail when the schema is built.
 
-**Leaving a collection out.** `Exclude(x => x.Items)` on a query, or the `exclude` selectors on
-`LoadByID` and `LoadWhere`, drop that collection's query. Its rows are never queried or
-transferred, and the collection comes back with `IsLoaded` false. Reading it (enumerating, `Count`,
-the indexer, `Contains`, `Remove`, `Clear`) throws `InvalidOperationException` rather than
-answering as if the parent had no children. Adding still works, and added children save with the
-parent. `collection.LoadAsync()` fetches the stored children by the parent's ID and merges them by
-ID with any added since; `IObjectDataManager.LoadChildCollectionAsync(collection)` does the same
-without the ambient runtime. An excluded load never reads from or populates the `[Cacheable]` cache.
-Serialising a parent whose collection is unloaded throws for the same reason.
+```csharp
+public class Roster : CoreObject<Roster>
+{
+    [Deletable]                       // removing a line and saving deletes it
+    public NucleusChildCollection<RosterLine, Roster> Lines => GetChildCollection<RosterLine, Roster>();
+
+    [RetrieveOnDemand]                // can grow large: left out of loads, read on first use
+    public NucleusChildCollection<RosterNote, Roster> Notes => GetChildCollection<RosterNote, Roster>();
+}
+
+public class RosterLine : CoreChildObject<RosterLine, Roster>
+{
+    [DatabaseColumn]
+    public int Hours { get => GetValue<int>(); set => SetValue(value); }
+
+    public override void Validate()
+    {
+        if (Hours < 0)
+            throw new InvalidOperationException("Hours cannot be negative.");
+        base.Validate();
+    }
+}
+```
+
+Nucleus then does the bookkeeping:
+
+- **Loading.** Every load of the parent brings its children in the same round trip, bound to the
+  parent and unchanged: `LoadWhere`, `LoadByID`, paged loads and the async LINQ operators. When a
+  load has a `Take` or a page, the child query selects the children of the returned parents only.
+  Lazy collections are the exception (below).
+- **Saving.** Save the parent, never a child (a child's own `Save` throws
+  `UnableToSaveFromChildObject`). New children are inserted, changed ones updated and removed ones
+  deleted, in one transaction. The deletes run first, so a replacement with the same unique key
+  does not collide with the row it replaces. Large batches go to the bulk engine on their own. A
+  save that fails rolls back and keeps the removals, so saving again deletes them.
+- **Validating.** The parent's `Validate()` runs `Validate()` on every new or changed child, at
+  every depth, before anything is written, so a child's rules hold without the parent restating
+  them. Unchanged loaded children are not checked again.
+- **Deleting.** Declared, and cascaded at every depth (below).
+- **Ownership.** A child belongs to one parent: adding it to a second throws
+  `ParentObjectAlreadyBound`. A child removed and added back to the same collection before the
+  save is kept.
+- **Change notification.** A change to a child, or to the collection, raises `PropertyChanged` on
+  the parent for the collection property's name.
+
+Do not keep owned rows as a separate entity with a hand-written parent ID column, a private list,
+or attach, remove and acknowledge methods. That rebuilds what the collection already does, and gets
+the transaction, the cascade or the cache eviction wrong. Use a separate entity with a plain ID
+reference only for rows that outlive the parent or that more than one parent shares.
+
+### Deleting
+
+Nothing is deleted unless a declaration says so. `[Deletable]` can go in three places, on any or
+all of them:
+
+| Declared on | What it enables |
+|---|---|
+| The entity type | Its rows can be deleted directly (`Delete()`, `DeleteWhere`), and everything it owns goes with them. On a child type, removing one from its collection deletes it too. |
+| A child collection property | Removing a stored child from that collection and saving the parent deletes the child, with everything it owns. |
+| The parent (or any owner above) | Its own rows can be deleted, and every child type below it, at any depth, is deleted with it or when removed from its collection. |
+
+A child type made deletable only by its collection or an owner is deleted through its owner and
+never on its own: `Delete()` on it throws. `[Deletable(false)]` on a child type forbids deleting its
+rows by any route, and wins: when a declaration above it would delete them, the schema fails to
+build, naming both declarations, rather than orphaning rows at delete time. `[Deletable(false)]` on
+a parent stops only the parent's own deletion; `[Deletable]` on its collection still makes removals
+delete. `[Deletable]` on a property that is not a child collection, and `[Deletable(false)]` on a
+collection, fail when the schema is built.
+
+**Hard or soft.** A type's own declaration decides. A child type without one takes the behaviour
+of the nearest declaration above it that enables deleting it (the collection's when it names one,
+then the parent's, and so on up), so the lines of a soft-deleted order can be restored with it. A
+child type made soft this way gets the soft-delete columns, added in place like any new column.
+
+**Removing without a declaration.** Removing a stored child from a collection whose children are
+not deletable throws `InvalidOperationException` from `Remove`, `RemoveAt`, `Clear` or the indexer,
+before anything changes, and says where to declare `[Deletable]`. `Clear` checks every child first.
+A child that was never saved can always be removed; it is simply dropped.
+
+**The cascade.** Deleting a parent, by object or by predicate, deletes its child collection rows at
+every depth in one batch: deepest first, each level selecting by its parent's condition, and each
+type keeping its own hard or soft behaviour. It does not depend on which children were loaded.
 
 **Deleting by predicate.** `DeleteWhere` and `DeleteWhereAsync` exist on `CoreObject` (static), the
 object data manager (each in a transaction of its own, with cache eviction), and `IDataContext`
@@ -459,9 +549,48 @@ as `x => true`, throws `ArgumentException`, and one that matches none, such as `
 returns 0 without a round trip. Soft-deletable types are flagged, and only rows not already
 deleted count.
 
-**The cascade.** Deleting a parent, by object or by predicate, deletes its child collection rows at
-every depth in one batch: deepest first, each level selecting by its parent's condition, and each
-type keeping its own hard or soft behaviour. It no longer depends on which children were loaded.
+### Leaving a collection out
+
+`Exclude(x => x.Items)` on a query, or the `exclude` selectors on `LoadByID` and `LoadWhere`, drop
+that collection's query. Its rows are never queried or transferred, and the collection comes back
+with `IsLoaded` false. Reading it (enumerating, `Count`, the indexer, `Contains`, `Remove`, `Clear`)
+throws `InvalidOperationException` rather than answering as if the parent had no children. Adding
+still works, and added children save with the parent. `collection.LoadAsync()` fetches the stored
+children by the parent's ID and merges them by ID with any added since;
+`IObjectDataManager.LoadChildCollectionAsync(collection)` does the same without the ambient
+runtime. An excluded load never reads from or populates the `[Cacheable]` cache. Serialising a
+parent whose collection is excluded throws for the same reason.
+
+### Lazy collections
+
+`[RetrieveOnDemand]` on a child collection makes it lazy, for a collection that can grow large.
+Every load of the parent leaves its rows out, and the collection loads them the first time it is
+read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`, `Clear`, `Insert`), once,
+however many threads read it together. The read goes through the manager or data context that
+loaded the parent, on a connection of its own and outside any transaction the caller holds. Adding
+to an unread lazy collection does not load it, and the added children save with the parent.
+
+Reading a lazy collection is a round trip that the call site does not show, so a loop that reads it
+for each parent of a listing runs a query per parent. A listing that needs the children includes
+them, and they come for every returned parent in the same round trip:
+
+```csharp
+var campaigns = await manager.Get<Campaign>().Include(c => c.Recipients).Where(c => c.Year == 2026).ToListAsync();
+```
+
+The manager's `Load`, `LoadAsync`, `LoadStreamAsync`, `LoadPagedAsync` and `LoadByID` take the
+included collection names as well. `Exclude` wins over lazy: an excluded lazy collection throws
+when read. A lazy collection always loads all of its rows; to read part of one, query the child
+type by its parent, which reads only the rows asked for and leaves the parent's collection unloaded:
+
+```csharp
+Expression<Func<Recipient, bool>> bounced = r => r.Parent.ID == campaign.ID && r.Status == Status.Bounced;
+var page = await manager.LoadPagedAsync<Recipient>(0, 50, bounced.Body);
+var total = await manager.Rows<Recipient>(r => r.Parent == campaign).CountAsync();
+```
+
+Serialising a parent reads its lazy collections. A `[Cacheable]` type cannot have one, because its cached instances are shared and
+loading the collection would change it for every caller; the schema fails to build.
 
 ## Lifecycle hooks
 
@@ -469,7 +598,7 @@ Override these on an entity to run logic at defined points:
 
 | Hook | When it runs |
 |---|---|
-| `Validate()` | At the start of every save. Throw to reject the save. |
+| `Validate()` | At the start of every instance save. Throw to reject the save. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
 | `PreSave()` | Before the write is issued. |
 | `OnAfterLoadFromDB()` | After the entity is materialised from a result set. |
 | `OnAfterInitializeDB()` | After schema initialisation for the type. |
@@ -477,6 +606,8 @@ Override these on an entity to run logic at defined points:
 ## Async query operators
 
 `ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. To choose columns, order, page or group in the database, use a [row read](#row-reads); otherwise order, page and project in memory, or use `ToPagedResultAsync`. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
+
+An entity reference (a child's `Parent`, a `[LinkedObject]`) is stored as the referenced entity's ID, and a predicate compares it by that ID. `x => x.Parent.ID == id`, `x => x.Parent == order`, `x => ids.Contains(x.Parent.ID)` and `x => orders.Contains(x.Parent)` all translate to the reference's column, in a load, a paged load, a [row read](#row-reads), a count or a `DeleteWhere`. Only the ID translates: `x => x.Parent.Name == "a"` would need a join, and throws `NotSupportedException` naming the term, as does any other member read through a column (`x.Name.Length`) and a comparison of two columns. A comparison may be written either way round: `3 < x.Quantity` is `x.Quantity > 3`.
 
 ## Row reads
 
@@ -617,7 +748,56 @@ catch (UniqueViolationException ex) when (ex.IsIndex<PdfTemplateFile>("TemplateP
 }
 ```
 
+## Known limits
+
+These are open findings (`docs/code-review-findings.md`) that change what a consumer must do.
+
+- **Saving a parent rewrites every loaded child.** An update links an update of every child in each
+  loaded collection, and each sets `Timestamp`, so a parent with many loaded children writes them
+  all on every save. Exclude, or make lazy, a large collection the save does not need.
+- **A save through a caller-owned context commits in memory before the caller commits.**
+  `SaveAsync(IDataContext, ...)` marks the object, its children and its removals saved as soon as
+  the writes run. A caller who then rolls back must reload the objects.
+- **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
+  `Include` or `LoadAsync()` where that matters.
+
 ## Behaviour changes
+
+These came in with entity reference predicates.
+
+- **A comparison written value first means what it says.** `3 < x.Quantity` used to render as
+  `Quantity < 3`: the sides were swapped and the operator kept, so it selected the opposite range.
+  It now renders as `Quantity > 3`. A caller who wrote value-first comparisons was getting the
+  wrong rows, and gets the right ones now.
+- **A member read through a column throws a clearer error.** `x.Name.Length`, `x.Parent.Name` and
+  a comparison of two columns throw `NotSupportedException` (inside the parse's
+  `InvalidOperationException`) naming the term. They used to fail too, with the "member access"
+  message or an unbound parameter error.
+
+These came in with the child model: declared deletes, removal persistence, child validation,
+forceSave and lazy collections.
+
+- **Removing a stored child and saving deletes it, when declared.** It used to leave the row behind
+  without a word. Without a declaration, removing a stored child now throws at the call; removing
+  a new child is unchanged.
+- **Deleting a `[Deletable]` parent cascades to child types with no declaration of their own.** It
+  used to throw. A child type that must survive needs `[Deletable(false)]`, and then the schema
+  fails to build until one of the two declarations goes.
+- **A child type with no declaration under a soft parent is deleted soft**, and its table gains the
+  soft-delete columns on the next initialise.
+- **The parent's `Validate()` runs the children's.** A child rule that never ran before can now
+  reject a save.
+- **`[LinkedObject(forceSave: true)]` writes the linked object.** It used to mark the linked
+  object's changes committed without writing them, so a later save of it wrote nothing.
+- **`[RetrieveOnDemand]` makes a child collection lazy.** It had no effect anywhere before.
+- **`[LinkedChildCollection]` and the `LinkedChild*` schema members are obsolete.** The attribute
+  only fed validation and notification, so a `NucleusChildCollection` without it was never
+  validated and raised `PropertyChanged` with no property name; both now follow the collection.
+  The members answer for child collections and go at the next major version.
+- **A parent with two collections of one child type fails when the schema is built.** It used to
+  fail with a bare `ArgumentException` from a dictionary.
+- **A child entity can hold a child collection.** `GetChildCollection` required the parent to be a
+  root entity.
 
 These came in with unique `[TableIndex]`.
 
@@ -778,6 +958,8 @@ src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Data.PostgreSQL\ PostgreSQL provider
 src\TFM.Nucleus.Data.SQLite\     SQLite provider
 src\TFM.Nucleus.Testing\         live-database test support
+tests\Shared\                    test support linked into both test projects: source paths and the benchmark harness
+tools\Run-Benchmarks.ps1         runs every benchmark suite in its own process, and gates or accepts the baselines
 tests\TFM.Nucleus.Tests\         unit tests, no database
 tests\TFM.Nucleus.IntegrationTests\  live database tests: every suite runs once per provider (SqlServer\, Postgres\ and Sqlite\ hold the subclasses and the engine-only tests)
 ```
@@ -797,11 +979,32 @@ docker run -d --name nucleus-pg -e POSTGRES_USER=nucleus -e POSTGRES_PASSWORD=<p
 
 with `Nucleus:Postgres:Server` set to `localhost:15432`; the provider creates the database on the first run.
 
-The save benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`) time each write path (one object at a time, a batch, the split sync path and the bulk engine) on every configured provider. They skip unless `NUCLEUS_BENCHMARK=1` is set, and print their medians to the test output:
+### Benchmarks
 
-```bash
-NUCLEUS_BENCHMARK=1 dotnet test tests/TFM.Nucleus.IntegrationTests --configuration Release --filter "FullyQualifiedName~SaveBenchmarks" --logger "console;verbosity=detailed"
+The benchmarks catch a regression on the save and read paths. They are opt-in: every benchmark skips unless `NUCLEUS_BENCHMARK=1` is set, so a normal `dotnet test` and CI never run them. A full run takes about 20 minutes, so run them for an architectural change (the save or load pipeline, the query builders, the schema model, the provider SDK, the entity base), not for each feature or bug fix. Each scenario's allocations and median time are compared with a committed baseline. Allocations are gated: they repeat to within about 1% from run to run, so a scenario fails when it allocates more than its baseline by more than the tolerance and the floor, and still does when it is measured once more. Time is reported, with its change against the baseline, but never fails: on a development database the same code measured 7 ms and 13 ms in back-to-back runs, so a stored baseline cannot hold it to 20%. Compare times by running the two builds one after the other in one session. A scenario with no baseline fails. Getting better never fails; the table says so and suggests accepting.
+
+| Kind | Where | What it covers | Gated |
+|---|---|---|---|
+| Database | `tests/TFM.Nucleus.IntegrationTests/Benchmarks`: `SaveBenchmarks` and `ReadBenchmarks`, per provider | Saves (one at a time, a batch, the split sync path, the bulk engine, parent and child graphs inserted, updated, pruned and deleted, three levels, the save builder alone) and reads (flat, sync, streamed, paged, by ID, graphs with and without children, lazy collections listed, included and read, children read and counted by parent) | Allocations, against `Baselines/<machine>/`; time reported |
+| Database-free | `tests/TFM.Nucleus.Tests/Benchmarks/InProcessBenchmarks.cs` | The save graph walk, child validation, the write and delete builders, binding rows to a graph, materialising, translating a predicate | Allocations, against `Baselines/any/`; time reported, against `Baselines/<machine>/` |
+
+A baseline file is named `<suite>.<provider>.<framework>.<configuration>.json` (`inprocess.<framework>.<configuration>.json` for the database-free kind). The database baselines are filed per machine, because a driver's allocations and every time depend on the machine and its database; the database-free allocations are deterministic and are filed once for every machine. Allocations fail above 10% and 4 KB; a time is flagged in the table above 20% and 2 ms (`NUCLEUS_BENCHMARK_TOLERANCE` changes the percentage). Allocations are counted across the whole process, so only one benchmark measures at a time on a machine, whatever the process or provider, and a test stack boots only between measurements. Before measuring, a database suite deletes any rows a stopped run left and compacts the tables (`VACUUM` on PostgreSQL and SQLite), so a scan reads the same pages each time.
+
+A database suite allocates 15-20% more for the same work after another suite's heavy work in the same process, so each database suite runs in a test process of its own. `tools/Run-Benchmarks.ps1` does that: it builds Release, then runs the database-free suite and every provider's Save and Read suite, each in its own process, for each framework, and exits non-zero if any fails. A second database suite in one process skips, naming the script, rather than measuring wrong.
+
+```powershell
+# Run and gate every benchmark.
+./tools/Run-Benchmarks.ps1
+
+# One provider, one suite, one framework.
+./tools/Run-Benchmarks.ps1 -Provider Sqlite -Suite Save -Framework net10.0
+
+# Write the baselines instead, after a change whose cost is deliberate. Review the diff and give
+# the reason in the commit message.
+./tools/Run-Benchmarks.ps1 -Accept
 ```
+
+A new machine needs its own database baselines before its runs can pass: accept once on it. Benchmarks measure Release builds only, because Debug code allocates differently.
 
 ## Documentation
 

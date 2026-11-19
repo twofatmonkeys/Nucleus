@@ -77,6 +77,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteChildSaveIntegrationTests(SqliteFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteChildModelIntegrationTests(SqliteFixture fixture) : ChildModelIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteSaveCancellationIntegrationTests(SqliteFixture fixture) : SaveCancellationIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
@@ -90,6 +93,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
 
     [Collection(SqliteCollection.Name)]
     public sealed class SqliteSaveBenchmarks(SqliteFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteReadBenchmarks(SqliteFixture fixture) : Benchmarks.ReadBenchmarks(fixture);
 
     [Collection(SqliteCollection.Name)]
     public sealed class SqliteAddColumnIntegrationTests(SqliteFixture fixture) : AddColumnIntegrationTests(fixture)

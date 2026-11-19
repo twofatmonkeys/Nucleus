@@ -78,6 +78,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresChildSaveIntegrationTests(PostgresFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresChildModelIntegrationTests(PostgresFixture fixture) : ChildModelIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresSaveCancellationIntegrationTests(PostgresFixture fixture) : SaveCancellationIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
@@ -91,6 +94,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresSaveBenchmarks(PostgresFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresReadBenchmarks(PostgresFixture fixture) : Benchmarks.ReadBenchmarks(fixture);
 
 
 

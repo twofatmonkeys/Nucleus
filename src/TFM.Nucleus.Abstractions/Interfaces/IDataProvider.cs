@@ -29,6 +29,16 @@ namespace TFM.Nucleus.Data
         public IUpdateQuery? CreateUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new();
         public IInsertQuery? CreateInsertQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new();
         public IQuery? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new();
+
+        /// <summary>
+        /// Every statement a save of <paramref name="objs"/> runs, in the order they must run in
+        /// one transaction: the deletes of children removed from their collections, then the
+        /// writes of the forceSave links, then the objects' own inserts and updates with their
+        /// child collections. Empty when there is nothing to write. A provider that keeps no
+        /// graph writes the objects alone.
+        /// </summary>
+        public IReadOnlyList<IQuery> CreateSaveQueries<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
+            CreateInsertAndUpdateQuery(objs) is { } query ? [query] : [];
         public IDeleteQuery? CreateDeleteQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new();
 
         /// <summary>Subscribes to external-change notifications for an entity type. Throws NotSupportedException when Capabilities.SupportsChangeNotifications is false.</summary>

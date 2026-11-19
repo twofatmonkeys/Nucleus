@@ -8,14 +8,39 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
-### Found while fixing the save path findings (November 2026)
+### Found by the benchmarks (November 2026)
 
-- **Child collections nest one level only.** `GetChildCollection<TChild, TParent>` requires the
-  parent to be a `CoreObject<TParent>`, and `CoreChildObject<T, TParent>` derives from `CoreObject`,
-  so a child cannot hold a child collection of its own: it does not compile. The save and load
-  paths would bind a deeper level (a child collection's writes go through the same provider method
-  as its parent's), but nothing above the entity base allows one. A limitation rather than a
-  defect; changing it touches the entity base, which is a major version.
+Measured by `ReadBenchmarks` and `SaveBenchmarks` on SQL Server, PostgreSQL and SQLite (net10.0,
+Release). None is a regression; each was already there and is now pinned by a baseline, so making
+it worse fails, and fixing it shows as "down by N%".
+
+- **`LoadByID` allocates about 255 KB per call** on every provider (`by id x50`: 12.8 MB). A load of
+  1,000 rows allocates about 1 MB, so the cost is per call, not per row: look at the query build,
+  the predicate compile and the cache lookup before the read.
+- **The SQLite write path allocates five to eight times what the other providers do.** The split
+  sync save of 1,000 rows (inserted, then updated) allocates about 97 MB on SQLite against 13-14 MB
+  on SQL Server and PostgreSQL, and the 20,000-row bulk save about 2.5 GB against 120-135 MB.
+- **Graph saves cost 6-17% more allocations than before the child model** (`graph insert 50x20`,
+  `graph update one line x50`): the save now walks the graph, runs the children's rules and tracks
+  removals. Accepted as the price of those features in the first baselines. One walk shared by
+  validation, the build and the commit would recover part of it.
+
+### Found with the child model (November 2026)
+
+- **A save through a caller-owned context commits in memory before the caller commits.**
+  `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
+  removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
+  saved and have forgotten their removals. Long-standing; listed in the README's known limits.
+- **The `[LinkedChildCollection]` surface is obsolete, not removed.** The attribute,
+  `IPropertySchema.IsLinkedChildCollection`, `IObjectSchema.HasLinkedChildObjects`,
+  `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` and
+  `CoreObject.AllowDeletions` remain as obsolete aliases or no-ops. Remove them at the next major
+  version.
+- **A linked, not owned, collection is not built.** `[LinkedChildCollection]` was taken to mean one,
+  but in v1 it marked owned rows and in v2 it did nothing. A collection of rows that reference a
+  parent without being owned by it is a separate design, for when a consumer needs one:
+  `NucleusLinkedCollection<T>` loaded by a foreign key property, lazy by default, never saved or
+  deleted with the parent, with deleting the parent refused or allowed by declaration.
 
 ### Timestamp in memory is the client clock (decided October 2026)
 
@@ -93,9 +118,9 @@ in `tests/Directory.Build.props`. Worth doing, but it is a test-wide edit.
 
 ### Features that are declared but not implemented
 
-- `[RetrieveOnDemand]` marks a property for lazy per-property loading. Nothing implements it. The
-  attribute and `IPropertySchema.RetrieveOnDemand` remain so the intent is not lost; the dead
-  `TryRetrievePropertyFromDB` that pretended to back it has been deleted.
+- `[RetrieveOnDemand]` makes a child collection lazy (November 2026). On any other property it still
+  marks lazy per-property loading, which nothing implements; the dead `TryRetrievePropertyFromDB`
+  that pretended to back it has been deleted.
 - `[InitializePriority]` is parsed into `ObjectSchema<T>.Priority`, but the ordering code that
   consumed it is still commented out.
 
@@ -119,15 +144,83 @@ children is not safe as things stand: `HasChanges` covers an object's own column
 grandchild's update is linked from its child's, so a clean child with a changed grandchild would
 lose the grandchild's write. The fix needs a recursive dirty check first. Loaded children are no
 longer dirty themselves (see "Loaded children were dirty" below), so the only write is the
-timestamp.
-
-### Children removed from a collection are never deleted
-
-`NucleusChildCollection.RemovedChildren` records removals and says it is "consumed by the delete
-pipeline", but nothing reads it. Removing a child from a collection and saving the parent leaves
-the child's row in place.
+timestamp. `SaveGraph` now works out whether anything below an object is new, changed or removed
+(it decides whether a forceSave link is written), which is the recursive check this needs.
 
 ## Fixed
+
+### Found by the benchmarks, fixed (November 2026)
+
+Measured by running the new benchmarks on the commit before the child model and on the child
+model, one after the other. Pinned by the baselines under `Benchmarks/Baselines`.
+
+- **Every save walked a graph per saved object, even for a type with nothing to walk.**
+  `CoreObject.CommitChanges` and `HasChangedLinkedObjects` built a `SaveGraph` (two hash sets and
+  four lists) for each root, which added about 2.5 KB per saved object: flat saves allocated 17-19%
+  more than before the child model, and the 20,000-row bulk save 37-41% more, with PostgreSQL's
+  bulk and split saves 26-27% slower. `SaveGraph.CanReachDependents` decides once per type whether a
+  save can reach a child or a forceSave link, and every walk skips a type that cannot. Flat saves
+  are back within 3% of before.
+- **The async and streamed loads allocated a delegate per row.** `ObjectDataManager` passed its
+  lazy loader as a method group inside the row loop, so each row allocated a new delegate (64 bytes,
+  64 KB per 1,000 rows). The manager now holds one.
+
+### Entity reference predicates (November 2026)
+
+Regression cover is in `tests/TFM.Nucleus.Tests/ExpressionParserTests.cs`, the `where.parent.*` and
+`delete.where.parent` goldens, and, on every provider,
+`tests/TFM.Nucleus.IntegrationTests/ChildModelIntegrationTests.cs`.
+
+- **A predicate could not filter by an entity reference.** `ExpressionParser` took only a column
+  of the parameter itself, so `x => x.Parent.ID == id` threw ("At least one side of comparison must
+  be a member access") and `x => x.Parent == roster` bound the entity object as the value. A page or
+  a filtered part of a large child collection could not be read as the child type by its parent.
+  A reference (the parent or a `[LinkedObject]`) read through its `ID` now names the reference's
+  column, and an entity value, or a list of them, binds as its ID. Any other member read through a
+  reference or a column throws, naming the term.
+- **A comparison written value first selected the opposite range.** `HandleComparison` found the
+  column on either side but kept the operator as written, so `3 < x.Quantity` rendered as
+  `Quantity < 3`. The operator is now mirrored when the column is on the right.
+
+### Child model findings (November 2026)
+
+Regression cover is in `tests/TFM.Nucleus.Tests/ChildModelTests.cs` and, on every provider,
+`tests/TFM.Nucleus.IntegrationTests/ChildModelIntegrationTests.cs`.
+
+- **Children removed from a collection were never deleted.** `RemovedChildren` was recorded and
+  never read. `SaveGraph` collects the stored children removed from every collection a save
+  reaches, and `RelationalDataProvider.CreateSaveQueries`, the one save builder every save path now
+  uses, deletes them first, by ID, in the save's transaction, cascading to what they own. The
+  commit forgets them; a rollback keeps them for a retry. Removing then adding back keeps the child,
+  where it used to throw `ParentObjectAlreadyBound`. Deletes are declared: `[Deletable]` on the
+  child type, the collection property or an owner, resolved once per type by `ObjectSchema`, and a
+  stored child removed from an undeclared collection throws at the call.
+- **Deleting a `[Deletable]` parent threw for an undeclared child type.** What a declaration enables
+  now reaches the whole owned graph, with the nearest declaration's behaviour. A child type's
+  `[Deletable(false)]` under an enabling declaration fails the schema instead of the delete.
+- **`[LinkedChildCollection]` was a v1 leftover.** No load, save or delete path read it; it fed only
+  the validation cascade, `ClearChanges`, the root commit cascade and the notification lookup, so a
+  `NucleusChildCollection` was never validated and raised `PropertyChanged` with no name. Those now
+  follow the collection; the attribute is obsolete.
+- **Child collections were never validated.** The root's `Validate()` now runs every new or changed
+  child's, at every depth, and each forceSave link's, from the same `SaveGraph`.
+- **`[LinkedObject(forceSave: true)]` lost data.** No query wrote the linked object, but the root's
+  commit committed its pending values, so a later save of it wrote nothing. The save builder now
+  writes each new, changed or dirty-below link before the roots, and refuses a link this provider
+  does not store before anything runs; the commit commits exactly those.
+- **A child collection's children were committed twice**, once by the collection walk and once as
+  "changed linked objects", which logged their audit lines twice. Children now commit once, as
+  non-roots.
+- **Two collections of one child type failed with a bare `ArgumentException`.** It is an
+  `ObjectSchemaException` naming both properties.
+- **Child collections nested one level only.** `GetChildCollection` required the parent to be a
+  `CoreObject<TParent>`. The constraint is now `CoreObject, ICoreObject<TParent>`. Relaxing a
+  constraint on a non-virtual method keeps every existing call compiling and binding, so this was
+  not the major version the open finding assumed.
+- **Large child collections had to be excluded by every caller.** `[RetrieveOnDemand]` makes one
+  lazy: loads leave it out, it loads itself on first read through the loader of the stack that
+  loaded its parent (`ChildCollectionLoader`, not the ambient runtime, which a process with several
+  managers would have read from the wrong database), and `Include` brings it back in for a listing.
 
 ### No way to choose columns, order, page or group in the database (November 2026)
 

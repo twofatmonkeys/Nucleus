@@ -21,6 +21,9 @@ namespace TFM.Nucleus.Data
         /// <summary>The child collection properties this query leaves unloaded.</summary>
         private readonly IReadOnlyCollection<string> _excluded = [];
 
+        /// <summary>The lazy child collection properties this query loads with its rows.</summary>
+        private readonly IReadOnlyCollection<string> _included = [];
+
         public Expression QueryExpression { get; private set; }
         public IQueryProvider Provider => this;
 
@@ -46,6 +49,17 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>
+        /// A query over <paramref name="expression"/> that leaves the named child collections
+        /// unloaded and loads the named lazy ones with its rows.
+        /// </summary>
+        public ObjectDataAdaptor(ObjectDataManager odm, Expression? expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections) : this(odm, expression, excludedCollections)
+        {
+            ArgumentNullException.ThrowIfNull(includedCollections);
+            _included = includedCollections;
+        }
+
+        /// <summary>
         /// The same query with a child collection left out, as in <c>.Exclude(b =&gt; b.Files)</c>:
         /// its rows are neither queried nor transferred, and on each loaded object the collection
         /// is unloaded, so reading it throws until <c>LoadAsync()</c> fetches it.
@@ -53,7 +67,19 @@ namespace TFM.Nucleus.Data
         public IQueryable<T> Exclude(Expression<Func<T, INucleusChildCollection>> collection)
         {
             var name = ChildCollectionSelector.PropertyName(collection);
-            return new ObjectDataAdaptor<T>(_odm, QueryExpression, [.. _excluded.Append(name).Distinct(StringComparer.Ordinal)]);
+            return new ObjectDataAdaptor<T>(_odm, QueryExpression, [.. _excluded.Append(name).Distinct(StringComparer.Ordinal)], _included);
+        }
+
+        /// <summary>
+        /// The same query with a lazy ([RetrieveOnDemand]) child collection loaded with the
+        /// rows, as in <c>.Include(c =&gt; c.Recipients)</c>: the children of every returned parent
+        /// come in the same round trip, so a listing that reads them does not load each parent's
+        /// collection on its own.
+        /// </summary>
+        public IQueryable<T> Include(Expression<Func<T, INucleusChildCollection>> collection)
+        {
+            var name = ChildCollectionSelector.PropertyName(collection);
+            return new ObjectDataAdaptor<T>(_odm, QueryExpression, _excluded, [.. _included.Append(name).Distinct(StringComparer.Ordinal)]);
         }
 
         #region IAsyncQueryProvider
@@ -75,7 +101,7 @@ namespace TFM.Nucleus.Data
 
         private async Task<IEnumerable<T>> ExecuteEnumerableAsync(Expression expression, CancellationToken cancellationToken = default)
         {
-            return await _odm.LoadAsync<T>(expression, _excluded, cancellationToken) ?? Enumerable.Empty<T>();
+            return await _odm.LoadAsync<T>(expression, _excluded, _included, cancellationToken) ?? Enumerable.Empty<T>();
         }
 
         #endregion
@@ -104,7 +130,7 @@ namespace TFM.Nucleus.Data
 
         private IEnumerable<T> ExecuteEnumerable(Expression expression)
         {
-            return _odm.Load<T>(expression, _excluded) ?? Enumerable.Empty<T>();
+            return _odm.Load<T>(expression, _excluded, _included) ?? Enumerable.Empty<T>();
         }
 
         object? IQueryProvider.Execute(Expression expression) => Execute(expression);
@@ -137,12 +163,14 @@ namespace TFM.Nucleus.Data
             Type genericAdaptorType = typeof(ObjectDataAdaptor<>);
             Type constructedAdaptorType = genericAdaptorType.MakeGenericType(typeof(TElement));
 
-            // A derived query keeps this one's exclusions, so .Exclude(..).Where(..) still excludes.
-            ConstructorInfo? constructor = constructedAdaptorType.GetConstructor([_odm.GetType(), typeof(Expression), typeof(IReadOnlyCollection<string>)]);
+            // A derived query keeps this one's exclusions and inclusions, so .Exclude(..).Where(..)
+            // still excludes and .Include(..).Where(..) still includes.
+            ConstructorInfo? constructor = constructedAdaptorType.GetConstructor(
+                [_odm.GetType(), typeof(Expression), typeof(IReadOnlyCollection<string>), typeof(IReadOnlyCollection<string>)]);
             if (constructor == null)
                 throw new InvalidOperationException("Could not find suitable constructor for query instance.");
 
-            object? instance = constructor.Invoke([_odm, expression, _excluded]);
+            object? instance = constructor.Invoke([_odm, expression, _excluded, _included]);
 
             if (instance != null)
                 return (instance as IQueryable<TElement>)!;
@@ -156,7 +184,7 @@ namespace TFM.Nucleus.Data
 
         public async IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
-            await foreach (var item in _odm.LoadStreamAsync<T>(QueryExpression, _excluded, cancellationToken))
+            await foreach (var item in _odm.LoadStreamAsync<T>(QueryExpression, _excluded, _included, cancellationToken))
             {
                 yield return item;
             }
@@ -216,13 +244,13 @@ namespace TFM.Nucleus.Data
 
         #region Find
 
-        T? IObjectDataAdaptor<T>.Find(Guid id) => _odm.LoadByID<T>(id, _excluded);
+        T? IObjectDataAdaptor<T>.Find(Guid id) => _odm.LoadByID<T>(id, _excluded, _included);
 
-        Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id) => Task.FromResult(_odm.LoadByID<T>(id, _excluded));
+        Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id) => Task.FromResult(_odm.LoadByID<T>(id, _excluded, _included));
 
         /// <summary>One page plus the unpaged total, in a single round trip.</summary>
         public Task<PagedResult<T>> ToPagedResultAsync(int skip, int take, CancellationToken cancellationToken = default) =>
-            _odm.LoadPagedAsync<T>(skip, take, QueryExpression is ConstantExpression ? null : QueryExpression, _excluded, cancellationToken);
+            _odm.LoadPagedAsync<T>(skip, take, QueryExpression is ConstantExpression ? null : QueryExpression, _excluded, _included, cancellationToken);
 
         #endregion
 

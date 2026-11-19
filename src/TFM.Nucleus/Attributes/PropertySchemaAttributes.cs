@@ -39,7 +39,14 @@ namespace TFM.Nucleus
         public InitializePriority(int priority) { Priority = priority; }
     }
 
-    /// <summary>Reserved for per-property lazy loading, which is not yet implemented.</summary>
+    /// <summary>
+    /// On a <c>NucleusChildCollection</c> property, makes the collection lazy: a load of the parent
+    /// leaves its rows out, and the collection loads them the first time it is read. Use it for a
+    /// collection that can grow large; a listing that needs the children asks for them with
+    /// <c>Include(x =&gt; x.Collection)</c>, which loads them for every parent in one round trip.
+    /// Refused on a [Cacheable] type, whose cached instances are shared. Has no effect on any
+    /// other property.
+    /// </summary>
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
     public class RetrieveOnDemand : Attribute
     { }
@@ -85,6 +92,11 @@ namespace TFM.Nucleus
         }
     }
 
+    /// <summary>
+    /// The v1 child collection marker. It has no effect on load, save or delete: a child
+    /// collection is a <c>NucleusChildCollection&lt;TChild, TParent&gt;</c> property, found by its type.
+    /// </summary>
+    [Obsolete("Has no effect. Declare the property as NucleusChildCollection<TChild, TParent>; it is found by its type.")]
     [AttributeUsage(AttributeTargets.All,
             Inherited = false)]
     public class LinkedChildCollection : Attribute

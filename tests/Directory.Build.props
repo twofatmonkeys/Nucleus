@@ -29,4 +29,11 @@
     </PackageReference>
   </ItemGroup>
 
+  <!-- Test support every test project shares (tests\Shared: source paths for the accept switches,
+       and the benchmark harness), compiled into each rather than copied, so there is one copy.
+       Not a package: nothing outside these tests needs it. -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared\**\*.cs" LinkBase="Shared" />
+  </ItemGroup>
+
 </Project>

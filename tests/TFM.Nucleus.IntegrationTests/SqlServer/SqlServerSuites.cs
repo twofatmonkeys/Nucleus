@@ -78,6 +78,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerChildSaveIntegrationTests(SqlServerFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerSaveCancellationIntegrationTests(SqlServerFixture fixture) : SaveCancellationIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
@@ -91,6 +94,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerSaveBenchmarks(SqlServerFixture fixture) : Benchmarks.SaveBenchmarks(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerReadBenchmarks(SqlServerFixture fixture) : Benchmarks.ReadBenchmarks(fixture);
 
 
 

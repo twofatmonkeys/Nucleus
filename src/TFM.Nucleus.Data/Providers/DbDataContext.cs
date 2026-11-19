@@ -278,28 +278,32 @@ namespace TFM.Nucleus.Data.Providers
                 await ExecuteSQLAsync(query, token);
         }
 
-        void IDataContext.Save(ICoreObject obj) => ExecuteSQL(BuildSaveQuery(obj));
+        void IDataContext.Save(ICoreObject obj)
+        {
+            foreach (var query in BuildSaveQueries(obj))
+                ExecuteSQL(query);
+        }
         void IDataContext.Delete(ICoreObject obj) => ExecuteSQL(BuildDeleteQuery(obj));
 
-        Task IDataContext.SaveAsync(ICoreObject obj) => ExecuteSQLAsync(BuildSaveQuery(obj), CancellationToken.None);
-        Task IDataContext.SaveAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildSaveQuery(obj), token);
+        Task IDataContext.SaveAsync(ICoreObject obj) => SaveAsync(obj, CancellationToken.None);
+        Task IDataContext.SaveAsync(ICoreObject obj, CancellationToken token) => SaveAsync(obj, token);
+
+        private async Task SaveAsync(ICoreObject obj, CancellationToken token)
+        {
+            foreach (var query in BuildSaveQueries(obj))
+                await ExecuteSQLAsync(query, token);
+        }
         Task IDataContext.DeleteAsync(ICoreObject obj) => ExecuteSQLAsync(BuildDeleteQuery(obj), CancellationToken.None);
         Task IDataContext.DeleteAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildDeleteQuery(obj), token);
 
-        private Query BuildSaveQuery(ICoreObject obj)
+        /// <summary>
+        /// What saving the object runs, from the provider's one save builder: deletes of removed
+        /// children, forceSave link writes, then the object's insert or update with its children.
+        /// </summary>
+        private List<Query> BuildSaveQueries(ICoreObject obj)
         {
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
-            return BuildWriteQuery(_provider.GetTableSchema(obj.GetType()), obj);
-        }
-
-        /// <summary>
-        /// The object's insert or update, with its child collections' writes linked. The object
-        /// is bound to this context's provider first, which those child writes are built through.
-        /// </summary>
-        private Query BuildWriteQuery(TableSchema tableSchema, ICoreObject obj)
-        {
-            _provider.Bind(obj);
-            return obj.IsNew ? new InsertQuery(_provider.Renderer, tableSchema, obj) : new UpdateQuery(_provider.Renderer, tableSchema, obj);
+            return _provider.CreateSaveQueries([obj]);
         }
 
         /// <summary>The object's row and every row of its child collections, loaded or not.</summary>
@@ -335,7 +339,7 @@ namespace TFM.Nucleus.Data.Providers
 
         void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects)
         {
-            foreach (var query in BuildBulkSaveQueries(objects))
+            foreach (var query in _provider.CreateSaveQueries(objects, separateOperations: true))
                 ExecuteSQL(query);
         }
         Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => BulkSaveAsync(objects, CancellationToken.None);
@@ -343,35 +347,19 @@ namespace TFM.Nucleus.Data.Providers
 
         private async Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
         {
-            // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine.
-            foreach (var query in BuildBulkSaveQueries(objects))
+            // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine. Each
+            // type's inserts and updates are separate chains, which is the shape it batches by.
+            foreach (var query in _provider.CreateSaveQueries(objects, separateOperations: true))
                 await ExecuteSQLAsync(query, token);
         }
 
-        /// <summary>One linked insert chain and one linked update chain per entity type.</summary>
-        private IEnumerable<Query> BuildBulkSaveQueries(IEnumerable<ICoreObject?>? objects)
-        {
-            if (objects == null)
-                yield break;
-            foreach (var typeGroup in objects.OfType<ICoreObject>().GroupBy(o => o.GetType()))
-            {
-                var tableSchema = _provider.GetTableSchema(typeGroup.Key);
-                foreach (var operationGroup in typeGroup.GroupBy(o => o.IsNew))
-                {
-                    Query? root = null;
-                    foreach (var obj in operationGroup)
-                    {
-                        var query = BuildWriteQuery(tableSchema, obj);
-                        if (root == null)
-                            root = query;
-                        else
-                            root.LinkedQueries.Add(query);
-                    }
-                    if (root != null)
-                        yield return root;
-                }
-            }
-        }
+        /// <summary>
+        /// Loads a lazy collection of an object this context loaded, through this context's
+        /// provider, on a context of its own: the read happens on first access, when this
+        /// context may be gone or mid-transaction.
+        /// </summary>
+        private void LoadLazyCollection(TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection collection) =>
+            ChildCollectionLoader.Load(_provider, collection);
 
         IEnumerable<T> IDataContext.Load<T>(Expression expression) => Load<T>(expression);
         public INucleusCollection<T> Load<T>(Expression expression) where T : ICoreObject<T>, new()
@@ -379,7 +367,7 @@ namespace TFM.Nucleus.Data.Providers
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
             var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query));
+            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query), LoadLazyCollection);
         }
 
         async Task<IEnumerable<T>> IDataContext.LoadAsync<T>(Expression expression) => await LoadAsync<T>(expression);
@@ -388,7 +376,7 @@ namespace TFM.Nucleus.Data.Providers
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
             var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None));
+            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None), LoadLazyCollection);
         }
         #endregion
 

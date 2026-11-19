@@ -21,6 +21,19 @@ namespace TFM.Nucleus.Data
                 : throw new InvalidOperationException(
                     $"Exclude applies to Nucleus queries only; this source is a {source.GetType().Name}.");
 
+        /// <summary>
+        /// Loads a lazy ([RetrieveOnDemand]) child collection with a Nucleus query's rows, so
+        /// <c>.Where(..).Include(c =&gt; c.Recipients)</c> works as well as <c>.Include(..).Where(..)</c>.
+        /// Only queries from IObjectDataAdaptor support it.
+        /// </summary>
+        public static IQueryable<TSource> Include<TSource>(this IQueryable<TSource> source,
+            Expression<Func<TSource, TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection>> collection)
+            where TSource : ICoreObject<TSource>, new() =>
+            source is ObjectDataAdaptor<TSource> adaptor
+                ? adaptor.Include(collection)
+                : throw new InvalidOperationException(
+                    $"Include applies to Nucleus queries only; this source is a {source.GetType().Name}.");
+
         public static async Task<List<TSource>> ToListAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
             var list = new List<TSource>();

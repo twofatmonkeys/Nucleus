@@ -29,8 +29,12 @@ namespace TFM.Nucleus.Data.Queries
             ObjectType = objectType;
         }
 
+        /// <summary>Finds a child collection type's table; null when the provider does not store it.</summary>
+        private readonly Func<Type, IDataTableSchema?>? _resolveTable;
+
         /// <summary>
-        /// Selects every column of a table, with a child query per child collection of its type.
+        /// Selects every column of a table, with a child query per child collection of its type,
+        /// except lazy ([RetrieveOnDemand]) ones, which <see cref="IncludeChildCollection"/> adds back.
         /// </summary>
         /// <param name="renderer">The provider's renderer.</param>
         /// <param name="tableSchema">The table to select from.</param>
@@ -45,6 +49,7 @@ namespace TFM.Nucleus.Data.Queries
             Columns = [.. tableSchema.Columns.Select(c => c.ColumnName)];
             ObjectType = tableSchema.ObjectSchema.Type;
             TableSchema = tableSchema;
+            _resolveTable = resolveTable;
             if(tableSchema.ObjectSchema.HasNucleusChildCollections)
             {
                 if (resolveTable == null)
@@ -52,18 +57,31 @@ namespace TFM.Nucleus.Data.Queries
                         $"{tableSchema.ObjectSchema.Name} has child collections; a table resolver is needed to build their queries.");
                 foreach(var childColl in tableSchema.ObjectSchema.NucleusChildCollectionProperties!)
                 {
-                    var childTableSchema = resolveTable(childColl.Type.GetGenericArguments()[0]);
-                    var childObjSchema = tableSchema.ObjectSchema.GetObjectSchema(childColl.Type.GetGenericArguments()[0]);
-                    if (childTableSchema != null)
-                    {
-                        var childQuery = new SelectQuery(renderer, childTableSchema, resolveTable) { ChildCollectionProperty = childColl.Name };
-                        var parentProperty = childObjSchema.ParentObjectProperty
-                            ?? throw new InvalidQueryException(
-                                $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
-                        AddChildQuery(childQuery, childTableSchema.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name);
-                    }
+                    // A lazy collection's rows are left out; it loads them when it is first read.
+                    if (childColl.IsLazyChildCollection)
+                        continue;
+                    AddChildCollectionQuery(childColl);
                 }
             }
+        }
+
+        /// <summary>
+        /// Adds the query that loads one child collection, with its own non-lazy collections
+        /// below it. False when the provider does not store the child type.
+        /// </summary>
+        private bool AddChildCollectionQuery(IPropertySchema childColl)
+        {
+            var childType = childColl.ChildType ?? childColl.Type.GetGenericArguments()[0];
+            var childTableSchema = _resolveTable!(childType);
+            if (childTableSchema == null)
+                return false;
+            var childObjSchema = TableSchema!.ObjectSchema.GetObjectSchema(childType);
+            var childQuery = new SelectQuery(Renderer, childTableSchema, _resolveTable) { ChildCollectionProperty = childColl.Name };
+            var parentProperty = childObjSchema.ParentObjectProperty
+                ?? throw new InvalidQueryException(
+                    $"{childObjSchema.Name} is used as a child collection but has no [ParentObject] property.");
+            AddChildQuery(childQuery, childTableSchema.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name);
+            return true;
         }
 
         public SelectQuery Parse(Expression expression)
@@ -174,5 +192,15 @@ namespace TFM.Nucleus.Data.Queries
 
         public bool ExcludeChildCollection(string propertyName) =>
             LinkedQueries.RemoveAll(q => q.ChildCollectionProperty == propertyName) > 0;
+
+        /// <inheritdoc cref="ISelectQuery.IncludeChildCollection"/>
+        public bool IncludeChildCollection(string propertyName)
+        {
+            if (LinkedQueries.Any(q => q.ChildCollectionProperty == propertyName))
+                return true;
+            if (_resolveTable == null || TableSchema?.ObjectSchema.NucleusChildCollectionProperties?.FirstOrDefault(p => p.Name == propertyName) is not { } property)
+                return false;
+            return AddChildCollectionQuery(property);
+        }
     }
 }

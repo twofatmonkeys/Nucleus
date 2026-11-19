@@ -373,6 +373,179 @@ namespace TFM.Nucleus.Tests
 
             Assert.Equal(PredicateShape.MatchesAll, ExpressionParser.Classify(source.Expression));
         }
+
+        [Fact]
+        public void ConstantOnTheLeft_KeepsTheComparisonsMeaning()
+        {
+            // 3 < Quantity is Quantity > 3. It used to render as Quantity < 3.
+            Assert.Contains("[Quantity]>@p0", ParseToSql(w => 3 < w.Quantity));
+            Assert.Contains("[Quantity]<=@p0", ParseToSql(w => 3 >= w.Quantity));
+        }
+
+        [Fact]
+        public void TwoColumns_Throw()
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => ParseTable<ParserLinkedWidget>(x => x.Widget == x.Unstored));
+
+            Assert.Contains("both columns", Assert.IsType<NotSupportedException>(ex.InnerException).Message);
+        }
+
+        // ---- Entity references ------------------------------------------------------------------
+        // An entity reference (a child's Parent, a [LinkedObject]) is stored as the referenced
+        // entity's ID, so x.Parent.ID and x.Parent == entity both translate to that column.
+
+        private static SelectQuery TableSelect<T>() where T : ICoreObject =>
+            new(SqlServerQueryRenderer.Instance, new TableSchema(ObjectSchema.Get<T>()), t => new TableSchema(ObjectSchema.Get(t)));
+
+        private static (string Sql, ParameterCollection Parameters) ParseTable<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject
+        {
+            var query = TableSelect<T>();
+            ExpressionParser.ParseExpressionToQuery(query, predicate.Body);
+            return (SqlSnapshot.Normalize(query.BuildQuery()), query.Where.AllParameters());
+        }
+
+        private static T Stored<T>(Guid id) where T : CoreObject =>
+            ObjectSchema<T>.BuildObjectViaReflection(new Dictionary<string, object?> { ["ID"] = id });
+
+        [Fact]
+        public void ParentId_TranslatesToTheParentColumn()
+        {
+            var id = Guid.NewGuid();
+
+            var (sql, parameters) = ParseTable<TestDeletableChild>(x => x.Parent.ID == id);
+
+            Assert.Contains("[Parent]=@p0", sql);
+            Assert.Equal(id, Assert.Single(parameters)!.Value);
+        }
+
+        [Fact]
+        public void ParentId_OnTheRight_Translates()
+        {
+            var id = Guid.NewGuid();
+
+            var (sql, parameters) = ParseTable<TestDeletableChild>(x => id == x.Parent.ID);
+
+            Assert.Contains("[Parent]=@p0", sql);
+            Assert.Equal(id, Assert.Single(parameters)!.Value);
+        }
+
+        [Fact]
+        public void ParentEntity_BindsItsId()
+        {
+            var parent = Stored<TestDeletableParent>(Guid.NewGuid());
+
+            var (equal, equalParameters) = ParseTable<TestDeletableChild>(x => x.Parent == parent);
+            var (notEqual, _) = ParseTable<TestDeletableChild>(x => x.Parent != parent);
+
+            Assert.Contains("[Parent]=@p0", equal);
+            Assert.Equal(parent.ID, Assert.Single(equalParameters)!.Value);
+            Assert.Contains("[Parent]<>@p0", notEqual);
+        }
+
+        [Fact]
+        public void ParentIdEquals_Translates()
+        {
+            var id = Guid.NewGuid();
+
+            var (sql, parameters) = ParseTable<TestDeletableChild>(x => x.Parent.ID.Equals(id));
+
+            Assert.Contains("[Parent]=@p0", sql);
+            Assert.Equal(id, Assert.Single(parameters)!.Value);
+        }
+
+        [Fact]
+        public void ParentIdsContains_RendersIn()
+        {
+            var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
+            var list = ids.ToList();
+
+            var (array, arrayParameters) = ParseTable<TestDeletableChild>(x => ids.Contains(x.Parent.ID));
+            var (instance, _) = ParseTable<TestDeletableChild>(x => list.Contains(x.Parent.ID));
+
+            Assert.Contains("[Parent] IN (@p0_0,@p0_1)", array);
+            Assert.Contains("[Parent] IN (@p0_0,@p0_1)", instance);
+            var values = Assert.IsAssignableFrom<System.Collections.IEnumerable>(Assert.Single(arrayParameters)!.Value);
+            Assert.Equal(ids.Cast<object?>(), values.Cast<object?>());
+        }
+
+        [Fact]
+        public void ParentEntitiesContains_BindsTheirIds()
+        {
+            var parents = new List<TestDeletableParent> { Stored<TestDeletableParent>(Guid.NewGuid()), Stored<TestDeletableParent>(Guid.NewGuid()) };
+
+            var (sql, parameters) = ParseTable<TestDeletableChild>(x => parents.Contains(x.Parent));
+
+            Assert.Contains("[Parent] IN (@p0_0,@p0_1)", sql);
+            var values = Assert.IsAssignableFrom<System.Collections.IEnumerable>(Assert.Single(parameters)!.Value);
+            Assert.Equal(parents.Select(p => (object?)p.ID), values.Cast<object?>());
+        }
+
+        [Fact]
+        public void ParentTerm_CombinesWithOtherTerms()
+        {
+            var id = Guid.NewGuid();
+            var floor = 3;
+
+            var (sql, _) = ParseTable<TestDeletableChild>(x => x.Parent.ID == id && (x.Sequence > floor || x.Sequence == 0));
+
+            Assert.Contains("[Parent]=@p0 AND (([Sequence]>@p1) OR ([Sequence]=@p2))", sql);
+        }
+
+        [Fact]
+        public void LinkedObject_TranslatesThroughItsRenamedColumn()
+        {
+            var widget = Stored<TestWidget>(Guid.NewGuid());
+
+            var (byId, idParameters) = ParseTable<ParserLinkedWidget>(x => x.Widget!.ID == widget.ID && x.Kind == WidgetKind.Premium);
+            var (byEntity, entityParameters) = ParseTable<ParserLinkedWidget>(x => x.Widget == widget);
+
+            Assert.Contains("[widget_ref]=@p0 AND [Kind]=@p1", byId);
+            Assert.Equal(new object?[] { widget.ID, 2 }, idParameters.Select(p => p!.Value));
+            Assert.Contains("[widget_ref]=@p0", byEntity);
+            Assert.Equal(widget.ID, Assert.Single(entityParameters)!.Value);
+        }
+
+        [Fact]
+        public void LinkedObjectIsNull_RendersIsNull()
+        {
+            var (sql, _) = ParseTable<ParserLinkedWidget>(x => x.Widget == null);
+
+            Assert.Contains("[widget_ref] IS NULL", sql);
+        }
+
+        [Fact]
+        public void OtherColumnOfAReference_IsRefusedWithTheJoinMessage()
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => ParseTable<ParserLinkedWidget>(x => x.Widget!.Name == "a"));
+
+            var inner = Assert.IsType<NotSupportedException>(ex.InnerException);
+            Assert.Contains("Only the ID of a referenced entity translates", inner.Message);
+        }
+
+        [Fact]
+        public void ReferenceWithoutAColumn_IsRefused()
+        {
+            var id = Guid.NewGuid();
+
+            var ex = Assert.Throws<InvalidOperationException>(() => ParseTable<ParserLinkedWidget>(x => x.Unstored!.ID == id));
+
+            var inner = Assert.IsType<NotSupportedException>(ex.InnerException);
+            Assert.Contains("has no column", inner.Message);
+        }
+    }
+
+    /// <summary>A [LinkedObject] stored under a renamed column, and one with no column at all.</summary>
+    public class ParserLinkedWidget : CoreObject<ParserLinkedWidget>
+    {
+        [LinkedObject]
+        [DatabaseColumn("widget_ref")]
+        public TestWidget? Widget { get => GetValue<TestWidget>(); set => SetValue(value); }
+
+        [LinkedObject]
+        public TestWidget? Unstored { get => GetValue<TestWidget>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public WidgetKind Kind { get => GetValue<WidgetKind>(); set => SetValue(value); }
     }
 
     public class FlagWidget : CoreObject<FlagWidget>

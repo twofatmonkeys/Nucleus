@@ -35,6 +35,14 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public bool ExcludeChildCollection(string propertyName) =>
             throw new NotSupportedException($"{GetType().Name} cannot exclude child collections.");
+
+        /// <summary>
+        /// Puts a lazy ([RetrieveOnDemand]) child collection back into the load, so its rows come
+        /// with the parents' in the same round trip. Returns false when the query's type has no
+        /// such collection, or it is stored by another provider.
+        /// </summary>
+        public bool IncludeChildCollection(string propertyName) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include lazy child collections.");
     }
 
     public interface IInsertQuery : IQuery

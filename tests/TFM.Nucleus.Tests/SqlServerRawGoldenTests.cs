@@ -36,7 +36,7 @@ namespace TFM.Nucleus.Tests
             }
             sb.Append("        };\n    }\n}\n");
 
-            File.WriteAllText(Path.Combine(TestSourceDirectory(), $"{className}.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
+            File.WriteAllText(Path.Combine(TFM.Nucleus.TestSupport.TestSourcePaths.ProjectDirectory(), $"{className}.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
         }
 
         private static string Literal(string value)
@@ -53,15 +53,6 @@ namespace TFM.Nucleus.Tests
                     _ => c.ToString(),
                 });
             return sb.Append('"').ToString();
-        }
-
-        /// <summary>The test project's source folder, found by walking up from the build output.</summary>
-        internal static string TestSourceDirectory()
-        {
-            for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "TFM.Nucleus.Tests.csproj")))
-                    return dir.FullName;
-            throw new DirectoryNotFoundException("TFM.Nucleus.Tests.csproj was not found above the test output folder.");
         }
     }
 

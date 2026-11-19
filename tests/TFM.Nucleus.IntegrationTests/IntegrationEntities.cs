@@ -305,4 +305,97 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public int? Quantity { get => GetValue<int?>(); set => SetValue(value); }
     }
+
+    // ---- The child model: declared deletes, removals, validation, forceSave, lazy collections ----
+
+    /// <summary>
+    /// Owns lines that delete through it ([Deletable] on the collection, not on the line), and
+    /// each line owns breaks with no declaration at all, which go with their line.
+    /// </summary>
+    [Deletable]
+    public class IntRoster : CoreObject<IntRoster>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [Deletable]
+        public NucleusChildCollection<IntRosterLine, IntRoster> Lines => GetChildCollection<IntRosterLine, IntRoster>();
+    }
+
+    public class IntRosterLine : CoreChildObject<IntRosterLine, IntRoster>
+    {
+        /// <summary>Unique, so a replacement with the same code shows the removal's delete runs first.</summary>
+        [DatabaseColumn(Unique = true)]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn]
+        public int Hours { get => GetValue<int>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntRosterBreak, IntRosterLine> Breaks => GetChildCollection<IntRosterBreak, IntRosterLine>();
+
+        public override void Validate()
+        {
+            if (Hours < 0)
+                throw new InvalidOperationException("A roster line cannot have negative hours.");
+            base.Validate();
+        }
+    }
+
+    public class IntRosterBreak : CoreChildObject<IntRosterBreak, IntRosterLine>
+    {
+        [DatabaseColumn]
+        public int Minutes { get => GetValue<int>(); set => SetValue(value); }
+    }
+
+    /// <summary>A soft owner whose undeclared lines are deleted soft with it, and when removed.</summary>
+    [Deletable(DeleteBehavior.Soft)]
+    public class IntSoftRoster : CoreObject<IntSoftRoster>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntSoftRosterLine, IntSoftRoster> Lines => GetChildCollection<IntSoftRosterLine, IntSoftRoster>();
+    }
+
+    public class IntSoftRosterLine : CoreChildObject<IntSoftRosterLine, IntSoftRoster>
+    {
+        [DatabaseColumn]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    [Deletable]
+    public class IntLinkTarget : CoreObject<IntLinkTarget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    /// <summary>Cascades its save into the target it links to.</summary>
+    [Deletable]
+    public class IntLinkSource : CoreObject<IntLinkSource>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject(forceSave: true)]
+        [DatabaseColumn]
+        public IntLinkTarget? Target { get => GetValue<IntLinkTarget>(); set => SetValue(value); }
+    }
+
+    /// <summary>A lazy collection: left out of every load, read on first access or included.</summary>
+    [Deletable]
+    public class IntLazyOwner : CoreObject<IntLazyOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [RetrieveOnDemand]
+        public NucleusChildCollection<IntLazyItem, IntLazyOwner> Items => GetChildCollection<IntLazyItem, IntLazyOwner>();
+    }
+
+    public class IntLazyItem : CoreChildObject<IntLazyItem, IntLazyOwner>
+    {
+        [DatabaseColumn]
+        public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+    }
 }

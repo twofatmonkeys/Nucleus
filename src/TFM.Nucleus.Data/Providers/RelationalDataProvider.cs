@@ -206,11 +206,85 @@ namespace TFM.Nucleus.Data.Providers
         {
             var list = Bind(objs);
             if (list == null || list.Count == 0) return null;
-            var schema = GetTableSchema<T>();
-            var update = UpdateQuery.Create(Renderer, schema, list.Where(x => !x.IsNew));
-            var insert = InsertQuery.Create(Renderer, schema, list.Where(x => x.IsNew));
-            if (insert != null) { if (update != null) insert.LinkedQueries.Add(update); return insert; }
-            return update;
+            return WriteQueries(GetTableSchema<T>(), list.Cast<ICoreObject>().ToList(), separateOperations: false).SingleOrDefault();
+        }
+
+        /// <inheritdoc cref="IDataProvider.CreateSaveQueries{T}(IEnumerable{T})"/>
+        public List<Query> CreateSaveQueries<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
+            CreateSaveQueries(objs?.Cast<ICoreObject>(), _ => GetTableSchema<T>(), separateOperations: false);
+
+        /// <summary>
+        /// The statements a save of objects of any types runs, each written to its own type's
+        /// table. <paramref name="separateOperations"/> gives the inserts and the updates of a
+        /// type as separate chains, which is the shape the bulk path batches by.
+        /// </summary>
+        public List<Query> CreateSaveQueries(IEnumerable<ICoreObject?>? objs, bool separateOperations = false) =>
+            CreateSaveQueries(objs?.OfType<ICoreObject>(), o => GetTableSchema(o.GetType()), separateOperations);
+
+        /// <summary>
+        /// The one save builder every save path uses. The graph below the objects is walked
+        /// once (<see cref="SaveGraph"/>), and the statements come out in the order they run:
+        /// <list type="number">
+        /// <item>a delete per child type of the stored children removed from their collections,
+        /// by ID, cascading to their own children and keeping each type's hard or soft rule. They
+        /// run first, so a replacement with the same unique key does not collide with the row it
+        /// replaces;</item>
+        /// <item>the inserts and updates of the forceSave links the save writes, with their children;</item>
+        /// <item>the objects' own inserts and updates, with their child collections.</item>
+        /// </list>
+        /// A removed child or a link whose type this provider does not store throws before
+        /// anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>, so the context
+        /// runs it on its delete path, never regrouped with the writes.
+        /// </summary>
+        private List<Query> CreateSaveQueries(IEnumerable<ICoreObject>? objs, Func<ICoreObject, TableSchema> rootTable, bool separateOperations)
+        {
+            var roots = objs?.ToList() ?? [];
+            if (roots.Count == 0)
+                return [];
+            foreach (var root in roots)
+                Bind(root);
+            var graph = SaveGraph.Walk(roots);
+            var queries = new List<Query>();
+            foreach (var removed in graph.Removed.GroupBy(o => o.GetType()))
+            {
+                var table = Schema.GetTableSchema(removed.Key)
+                    ?? throw new NotSupportedException(
+                        $"{removed.Key.Name} children were removed from a collection, but this provider does not store {removed.Key.Name}, so the save cannot delete them.");
+                if (DeleteWhereQuery.ForRemovedChildren(Renderer, table, Schema.GetTableSchema, removed.Select(o => o.ID)) is { } delete)
+                    queries.Add(delete);
+            }
+            foreach (var links in graph.Links.GroupBy(o => o.GetType()))
+            {
+                var table = Schema.GetTableSchema(links.Key)
+                    ?? throw new NotSupportedException(
+                        $"A [LinkedObject(forceSave: true)] property holds a {links.Key.Name}, which this provider does not store, so the save cannot write it " +
+                        "in the same transaction. Save it through its own provider, or drop forceSave.");
+                queries.AddRange(WriteQueries(table, [.. links], separateOperations));
+            }
+            foreach (var group in roots.GroupBy(rootTable))
+                queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations));
+            return queries;
+        }
+
+        /// <summary>
+        /// The inserts and updates of objects stored in one table: the updates linked from the
+        /// inserts, or as separate chains.
+        /// </summary>
+        private IEnumerable<Query> WriteQueries(TableSchema table, List<ICoreObject> objs, bool separateOperations)
+        {
+            foreach (var obj in objs)
+                Bind(obj);
+            var update = UpdateQuery.Create(Renderer, table, objs.Where(x => !x.IsNew));
+            var insert = InsertQuery.Create(Renderer, table, objs.Where(x => x.IsNew));
+            if (separateOperations)
+                return new Query?[] { insert, update }.OfType<Query>();
+            if (insert != null)
+            {
+                if (update != null)
+                    insert.LinkedQueries.Add(update);
+                return [insert];
+            }
+            return update != null ? [update] : [];
         }
 
         public TableSchema GetTableSchema(Type type) =>
@@ -256,6 +330,7 @@ namespace TFM.Nucleus.Data.Providers
         IUpdateQuery? IDataProvider.CreateUpdateQuery<T>(IEnumerable<T>? objs) => CreateUpdateQuery(objs);
         IInsertQuery? IDataProvider.CreateInsertQuery<T>(IEnumerable<T>? objs) => CreateInsertQuery(objs);
         IQuery? IDataProvider.CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) => CreateInsertAndUpdateQuery(objs);
+        IReadOnlyList<IQuery> IDataProvider.CreateSaveQueries<T>(IEnumerable<T>? objs) => CreateSaveQueries(objs);
         IDeleteQuery? IDataProvider.CreateDeleteQuery<T>(IEnumerable<T>? objs) => CreateDeleteQuery(objs);
 
         IDataContext IDataProvider.CreateContext(ContextOptions? options)

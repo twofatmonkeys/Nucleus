@@ -114,7 +114,22 @@ matches everything. `ChildGraphBinder` is the one place child collections are ma
 attached, from either a data set's linked result sets or streamed child queries; it binds each
 child's parent as a stored value, so loaded children are never dirty. A load can exclude a child
 collection by property name, which drops its query and marks the collection unloaded
-(`INucleusChildCollection.IsLoaded`); reading an unloaded collection throws, adding does not.
+(`INucleusChildCollection.IsLoaded`); reading an unloaded collection throws, adding does not. A
+`[RetrieveOnDemand]` collection is lazy: `SelectQuery` leaves its child query out unless
+`IncludeChildCollection` puts it back, and `ChildGraphBinder` marks it lazy with the loader of the
+stack that loaded the parent (`ChildCollectionLoader` over that manager's or context's provider),
+never the ambient runtime, so a process with several managers reads each from its own database. The
+collection loads itself on first read, under a lock, on the synchronous path.
+
+`SaveGraph` (Abstractions) is the one walk of what a save reaches: the held children at every
+depth, the `forceSave` links it must write, and the stored children removed from collections.
+Validation (`CoreObject.Validate`), the writes and the commit all read it, so they cannot disagree.
+`RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
+manager, `IDataContext.Save`/`SaveAsync` and `BulkSave`): removal deletes first, as top-level
+`DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
+roots. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
+the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour.
 
 `TFM.Nucleus.Data.SQL` is SQL Server's dialect over that SDK: `SqlServerQueryRenderer` (every
 T-SQL query string), `SqlServerSchemaDialect` and `SqlServerTypeMapper` (every DDL string),
@@ -210,9 +225,36 @@ its shared stack with `StartSharedStackAsync`, under the schema lock, because th
 runs once raced to create the same tables and one of them failed. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
 stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
-for its duration; the lock is not reentrant, so take it once per test. The save benchmarks
-under `Benchmarks\` skip unless `NUCLEUS_BENCHMARK=1`; they compare variants interleaved, so a
-change that claims no cost on the write path is measured against them rather than asserted.
+for its duration; the lock is not reentrant, so take it once per test.
+
+`tests\Shared\` is test support compiled into every test project through `tests\Directory.Build.props`
+(linked, not copied): `TestSourcePaths`, which the accept switches write through, and the
+benchmark harness under `Benchmarking\` (`BenchmarkRunner`, `BenchmarkGate`, `BenchmarkBaseline`,
+`BenchmarkLock`, `BenchmarkSuite`). The benchmarks catch regressions on the save and read paths.
+They are opt-in: every one skips unless `NUCLEUS_BENCHMARK=1`, so a normal test run and CI never
+run them.
+- Run them for an architectural change: the save or load pipeline, the query builders or
+  renderers, the schema model, the provider SDK, the entity base or change tracking. Do not run
+  them for a feature or a bug fix that leaves those alone; a full run takes about 20 minutes.
+- The database benchmarks (`TFM.Nucleus.IntegrationTests\Benchmarks\`, `SaveBenchmarks` and
+  `ReadBenchmarks`, a sealed subclass per provider) gate allocations against
+  `Benchmarks\Baselines\<machine>\`.
+- The database-free benchmarks (`TFM.Nucleus.Tests\Benchmarks\InProcessBenchmarks.cs`) gate
+  allocations against `Benchmarks\Baselines\any\`. Their allocation counts repeat to the byte, so
+  a 10% rise is a real change, not noise.
+- Allocations are gated; time is reported with its delta and never fails, because on a development
+  database it moves by half between back-to-back runs. A scenario fails when its allocations are
+  over the baseline by more than the tolerance and the floor twice in a row, or when it has no
+  baseline. Allocations are counted process-wide, so only one benchmark measures at a time per
+  machine (`BenchmarkLock`), and a fixture boots its stack under the same lock while benchmarks run.
+  A database suite purges this machine's stale `bench-<machine>-` rows and settles the tables
+  (`DatabaseFixture.SettleAsync`) before it measures.
+- Run them with `tools\Run-Benchmarks.ps1` (`-Accept` writes the baselines). A database suite
+  allocates 15-20% more after another suite's heavy work in the same process, so the script gives
+  each provider's Save and Read suite a process of its own, and a second database suite in one
+  process skips rather than measuring wrong.
+- A variant comparison (`DatabaseBenchmarks.Variants`) measures a setting interleaved against the
+  code as it is.
 
 ## Deviations from the scaffold
 
@@ -225,8 +267,49 @@ suppresses xUnit1051. Both are mechanical style edits rather than defects; see
 `docs\code-review-findings.md`. Nothing else is suppressed, so a nullable warning or an analyzer
 warning in new code fails CI.
 
+## Modelling rules for consumers
+
+- Rows owned by one parent are a `NucleusChildCollection<TChild, TParent>` on the parent and a
+  `CoreChildObject<TChild, TParent>` child. Never model them as a root entity with a parent ID
+  column plus a private `List<T>`, and never write `Attach*`, `Remove*Line`,
+  `AcknowledgeRemovals` or removal tracking in an entity or store. Those are antipatterns here.
+- Save the root; the graph follows, and the root's `Validate()` runs the children's. Do not loop
+  over children calling `SaveAsync`, do not restate a child's rules on the parent, and do not call
+  `BulkSaveAsync` for children (oversized batches go to the bulk engine automatically).
+- Deletes are declared with `[Deletable]` on the child type, on the collection property or on an
+  owner. The child type's `[Deletable(false)]` wins, and a conflict is a startup error. Removing a
+  stored child from an undeclared collection throws. Delete the root, or `DeleteWhere` on the
+  root; children cascade. Do not delete children by predicate before deleting a parent.
+- A child collection that can grow large is `[RetrieveOnDemand]`, and a listing that needs its
+  children `Include`s them. Never read a lazy collection per parent in a loop.
+- Listings that do not need children use `Exclude(...)`; do not split a parent and its children
+  into two queries and join them in memory.
+- When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
+  record it in `docs/code-review-findings.md` and in the README's known limits) rather than
+  working around it in the consumer.
+- Every open finding that changes what a consumer must do is listed in the README under "Known
+  limits", not only in `docs/code-review-findings.md`.
+
 ## Rules
 
+- **Ask the schema first, at the top of the method.** The `ObjectSchema` answers once per type
+  what an object can hold, and cheap flags answer what it holds now. Any method that walks the
+  graph, iterates properties or collections, or builds something per object checks them before
+  it allocates or loops, and returns early when there is nothing to do:
+  - per type: `HasNucleusChildCollections`, `HasLinkedObjects`, `HasParentObject`, and derived
+    per-type answers such as `SaveGraph.CanReachDependents`;
+  - per object: `IsNew`, `IsReadOnly`, `HasChanges`.
+
+  Compute a new per-type answer once and cache it by type, as `CanReachDependents` does, rather
+  than working it out per object. Look out for allocations hidden behind cheap-looking calls:
+  - an iterator property such as `NucleusChildCollections` allocates its enumerator on every
+    call, even when the check inside it yields nothing, so test the schema flag before calling it;
+  - a method group passed in a loop allocates a delegate each time, so hoist it or cache it;
+  - `[this]` and other collection expressions allocate.
+
+  Two regressions came from missing guards. Every save walked a `SaveGraph` per object even for
+  types with nothing to walk, about 2.5 KB per object and +40% on a bulk save. A load allocated a
+  delegate per row. See `docs\code-review-findings.md`.
 - **Do not put SQL in `Abstractions`, `TFM.Nucleus` or `Data`.** The provider seam is the whole
   reason a second database engine is possible. `ProviderSeamTests` will fail if you do.
 - **Consumers code against `Abstractions` and `Data` only.** An application, and every store
@@ -250,6 +333,10 @@ warning in new code fails CI.
 - **Change the SQL Server goldens or the API snapshot deliberately.** `SqlServerGoldens.cs` and
   `PublicApiSnapshot.cs` are written only by their accept tests, with `NUCLEUS_ACCEPT_GOLDENS=1`;
   the diff is the review.
+- **Re-accept a benchmark baseline deliberately.** The files under `Benchmarks\Baselines\` are
+  written only with `NUCLEUS_BENCHMARK_ACCEPT=1`. A regression is fixed, not accepted, unless its
+  cost is the point of the change; then the commit message gives the reason and the numbers. Never
+  raise a tolerance to make a run pass.
 - **Do not move a shared property into a csproj.** The three level props split (repo, `src`,
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.

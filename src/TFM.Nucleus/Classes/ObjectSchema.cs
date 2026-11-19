@@ -180,6 +180,7 @@ namespace TFM.Nucleus
         public readonly int CacheLifetime = 0;
         public readonly int CacheRefreshInterval = 0;
         public readonly int Priority = 0; // Default priority, can be set by attribute
+        [Obsolete("Use HasNucleusChildCollections.")]
         public readonly bool HasLinkedChildObjects;
         public bool HasParentObject => _hasParentObject;
         private readonly bool _hasParentObject;
@@ -197,7 +198,6 @@ namespace TFM.Nucleus
         internal readonly Dictionary<string, PropertyInfo> dProperties = [];
 
         private readonly Dictionary<string, IPropertySchema> _propertyCache = [];
-        private readonly Dictionary<Type, IPropertySchema> _linkedChildObjectProperties = [];
         private readonly IPropertySchema[] _linkedObjectProperties;
         private readonly Dictionary<Type, IPropertySchema> _nucleusChildCollectionProperties = [];
         private readonly Dictionary<string, FieldInfo> _fieldCache = [];
@@ -222,19 +222,27 @@ namespace TFM.Nucleus
             Type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public).ToList()
                 .ForEach(f => _fieldCache.TryAdd(f.Name, f));
             PropertySchema<T>.GetAll(this).ForEach(p => _propertyCache.TryAdd(p.Name, p));
-            foreach (var p in _propertyCache.Values.Where(x => x.IsLinkedChildCollection))
-                _linkedChildObjectProperties.Add(p.ChildType ?? throw new NullReferenceException(), p);
             foreach (var p in _propertyCache.Values.Where(x =>
                 x.Type.IsGenericType &&
                 x.Type.GetGenericTypeDefinition() == typeof(NucleusChildCollection<,>)))
-                _nucleusChildCollectionProperties.Add(p.Type.GetGenericArguments()[0], p);
+            {
+                // Every child lookup (the delete cascade, the parent column, change notification)
+                // is keyed by the child type, so one parent holds one collection of each.
+                var childType = p.Type.GetGenericArguments()[0];
+                if (!_nucleusChildCollectionProperties.TryAdd(childType, p))
+                    throw new ObjectSchemaException(
+                        $"{Type.Name}.{_nucleusChildCollectionProperties[childType].Name} and {Type.Name}.{p.Name} both hold {childType.Name}. " +
+                        "A parent can have one child collection of each child type.", Type);
+            }
             HasNucleusChildCollections = _nucleusChildCollectionProperties.Count > 0;
             _linkedObjectProperties = [.. _propertyCache.Values.Where(x => x.IsLinkedObject)];
             _ObjectBuilder = CreateObjectBuilder();
             _parentObjectProperty = _propertyCache.Values.SingleOrDefault(x => x.IsParentObject);
             _hasParentObject = _parentObjectProperty != null;
             HasLinkedObjects = LinkedObjectProperties.Length > 0;
-            HasLinkedChildObjects = _linkedChildObjectProperties.Count > 0;
+#pragma warning disable CS0618 // the obsolete alias keeps answering for older callers
+            HasLinkedChildObjects = HasNucleusChildCollections;
+#pragma warning restore CS0618
             IsDatabaseEnabled = !Attribute.IsDefined(Type, typeof(SuppressDB)) && AllDBColumns.Length > 2;
             IsCacheable = Attribute.IsDefined(Type, typeof(Cacheable));
             if (IsCacheable)
@@ -242,11 +250,18 @@ namespace TFM.Nucleus
                 var attr = Attribute.GetCustomAttribute(Type, typeof(Cacheable)) as Cacheable;
                 CacheLifetime = attr!.CacheLifetime;
                 CacheRefreshInterval = attr.RefreshInterval;
+                // A cached instance is shared by every caller, and loading a lazy collection
+                // would change it under all of them.
+                if (_nucleusChildCollectionProperties.Values.FirstOrDefault(x => x.IsLazyChildCollection) is { } lazy)
+                    throw new ObjectSchemaException(
+                        $"{Type.Name} is [Cacheable], so its child collection {lazy.Name} cannot be [RetrieveOnDemand]: " +
+                        "its cached instances are shared, and loading the collection would change them for every caller.", Type);
             }
             SuppressLogging = Attribute.IsDefined(Type, typeof(SuppressLogging));
-            var deletable = (DeletableAttribute?)Attribute.GetCustomAttribute(Type, typeof(DeletableAttribute));
-            IsDeletable = deletable != null;
-            DeleteBehavior = deletable?.Behavior ?? DeleteBehavior.Hard;
+            _deleteDeclaration = (DeletableAttribute?)Attribute.GetCustomAttribute(Type, typeof(DeletableAttribute));
+            IsDeletable = _deleteDeclaration is { Enabled: true };
+            DeleteBehavior = IsDeletable ? _deleteDeclaration!.Behavior : DeleteBehavior.Hard;
+            _deletePolicy = new Lazy<DeletePolicy>(ResolveDeletePolicy);
             if (Attribute.IsDefined(Type, typeof(InitializePriority)))
                 Priority = ((InitializePriority)Attribute.GetCustomAttribute(Type, typeof(InitializePriority))!).Priority;
             foreach (var pi in AllProperties.Select(x => x.PropertyInfo))
@@ -307,15 +322,19 @@ namespace TFM.Nucleus
                 : throw new InvalidCastException($"{thisT?.GetType()} is not a CoreObject, cannot get linked objects.");
         public IPropertySchema[] AllProperties => _propertyCache.Values.ToArray();
         public IPropertySchema[] AllDBColumns => _propertyCache.Values.Where(x => x.IsDBColumn).ToArray();
-        public IPropertySchema[] LinkedChildObjectProperties => [.. _linkedChildObjectProperties.Values];
+        [Obsolete("Use NucleusChildCollectionProperties.")]
+        public IPropertySchema[] LinkedChildObjectProperties => [.. _nucleusChildCollectionProperties.Values];
         public IPropertySchema[]? NucleusChildCollectionProperties => [.. _nucleusChildCollectionProperties.Values];
         public IPropertySchema[] LinkedObjectProperties => _linkedObjectProperties;
         //public IObjectSchema? ParentObjectSchema => ParentProperty?.ObjectSchema;
         // OfType filters out properties with no resolvable schema, so these never contain nulls.
         public IObjectSchema[]? LinkedObjectSchemas =>
             [.. LinkedObjectProperties.Select(x => x.ObjectSchema).OfType<IObjectSchema>()];
-        public IObjectSchema[]? LinkedChildObjectSchemas =>
-            [.. LinkedChildObjectProperties.Select(x => x.ChildSchema).OfType<IObjectSchema>()];
+        [Obsolete("Use NucleusChildCollectionProperties and each property's ChildSchema.")]
+        public IObjectSchema[]? LinkedChildObjectSchemas => ChildCollectionSchemas;
+
+        private IObjectSchema[] ChildCollectionSchemas =>
+            [.. _nucleusChildCollectionProperties.Values.Select(x => x.ChildSchema).OfType<IObjectSchema>()];
 
 
         public async Task<IDictionary> Extract(DbDataReader reader, CancellationToken token)
@@ -363,7 +382,7 @@ namespace TFM.Nucleus
         int IObjectSchema.Priority => Priority;
         bool IObjectSchema.IsCacheable => IsCacheable;
         bool IObjectSchema.IsDatabaseEnabled => IsDatabaseEnabled;
-        bool IObjectSchema.HasLinkedChildObjects => HasLinkedChildObjects;
+        bool IObjectSchema.HasLinkedChildObjects => HasNucleusChildCollections;
         bool IObjectSchema.HasParentObject => HasParentObject;
         bool IObjectSchema.HasLinkedObjects => HasLinkedObjects;
         bool IObjectSchema.HasNucleusChildCollections => HasNucleusChildCollections;
@@ -372,18 +391,18 @@ namespace TFM.Nucleus
         int IObjectSchema.CacheRefreshInterval => CacheRefreshInterval;
         bool IObjectSchema.IsDeletable => IsDeletable;
         DeleteBehavior IObjectSchema.DeleteBehavior => DeleteBehavior;
+        bool IObjectSchema.IsDeletableThroughParent => IsDeletableThroughParent;
+        DeleteBehavior IObjectSchema.EffectiveDeleteBehavior => EffectiveDeleteBehavior;
         IEnumerable<ICoreObject> IObjectSchema.GetLinkedObjects(ICoreObject obj) =>
             _linkedObjectProperties.Select(p => p.GetValue(obj)).OfType<ICoreObject>();
+        // Held children only: reading a collection's ChildObjects never loads it.
         IEnumerable<ICoreObject> IObjectSchema.GetLinkedChildObjects(ICoreObject obj) =>
-            LinkedChildObjectProperties
-                .Select(p => p.GetValue(obj))
-                .OfType<IEnumerable>()
-                .SelectMany(children => children.OfType<ICoreObject>());
+            obj.NucleusChildCollections.SelectMany(collection => collection.ChildObjects);
         Guid[] IObjectSchema.GetLinkedIDsForLogging(object obj) => GetLinkedIDsForLogging((T)obj);
-        IPropertySchema[] IObjectSchema.LinkedChildObjectProperties => LinkedChildObjectProperties;
+        IPropertySchema[] IObjectSchema.LinkedChildObjectProperties => [.. _nucleusChildCollectionProperties.Values];
         IPropertySchema[]? IObjectSchema.NucleusChildCollectionProperties => NucleusChildCollectionProperties;
         IObjectSchema[]? IObjectSchema.LinkedObjectSchemas => LinkedObjectSchemas;
-        IObjectSchema[]? IObjectSchema.LinkedChildObjectSchemas => LinkedChildObjectSchemas;
+        IObjectSchema[]? IObjectSchema.LinkedChildObjectSchemas => ChildCollectionSchemas;
         IObjectSchema IObjectSchema.GetObjectSchema(Type type) => ObjectSchema.Get(type);
         IObjectSchema IObjectSchema.GetObjectSchema<TAlt>() => ObjectSchema.Get<TAlt>();
 
@@ -423,14 +442,8 @@ namespace TFM.Nucleus
                 l.Add(p.Value);
             return l.ToArray();
         }
-        public IPropertySchema? TryGetChildCollectionProperty(Type type) => _linkedChildObjectProperties.GetValueOrDefault(type);
-        public PropertyInfo? GetChildCollectionProperty(Type type)
-        {
-            foreach (var p in LinkedChildObjectProperties)
-                if (p.ChildType == type)
-                    return p.PropertyInfo;
-            return null;
-        }
+        public IPropertySchema? TryGetChildCollectionProperty(Type type) => _nucleusChildCollectionProperties.GetValueOrDefault(type);
+        public PropertyInfo? GetChildCollectionProperty(Type type) => TryGetChildCollectionProperty(type)?.PropertyInfo;
 
         public static ObjectSchema<T> Get()
         {
@@ -459,9 +472,10 @@ namespace TFM.Nucleus
         {
             try
             {
-                if (HasLinkedChildObjects)
+                _ = _deletePolicy.Value; // a conflicting delete declaration fails here, not at the first delete
+                if (HasNucleusChildCollections)
                 {
-                    foreach (var c in LinkedChildObjectProperties)
+                    foreach (var c in _nucleusChildCollectionProperties.Values)
                     {
                         if (!c.CanRead && !c.CanWrite)
                             throw new ObjectSchemaException($"The property '{c.Name}' has an invalid specification, it must be readable.", Type);
@@ -480,6 +494,93 @@ namespace TFM.Nucleus
                 throw new ObjectSchemaException($"Object schema is invalid. {ex.Message}", Type, ex);
             }
         }
+
+        #region Delete policy
+
+        private readonly DeletableAttribute? _deleteDeclaration;
+        private readonly Lazy<DeletePolicy> _deletePolicy;
+
+        /// <summary>
+        /// True when the type's rows can be deleted as part of their owner's graph: removed from
+        /// their collection or cascaded with an owner. See <see cref="DeletableAttribute"/>.
+        /// </summary>
+        public bool IsDeletableThroughParent => _deletePolicy.Value.ThroughParent;
+
+        /// <summary>
+        /// The behaviour the type's rows are deleted with: the type's own [Deletable], else the
+        /// nearest declaration above it that enables deleting them, else hard.
+        /// </summary>
+        public DeleteBehavior EffectiveDeleteBehavior => _deletePolicy.Value.Behavior;
+
+        private readonly record struct DeletePolicy(bool ThroughParent, DeleteBehavior Behavior);
+
+        // The owner chain is walked through each owner's own policy; a type reached again while
+        // it is being resolved is its own owner, which no delete could finish.
+        [ThreadStatic]
+        private static HashSet<Type>? _resolving;
+
+        /// <summary>
+        /// Works out the policy from the type's own declaration and those above it. A child type
+        /// has one owner type (<c>CoreChildObject&lt;T, TParent&gt;</c>) and its owner one
+        /// collection of it, so the chain is fixed and the policy is resolved once. Throws when
+        /// the type forbids deletion and a declaration above it would delete its rows.
+        /// </summary>
+        private DeletePolicy ResolveDeletePolicy()
+        {
+            _resolving ??= [];
+            if (!_resolving.Add(Type))
+                throw new ObjectSchemaException($"{Type.Name} is its own owner through its parent chain, so no delete of it could finish.", Type);
+            try
+            {
+                var (enabledAbove, behaviorAbove, source) = ResolveAbove();
+                if (_deleteDeclaration is { Enabled: false } && enabledAbove)
+                    throw new ObjectSchemaException(
+                        $"{Type.Name} is [Deletable(false)], but {source} makes its rows deletable through their owner. " +
+                        $"Deleting the owner, or removing a {Type.Name} from its collection, would have to delete rows the type forbids deleting. " +
+                        "Remove one of the two declarations.", Type);
+                if (IsDeletable)
+                    return new DeletePolicy(true, DeleteBehavior);
+                return enabledAbove ? new DeletePolicy(true, behaviorAbove) : new DeletePolicy(false, DeleteBehavior.Hard);
+            }
+            finally
+            {
+                _resolving.Remove(Type);
+            }
+        }
+
+        /// <summary>
+        /// Whether a declaration above the type enables deleting its rows (its collection
+        /// property, its owner, or anything above the owner), the behaviour the nearest one gives,
+        /// and a description of it for messages.
+        /// </summary>
+        private (bool Enabled, DeleteBehavior Behavior, string Source) ResolveAbove()
+        {
+            var ownerType = _parentObjectProperty?.Type;
+            if (ownerType is null || ownerType.IsAbstract || !ownerType.IsSubclassOf(typeof(CoreObject)))
+                return (false, DeleteBehavior.Hard, "");
+            var owner = ObjectSchema.Get(ownerType);
+            var collection = owner.TryGetChildCollectionProperty(Type);
+            if (collection is null)
+                return (false, DeleteBehavior.Hard, "");
+            if (collection.DeleteDeclaration is { Enabled: false })
+                throw new ObjectSchemaException(
+                    $"[Deletable(false)] on {owner.Name}.{collection.Name} is not supported. Removals from a collection delete only when declared, " +
+                    $"so leave the property undeclared, or declare [Deletable(false)] on {Type.Name} to forbid deleting its rows anywhere.", Type);
+            var ownerInGraph = owner.IsDeletableThroughParent;
+            if (collection.DeleteDeclaration is { Enabled: true } declared)
+            {
+                var behavior = declared.IsBehaviorDeclared ? declared.Behavior
+                    : ownerInGraph ? owner.EffectiveDeleteBehavior
+                    : DeleteBehavior.Hard;
+                return (true, behavior, $"[Deletable] on {owner.Name}.{collection.Name}");
+            }
+            if (ownerInGraph)
+                return (true, owner.EffectiveDeleteBehavior,
+                    owner.IsDeletable ? $"[Deletable] on {owner.Name}" : $"a [Deletable] declaration above {owner.Name}");
+            return (false, DeleteBehavior.Hard, "");
+        }
+
+        #endregion
 
         public override string ToString() => $"ObjectSchema({FullName ?? "null"})";
     }

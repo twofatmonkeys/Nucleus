@@ -148,20 +148,22 @@ namespace TFM.Nucleus.Data
             try
             {
                 var provider = ProviderFor<T>();
-                var qry = provider.CreateInsertAndUpdateQuery<T>(objs);
-                if (qry == null)
+                var list = objs as IList<T> ?? objs.ToList();
+                var linkTypes = LinkTypes(list);
+                var queries = provider.CreateSaveQueries(list);
+                if (queries.Count == 0)
                     return null;
                 using var context = provider.CreateContext(ContextOptions.Transactional);
                 try
                 {
-                    context.ExecuteQuery(qry!);
-                    for(int i = 0; i < objs.Count(); i++)
-                    {
-                        var obj = objs.ElementAt(i);
+                    foreach (var query in queries)
+                        context.ExecuteQuery(query);
+                    foreach (var obj in list)
                         obj.CommitChanges(AuditLoggerFor(obj.GetType()));
-                    }
                     EvictCache(typeof(T));
-                    return new NucleusCollection<T>(objs);
+                    foreach (var type in linkTypes)
+                        EvictCache(type);
+                    return new NucleusCollection<T>(list);
                 }
                 catch
                 {
@@ -175,6 +177,16 @@ namespace TFM.Nucleus.Data
             }
         }
 
+        /// <summary>
+        /// The types of the forceSave links a save writes, read before the save commits them, so
+        /// their cached collections are evicted with the saved type's.
+        /// </summary>
+        private static Type[] LinkTypes<T>(IEnumerable<T> objs) where T : ICoreObject
+        {
+            List<ICoreObject> reaching = [.. objs.Cast<ICoreObject>().Where(o => o != null && SaveGraph.CanReachDependents(o))];
+            return reaching.Count == 0 ? [] : [.. SaveGraph.Walk(reaching).Links.Select(link => link.GetType()).Distinct()];
+        }
+
         public Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new() => SaveAsync<T>(obj, CancellationToken.None);
 
         /// <inheritdoc cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
@@ -183,9 +195,10 @@ namespace TFM.Nucleus.Data
         public Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new() => SaveAsync<T>(objs, CancellationToken.None);
 
         /// <summary>
-        /// Saves the objects and their child collections in one transaction. A failure is wrapped
-        /// and rolls back; a cancelled save rolls back and throws
-        /// <see cref="OperationCanceledException"/> as it is.
+        /// Saves the objects in one transaction, with their child collections (deleting the
+        /// stored children removed from them) and the forceSave links they reach. A failure is
+        /// wrapped and rolls back, keeping the pending removals for a retry; a cancelled save
+        /// rolls back and throws <see cref="OperationCanceledException"/> as it is.
         /// </summary>
         public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
@@ -193,20 +206,24 @@ namespace TFM.Nucleus.Data
             {
                 var provider = ProviderFor<T>();
                 var list = objs as IList<T> ?? objs.ToList();
-                var qry = provider.CreateInsertAndUpdateQuery(list);
-                if (qry == null)
+                var linkTypes = LinkTypes(list);
+                var queries = provider.CreateSaveQueries(list);
+                if (queries.Count == 0)
                     return null;
-                
+
                 using var context = await provider.CreateContextAsync(ContextOptions.Transactional, token);
                 try
                 {
-                    await context.ExecuteQueryAsync(qry!, token);
+                    foreach (var query in queries)
+                        await context.ExecuteQueryAsync(query, token);
                     foreach (var obj in list)
                     {
                         obj.CommitChanges(AuditLoggerFor(obj.GetType()));
                     }
 
                     EvictCache(typeof(T));
+                    foreach (var type in linkTypes)
+                        EvictCache(type);
                     return new NucleusCollection<T>(list);
                 }
                 catch
@@ -395,23 +412,34 @@ namespace TFM.Nucleus.Data
         /// One page of rows plus the unpaged total count, in a single round trip, leaving the
         /// named child collection properties unloaded.
         /// </summary>
-        public async Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
+        public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
             IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken = default)
+            where T : ICoreObject<T>, new() =>
+            LoadPagedAsync<T>(skip, take, expression, excludedCollections, [], cancellationToken);
+
+        /// <summary>
+        /// One page of rows plus the unpaged total count, in a single round trip, leaving the
+        /// named child collections unloaded and loading the named lazy ones with the page.
+        /// </summary>
+        public async Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
+            IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
+            CancellationToken cancellationToken = default)
             where T : ICoreObject<T>, new()
         {
             ArgumentOutOfRangeException.ThrowIfNegative(skip);
             ArgumentOutOfRangeException.ThrowIfNegative(take);
             var excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
             if (expression != null && ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new PagedResult<T>([]) { Skip = skip, Take = take, TotalCount = 0 };
             var provider = ProviderFor<T>();
-            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded);
+            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded, included);
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
             using var context = await provider.CreateContextAsync(token: cancellationToken);
             var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet);
+            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader);
             MarkUnloaded(rows, excluded);
             var result = new PagedResult<T>(rows)
             {
@@ -429,13 +457,22 @@ namespace TFM.Nucleus.Data
         /// Loads by primary key, leaving the named child collections unloaded. [Cacheable] types
         /// answer from the cache only when nothing is excluded, since the cache holds whole objects.
         /// </summary>
-        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new()
+        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new() =>
+            LoadByID<T>(id, excludedCollections, []);
+
+        /// <summary>
+        /// Loads by primary key, leaving the named child collections unloaded and loading the
+        /// named lazy ones with it. [Cacheable] types answer from the cache only when nothing is
+        /// excluded or included, since the cache holds whole objects.
+        /// </summary>
+        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(excludedCollections);
+            ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
             var schema = _objectSchema.Get<T>();
-            if (schema is { IsCacheable: true } && excludedCollections.Count == 0)
+            if (schema is { IsCacheable: true } && excludedCollections.Count == 0 && includedCollections.Count == 0)
             {
                 Load<T>(); // ensure the collection (and its index) is populated
                 return Cache.TryGetById<T>(id, out var cached) ? cached : default;
@@ -444,7 +481,7 @@ namespace TFM.Nucleus.Data
             var predicate = Expression.Equal(
                 Expression.Property(parameter, nameof(ICoreObject.ID)),
                 Expression.Constant(id));
-            return ((NucleusCollection<T>?)Load<T>(predicate, excludedCollections)) is { Count: > 0 } loaded ? loaded[0] : default;
+            return ((NucleusCollection<T>?)Load<T>(predicate, excludedCollections, includedCollections)) is { Count: > 0 } loaded ? loaded[0] : default;
         }
 
         /// <summary>
@@ -462,8 +499,40 @@ namespace TFM.Nucleus.Data
                 ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection.", nameof(excludedCollections)))];
         }
 
+        /// <summary>
+        /// The schemas of the lazy child collections a load brings in with its rows. Throws for a
+        /// name that is not a child collection of <typeparamref name="T"/>, or one also excluded.
+        /// </summary>
+        private IPropertySchema[] IncludedCollections<T>(IReadOnlyCollection<string> includedCollections, IPropertySchema[] excluded)
+        {
+            ArgumentNullException.ThrowIfNull(includedCollections);
+            if (includedCollections.Count == 0)
+                return [];
+            var properties = _objectSchema.Get<T>()?.NucleusChildCollectionProperties ?? [];
+            var included = includedCollections.Select(name => properties.FirstOrDefault(p => p.Name == name)
+                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection.", nameof(includedCollections))).ToArray();
+            if (included.FirstOrDefault(p => excluded.Any(e => e.Name == p.Name)) is { } both)
+                throw new ArgumentException($"{typeof(T).Name}.{both.Name} is both excluded and included.", nameof(includedCollections));
+            return included;
+        }
+
         /// <summary>The select for a load, without the child queries of excluded collections.</summary>
-        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded)
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded) =>
+            ParseSelect<T>(provider, expression, excluded, []);
+
+        /// <summary>
+        /// The select for a load: without the child queries of excluded collections, and with
+        /// those of included lazy ones, which a plain select leaves out.
+        /// </summary>
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded, IPropertySchema[] included)
+        {
+            var query = ParseSelectCore<T>(provider, expression, excluded);
+            foreach (var property in included)
+                query.IncludeChildCollection(property.Name);
+            return query;
+        }
+
+        private static ISelectQuery ParseSelectCore<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded)
         {
             var query = provider.ParseSelectExpression<T>(expression);
             foreach (var property in excluded)
@@ -535,40 +604,37 @@ namespace TFM.Nucleus.Data
             }
         }
 
-        private static readonly ConcurrentDictionary<Type, MethodInfo> _childLoaders = [];
-
         /// <summary>
-        /// Loads a child collection that was excluded when its parent was loaded: the rows whose
-        /// parent is the collection's owner, with their own children, attached as loaded and
-        /// merged by ID with any children added since. A loaded collection is left as it is.
+        /// Loads a child collection that was left out when its parent was loaded (excluded, or
+        /// lazy): the rows whose parent is the collection's owner, with their own children,
+        /// attached as loaded and merged by ID with any children added since. A loaded
+        /// collection is left as it is.
         /// </summary>
-        public async Task LoadChildCollectionAsync(INucleusChildCollection collection, CancellationToken token = default)
+        public Task LoadChildCollectionAsync(INucleusChildCollection collection, CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(collection);
-            if (collection.IsLoaded)
-                return;
-            var loader = _childLoaders.GetOrAdd(collection.ChildType, static t =>
-                typeof(ObjectDataManager).GetMethod(nameof(LoadChildrenOfAsync), BindingFlags.NonPublic | BindingFlags.Instance)!
-                    .MakeGenericMethod(t));
-            var children = await (Task<List<ICoreObject>>)loader.Invoke(this, [collection.ParentObject, token])!;
-            collection.AttachLoaded(children);
+            return ChildCollectionLoader.LoadAsync(_registry.GetProvider(collection.ChildType), collection, token);
         }
 
-        /// <summary>The rows of <typeparamref name="TChild"/> whose parent is <paramref name="parent"/>, with their children.</summary>
-        private async Task<List<ICoreObject>> LoadChildrenOfAsync<TChild>(ICoreObject parent, CancellationToken token) where TChild : ICoreObject<TChild>, new()
+        /// <summary>
+        /// The synchronous form of <see cref="LoadChildCollectionAsync"/>, which a lazy
+        /// ([RetrieveOnDemand]) collection this manager loaded calls the first time it is read.
+        /// It reads on the synchronous path, not by blocking on the asynchronous one.
+        /// </summary>
+        public void LoadChildCollection(INucleusChildCollection collection)
         {
-            var provider = ProviderFor<TChild>();
-            var query = provider.ParseSelectExpression<TChild>(Expression.Constant(true));
-            var childSchema = query.DataTableSchema?.ObjectSchema ?? _objectSchema.Get<TChild>()
-                ?? throw new InvalidOperationException($"{typeof(TChild).Name} has no schema.");
-            var parentProperty = childSchema.ParentObjectProperty
-                ?? throw new InvalidOperationException($"{childSchema.Name} is used as a child collection but has no [ParentObject] property.");
-            var parentColumn = query.DataTableSchema?.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name;
-            query.AddWhere(new Parameter(parentColumn, parent.ID));
-            using var context = await provider.CreateContextAsync(token: token);
-            var loaded = ChildGraphBinder.BuildCollection<TChild>(query, await context.GetDataSetAsync(query, token));
-            return [.. loaded.Cast<ICoreObject>()];
+            ArgumentNullException.ThrowIfNull(collection);
+            ChildCollectionLoader.Load(_registry.GetProvider(collection.ChildType), collection);
         }
+
+        private Action<INucleusChildCollection>? _lazyLoader;
+
+        /// <summary>
+        /// <see cref="LoadChildCollection"/> as the loader every lazy collection this manager loads
+        /// is handed. One delegate per manager: passing the method group in a load's row loop
+        /// allocated a delegate per row.
+        /// </summary>
+        private Action<INucleusChildCollection> LazyLoader => _lazyLoader ??= LoadChildCollection;
 
         NucleusCollection<T> INucleusRuntime.LoadAll<T>() => Load<T>();
 
@@ -598,14 +664,22 @@ namespace TFM.Nucleus.Data
         /// Loads the matching rows with their child collections, except the named ones, which
         /// are neither queried nor transferred and come back unloaded.
         /// </summary>
-        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new()
+        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new() =>
+            Load<T>(expression, excludedCollections, []);
+
+        /// <summary>
+        /// Loads the matching rows with their child collections, except the named excluded ones,
+        /// and with the named lazy ([RetrieveOnDemand]) ones, which come in the same round trip.
+        /// </summary>
+        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = ProviderFor<T>().CreateContext();
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry));
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader);
             MarkUnloaded(rows, excluded);
             return rows;
         }
@@ -620,14 +694,20 @@ namespace TFM.Nucleus.Data
             LoadAsync<T>(expression, [], cancellationToken);
 
         /// <inheritdoc cref="Load{T}(Expression, IReadOnlyCollection{string})"/>
-        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        public Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            LoadAsync<T>(expression, excludedCollections, [], cancellationToken);
+
+        /// <inheritdoc cref="Load{T}(Expression, IReadOnlyCollection{string}, IReadOnlyCollection{string})"/>
+        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken));
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader);
             MarkUnloaded(rows, excluded);
             return rows;
         }
@@ -643,15 +723,25 @@ namespace TFM.Nucleus.Data
         /// Streams the matching rows, leaving the named child collections unloaded: their
         /// queries never run.
         /// </summary>
+        public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadStreamAsync<T>(expression, excludedCollections, [], cancellationToken);
+
+        /// <summary>
+        /// Streams the matching rows, leaving the named child collections unloaded and fetching
+        /// the named lazy ones first with the other child queries.
+        /// </summary>
         public async IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections,
             [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 yield break;
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded);
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var children = await ChildGraphBinder.LoadAsync(qry, context, cancellationToken);
+            var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, cancellationToken);
 
             await foreach (var row in context.StreamAsync(qry, cancellationToken))
             {
@@ -660,7 +750,7 @@ namespace TFM.Nucleus.Data
                 {
                     obj.BindValue(row.ColumnNames[i], row.Values[i]);
                 }
-                ChildGraphBinder.Attach(obj, children);
+                ChildGraphBinder.Attach(obj, children, LazyLoader);
                 MarkUnloaded([obj], excluded);
                 yield return obj;
             }

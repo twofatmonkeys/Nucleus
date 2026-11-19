@@ -13,8 +13,13 @@
         /// <summary>The system column recording when a row was soft deleted.</summary>
         public const string DeletedAtColumn = "DeletedAt";
 
+        /// <summary>
+        /// True when the table's rows are deleted soft wherever they are deleted from: by the
+        /// type's own [Deletable(DeleteBehavior.Soft)], or, for a child type with no declaration
+        /// of its own, by the soft declaration above it that makes its rows deletable.
+        /// </summary>
         public static bool Applies(IDataTableSchema tableSchema) =>
-            tableSchema.ObjectSchema is { IsDeletable: true, DeleteBehavior: DeleteBehavior.Soft };
+            tableSchema.ObjectSchema is { IsDeletableThroughParent: true, EffectiveDeleteBehavior: DeleteBehavior.Soft };
 
         /// <summary>The SET terms of a soft delete; a fresh pair per statement.</summary>
         public static Parameter[] NewSetParameters() =>

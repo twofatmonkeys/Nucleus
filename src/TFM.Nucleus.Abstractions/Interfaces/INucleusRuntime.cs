@@ -38,6 +38,14 @@ namespace TFM.Nucleus
         /// </summary>
         Task LoadChildCollectionAsync(TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection collection, CancellationToken token = default) =>
             throw new NotSupportedException($"{GetType().Name} does not support loading a child collection on demand.");
+
+        /// <summary>
+        /// The synchronous form of <see cref="LoadChildCollectionAsync"/>, which a lazy
+        /// ([RetrieveOnDemand]) collection calls the first time it is read. It reads on the
+        /// synchronous path rather than blocking on the asynchronous one.
+        /// </summary>
+        void LoadChildCollection(TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection collection) =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading a child collection on demand.");
         void BulkSave(IEnumerable<ICoreObject?> objs);
 
         NucleusCollection<T> LoadAll<T>() where T : ICoreObject<T>, new();

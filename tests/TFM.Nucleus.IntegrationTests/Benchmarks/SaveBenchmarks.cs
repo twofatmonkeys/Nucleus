@@ -1,115 +1,236 @@
-﻿using System.Diagnostics;
+﻿using TFM.Nucleus.TestSupport.Benchmarking;
 
 namespace TFM.Nucleus.IntegrationTests.Benchmarks
 {
     /// <summary>
     /// Save throughput on each write path: one object at a time, a batch in one command, a batch
-    /// split across commands (the sync path), and a batch large enough for the bulk engine. Each
-    /// scenario inserts its rows and then updates them. Skipped unless NUCLEUS_BENCHMARK=1.
+    /// split across commands (the sync path), a batch large enough for the bulk engine, and parent
+    /// and child graphs inserted, updated, pruned and deleted. Skipped unless NUCLEUS_BENCHMARK=1;
+    /// gated against Benchmarks/Baselines (see <see cref="BenchmarkGate"/>).
     /// <para>
-    /// Variants are measured interleaved, alternating which goes first each round, so drift in
-    /// the server or the network falls on both alike. Rows are deleted after every run, outside
-    /// the timing, so every run writes to a table of the same size.
+    /// The objects a run writes are built before the timing starts and deleted after it stops, so
+    /// every run writes to a table of the same size and only the save itself is timed.
     /// </para>
     /// </summary>
-    public abstract class SaveBenchmarks(DatabaseFixture fixture)
+    public abstract class SaveBenchmarks(DatabaseFixture fixture) : DatabaseBenchmarks(fixture)
     {
-        private const int Rounds = 15;
+        [Fact]
+        public Task SaveScenarios() => RunAsync("save", manager => [.. Scenarios(manager), .. ChildModelScenarios(manager), Bulk(manager)]);
 
-        /// <summary>A setting a benchmark compares, applied before each timed run.</summary>
-        public sealed record Variant(string Name, Action Apply);
-
-        /// <summary>The variants to compare. The first is the baseline the others are measured against.</summary>
-        protected virtual IReadOnlyList<Variant> Variants => [new("current", () => { })];
-
-        private sealed record Scenario(string Name, Func<string, Task> Run);
-
-        private static IEnumerable<Scenario> Scenarios(ObjectDataManager manager) =>
+        private static IEnumerable<BenchmarkScenario> Scenarios(ObjectDataManager manager) =>
         [
-            new("single x20", async prefix =>
+            Widgets(manager, "single x20", 20, async widgets =>
             {
-                var widgets = New(prefix, 20);
                 foreach (var w in widgets)
-                    await manager.SaveAsync(w);
+                    await manager.SaveAsync(w, Ct);
                 foreach (var w in widgets)
                 {
                     w.Quantity++;
-                    await manager.SaveAsync(w);
+                    await manager.SaveAsync(w, Ct);
                 }
             }),
-            new("batch 100", async prefix =>
+            Widgets(manager, "batch 100", 100, async widgets =>
             {
-                var widgets = New(prefix, 100);
-                await manager.SaveAsync(widgets);
+                await manager.SaveAsync(widgets, Ct);
                 widgets.ForEach(w => w.Quantity++);
-                await manager.SaveAsync(widgets);
+                await manager.SaveAsync(widgets, Ct);
             }),
-            new("sync split 1000", prefix =>
+            Widgets(manager, "sync split 1000", 1000, widgets =>
             {
-                var widgets = New(prefix, 1000);
                 manager.Save(widgets);
                 widgets.ForEach(w => w.Quantity++);
                 manager.Save(widgets);
                 return Task.CompletedTask;
             }),
-            new("bulk 20000", async prefix =>
+            GraphInsert(manager),
+            GraphUpdate(manager),
+            DeleteCascade(manager),
+        ];
+
+        /// <summary>Scenarios of the child model: removals, three levels, and the save builder alone.</summary>
+        private static IEnumerable<BenchmarkScenario> ChildModelScenarios(ObjectDataManager manager) =>
+        [
+            GraphRemove(manager),
+            NestedInsert(manager),
+            BuildOnly(manager),
+        ];
+
+        /// <summary>
+        /// The bulk engine, last: after 20,000-row saves the process allocates more for the same
+        /// work (the thread pool and its buffer pools have grown), so nothing is measured after it.
+        /// </summary>
+        private static BenchmarkScenario Bulk(ObjectDataManager manager) =>
+            Widgets(manager, "bulk 20000", 20000, async widgets =>
             {
-                var widgets = New(prefix, 20000);
-                await manager.SaveAsync(widgets);
+                await manager.SaveAsync(widgets, Ct);
                 widgets.ForEach(w => w.Quantity++);
-                await manager.SaveAsync(widgets);
+                await manager.SaveAsync(widgets, Ct);
+            });
+
+        private static BenchmarkScenario Widgets(ObjectDataManager manager, string name, int count, Func<List<IntBenchWidget>, Task> run)
+        {
+            var prefix = "";
+            List<IntBenchWidget> widgets = [];
+            return new BenchmarkScenario
+            {
+                Name = name,
+                Prepare = () =>
+                {
+                    prefix = Prefix();
+                    widgets = [.. Enumerable.Range(0, count).Select(i => new IntBenchWidget { Name = $"{prefix}{i}", Quantity = i })];
+                    return Task.CompletedTask;
+                },
+                Run = () => run(widgets),
+                Reset = () => manager.DeleteWhereAsync<IntBenchWidget>(w => w.Name!.StartsWith(prefix), Ct),
+            };
+        }
+
+        private static List<IntBenchOrder> NewOrders(string prefix, int orders, int lines) =>
+        [
+            .. Enumerable.Range(0, orders).Select(o =>
+            {
+                var order = new IntBenchOrder { Name = $"{prefix}{o}" };
+                for (var l = 0; l < lines; l++)
+                    order.Lines.Add(new IntBenchOrderLine { Sequence = l, Quantity = l });
+                return order;
             }),
         ];
 
-        private static List<IntBenchWidget> New(string prefix, int count) =>
-            [.. Enumerable.Range(0, count).Select(i => new IntBenchWidget { Name = $"{prefix}{i}", Quantity = i })];
-
-        [Fact]
-        public async Task SaveScenarios()
+        private static async Task<List<IntBenchOrder>> SavedOrdersAsync(ObjectDataManager manager, string prefix, int orders, int lines)
         {
-            Assert.SkipUnless(Environment.GetEnvironmentVariable("NUCLEUS_BENCHMARK") == "1",
-                "Set NUCLEUS_BENCHMARK=1 to run the save benchmarks.");
-            var manager = fixture.RequireManager();
-            using var gate = await fixture.LockAsync("benchmarks");
-            var output = TestContext.Current.TestOutputHelper;
-            var variants = Variants;
+            await manager.SaveAsync<IntBenchOrder>(NewOrders(prefix, orders, lines), Ct);
+            var loaded = await manager.Get<IntBenchOrder>().Where(o => o.Name!.StartsWith(prefix)).ToListAsync(Ct);
+            Assert.Equal(orders * lines, loaded.Sum(o => o.Lines.Count));
+            return loaded;
+        }
 
-            foreach (var scenario in Scenarios(manager))
+        private static Task<int> DeleteOrders(ObjectDataManager manager, string prefix) =>
+            manager.DeleteWhereAsync<IntBenchOrder>(o => o.Name!.StartsWith(prefix), Ct);
+
+        private static BenchmarkScenario GraphInsert(ObjectDataManager manager)
+        {
+            var prefix = "";
+            List<IntBenchOrder> orders = [];
+            return new BenchmarkScenario
             {
-                var samples = variants.ToDictionary(v => v.Name, _ => new List<double>());
-                foreach (var variant in variants)
-                    await RunOnce(manager, scenario, variant);
-                for (var round = 0; round < Rounds; round++)
-                    foreach (var variant in round % 2 == 0 ? variants : variants.Reverse())
-                        samples[variant.Name].Add(await RunOnce(manager, scenario, variant));
-
-                var baseline = Median(samples[variants[0].Name]);
-                foreach (var variant in variants)
+                Name = "graph insert 50x20",
+                Prepare = () =>
                 {
-                    var median = Median(samples[variant.Name]);
-                    var overhead = (median - baseline) / baseline * 100;
-                    output?.WriteLine($"{fixture.ProviderName} | {scenario.Name} | {variant.Name} | median {median:F1} ms | min {samples[variant.Name].Min():F1} | max {samples[variant.Name].Max():F1} | {overhead:+0.0;-0.0;0.0}%");
-                }
-            }
+                    prefix = Prefix();
+                    orders = NewOrders(prefix, 50, 20);
+                    return Task.CompletedTask;
+                },
+                Run = () => manager.SaveAsync<IntBenchOrder>(orders, Ct),
+                Reset = () => DeleteOrders(manager, prefix),
+            };
         }
 
-        /// <summary>Times one run of a scenario under a variant, then deletes its rows untimed.</summary>
-        private static async Task<double> RunOnce(ObjectDataManager manager, Scenario scenario, Variant variant)
+        /// <summary>One line changed in each of 50 loaded orders: the cost of walking and writing the graph.</summary>
+        private static BenchmarkScenario GraphUpdate(ObjectDataManager manager)
         {
-            var prefix = $"bench-{Guid.NewGuid():N}-";
-            variant.Apply();
-            var watch = Stopwatch.StartNew();
-            await scenario.Run(prefix);
-            watch.Stop();
-            await manager.DeleteWhereAsync<IntBenchWidget>(w => w.Name!.StartsWith(prefix), TestContext.Current.CancellationToken);
-            return watch.Elapsed.TotalMilliseconds;
+            var prefix = Prefix();
+            List<IntBenchOrder> orders = [];
+            return new BenchmarkScenario
+            {
+                Name = "graph update one line x50",
+                Seed = async () => await SavedOrdersAsync(manager, prefix, 50, 20),
+                Prepare = async () =>
+                {
+                    orders = await manager.Get<IntBenchOrder>().Where(o => o.Name!.StartsWith(prefix)).ToListAsync(Ct);
+                    foreach (var order in orders)
+                        order.Lines[0].Quantity++;
+                },
+                Run = () => manager.SaveAsync<IntBenchOrder>(orders, Ct),
+                TearDown = () => DeleteOrders(manager, prefix),
+            };
         }
 
-        private static double Median(List<double> values)
+        private static BenchmarkScenario DeleteCascade(ObjectDataManager manager)
         {
-            var sorted = values.Order().ToList();
-            var mid = sorted.Count / 2;
-            return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            var prefix = "";
+            return new BenchmarkScenario
+            {
+                Name = "delete cascade 50x20",
+                Prepare = async () =>
+                {
+                    prefix = Prefix();
+                    await manager.SaveAsync<IntBenchOrder>(NewOrders(prefix, 50, 20), Ct);
+                },
+                Run = async () => Assert.Equal(50, await DeleteOrders(manager, prefix)),
+                Reset = () => DeleteOrders(manager, prefix),
+            };
+        }
+
+        /// <summary>One line removed from each of 50 loaded orders, deleted by the owner's save.</summary>
+        private static BenchmarkScenario GraphRemove(ObjectDataManager manager)
+        {
+            var prefix = "";
+            List<IntBenchOrder> orders = [];
+            return new BenchmarkScenario
+            {
+                Name = "graph remove one line x50",
+                Prepare = async () =>
+                {
+                    prefix = Prefix();
+                    orders = await SavedOrdersAsync(manager, prefix, 50, 20);
+                    foreach (var order in orders)
+                        order.Lines.RemoveAt(0);
+                },
+                Run = () => manager.SaveAsync<IntBenchOrder>(orders, Ct),
+                Reset = () => DeleteOrders(manager, prefix),
+            };
+        }
+
+        private static BenchmarkScenario NestedInsert(ObjectDataManager manager)
+        {
+            var prefix = "";
+            List<IntBenchNestOrder> orders = [];
+            return new BenchmarkScenario
+            {
+                Name = "nested insert 30x10x3",
+                Prepare = () =>
+                {
+                    prefix = Prefix();
+                    orders = [.. Enumerable.Range(0, 30).Select(o =>
+                    {
+                        var order = new IntBenchNestOrder { Name = $"{prefix}{o}" };
+                        for (var l = 0; l < 10; l++)
+                        {
+                            var line = new IntBenchNestLine { Sequence = l, Quantity = l };
+                            order.Lines.Add(line);
+                            for (var n = 0; n < 3; n++)
+                                line.Notes.Add(new IntBenchNestNote { Text = $"note {n}" });
+                        }
+                        return order;
+                    })];
+                    return Task.CompletedTask;
+                },
+                Run = () => manager.SaveAsync<IntBenchNestOrder>(orders, Ct),
+                Reset = () => manager.DeleteWhereAsync<IntBenchNestOrder>(o => o.Name!.StartsWith(prefix), Ct),
+            };
+        }
+
+        /// <summary>The save builder and the SQL it renders, with nothing executed: Nucleus's own cost.</summary>
+        private static BenchmarkScenario BuildOnly(ObjectDataManager manager)
+        {
+            List<IntBenchOrder> orders = [];
+            return new BenchmarkScenario
+            {
+                Name = "build only 100x10",
+                Prepare = () =>
+                {
+                    orders = NewOrders(Prefix(), 100, 10);
+                    return Task.CompletedTask;
+                },
+                Run = () =>
+                {
+                    var queries = manager.DataProvider.CreateSaveQueries(orders);
+                    Assert.NotEmpty(queries);
+                    foreach (var query in queries)
+                        Assert.False(string.IsNullOrEmpty(query.BuildQuery()));
+                    return Task.CompletedTask;
+                },
+            };
         }
     }
 }

@@ -36,12 +36,26 @@ namespace TFM.Nucleus.Data.Queries
         /// <param name="resolveTable">
         /// Finds the table of a child type, or null when this provider does not own it.
         /// </param>
-        public DeleteWhereQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable) : base(renderer)
+        public DeleteWhereQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable)
+            : this(renderer, tableSchema, resolveTable, throughOwner: false)
+        {
+        }
+
+        /// <param name="renderer">The provider's renderer.</param>
+        /// <param name="tableSchema">The table of the type being deleted.</param>
+        /// <param name="resolveTable">Finds the table of a child type, or null when this provider does not own it.</param>
+        /// <param name="throughOwner">
+        /// True for rows removed from their owner's child collection, which need only be
+        /// deletable through their owner; false for a direct delete, which needs the type's own [Deletable].
+        /// </param>
+        private DeleteWhereQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, bool throughOwner) : base(renderer)
         {
             ArgumentNullException.ThrowIfNull(tableSchema);
             ArgumentNullException.ThrowIfNull(resolveTable);
-            if (!tableSchema.ObjectSchema.IsDeletable)
-                throw new NotSupportedException($"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
+            if (throughOwner ? !tableSchema.ObjectSchema.IsDeletableThroughParent : !tableSchema.ObjectSchema.IsDeletable)
+                throw new NotSupportedException(throughOwner
+                    ? $"Type {tableSchema.ObjectSchema.FullName} is not deletable through its owner; declare [Deletable] on it, its collection or its owner."
+                    : $"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
             Type = QueryType.DELETE;
             TableName = tableSchema.TableName;
             TableSchema = tableSchema;
@@ -56,14 +70,24 @@ namespace TFM.Nucleus.Data.Queries
         /// Deletes the given IDs of one type with their child rows: one query per
         /// <see cref="IdsPerStatement"/> IDs, the rest linked. Null when there are no IDs.
         /// </summary>
-        public static DeleteWhereQuery? ForIds(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, IEnumerable<Guid> ids)
+        public static DeleteWhereQuery? ForIds(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, IEnumerable<Guid> ids) =>
+            ForIds(renderer, tableSchema, resolveTable, ids, throughOwner: false);
+
+        /// <summary>
+        /// Deletes children removed from their owner's collection, by ID, with their own child
+        /// rows. The type need only be deletable through its owner. Null when there are no IDs.
+        /// </summary>
+        public static DeleteWhereQuery? ForRemovedChildren(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, IEnumerable<Guid> ids) =>
+            ForIds(renderer, tableSchema, resolveTable, ids, throughOwner: true);
+
+        private static DeleteWhereQuery? ForIds(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?> resolveTable, IEnumerable<Guid> ids, bool throughOwner)
         {
             var identity = tableSchema.IdentityColumn
                 ?? throw new InvalidQueryException($"Table {tableSchema.TableName} has no identity column.");
             DeleteWhereQuery? root = null;
             foreach (var chunk in ids.Distinct().Chunk(IdsPerStatement))
             {
-                var query = new DeleteWhereQuery(renderer, tableSchema, resolveTable);
+                var query = new DeleteWhereQuery(renderer, tableSchema, resolveTable, throughOwner);
                 query.Where.And(new Parameter(identity.ColumnName, chunk.ToList(), Operator.In));
                 if (root == null)
                     root = query;
@@ -75,7 +99,8 @@ namespace TFM.Nucleus.Data.Queries
 
         /// <summary>
         /// Adds a target per child collection, recursively. Throws before anything runs when a
-        /// child type cannot be deleted here, since deleting the parent alone would orphan it.
+        /// child type cannot be deleted through its owner, since deleting the parent alone would
+        /// orphan it. Schema build refuses such a declaration first, so this is a backstop.
         /// </summary>
         private static void AddChildren(DeleteTarget parent, Func<Type, IDataTableSchema?> resolveTable, HashSet<Type> path)
         {
@@ -89,9 +114,9 @@ namespace TFM.Nucleus.Data.Queries
                     ?? throw new NotSupportedException(
                         $"{parentSchema.Name}.{property.Name} holds {childType.Name}, which this provider does not store, so its rows cannot be deleted with the parent.");
                 var childSchema = childTable.ObjectSchema;
-                if (!childSchema.IsDeletable)
+                if (!childSchema.IsDeletableThroughParent)
                     throw new NotSupportedException(
-                        $"{childSchema.FullName} is not [Deletable], so a {parentSchema.Name} cannot be deleted without orphaning it.");
+                        $"{childSchema.FullName} is not deletable through its owner, so a {parentSchema.Name} cannot be deleted without orphaning it.");
                 var parentProperty = childSchema.ParentObjectProperty
                     ?? throw new InvalidQueryException($"{childSchema.Name} is used as a child collection but has no [ParentObject] property.");
                 var parentColumn = childTable.FindByPropertyName(parentProperty.Name)?.ColumnName

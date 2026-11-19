@@ -38,6 +38,40 @@ namespace TFM.Nucleus.Abstractions.Interfaces
         public void MarkUnloaded() =>
             throw new NotSupportedException($"{GetType().Name} cannot be left unloaded.");
 
+        /// <summary>
+        /// Marks the collection as not loaded. A lazy one (a [RetrieveOnDemand] collection the
+        /// load left out) loads itself the first time it is read; an excluded one throws until it
+        /// is loaded. Nucleus calls this while materialising.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void MarkUnloaded(bool lazy)
+        {
+            if (lazy)
+                throw new NotSupportedException($"{GetType().Name} cannot load itself on demand.");
+            MarkUnloaded();
+        }
+
+        /// <summary>
+        /// Marks the collection as lazy and not loaded, to be loaded by <paramref name="load"/>
+        /// the first time it is read: the loader of the stack that loaded the parent, so the
+        /// collection reads from the same database whatever the ambient runtime is.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void MarkLazy(Action<INucleusChildCollection> load) => MarkUnloaded(lazy: true);
+
+        /// <summary>
+        /// The stored children removed from the collection since the parent was last saved. A
+        /// save of the parent deletes their rows, in the same transaction as its other writes.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public IEnumerable<ICoreObject> RemovedObjects => [];
+
+        /// <summary>Forgets the removals once the save that deleted them has committed.</summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void AcknowledgeRemovals()
+        {
+        }
+
         /// <summary>The object that owns the collection.</summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
         public ICoreObject ParentObject =>

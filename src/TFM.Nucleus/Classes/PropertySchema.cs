@@ -120,7 +120,24 @@ namespace TFM.Nucleus
 
         public readonly bool IsLinkedObject;
         public readonly bool ForceLinkedSave = false;
+        [Obsolete("[LinkedChildCollection] has no effect. A child collection is a NucleusChildCollection property; test ChildType.")]
         public readonly bool IsLinkedChildCollection;
+
+        /// <summary>The [Deletable] declared on the property itself, if any. Only a child collection may carry one.</summary>
+        public DeletableAttribute? DeleteDeclaration { get; }
+
+        /// <summary>A NucleusChildCollection property marked [RetrieveOnDemand].</summary>
+        public bool IsLazyChildCollection { get; }
+
+        /// <summary>
+        /// For a child collection, true when removing a stored child and saving the parent
+        /// deletes its row: the child type is deletable through its owner. Read on first use,
+        /// because the answer depends on the child type's schema and its owners'.
+        /// </summary>
+        public bool DeletesRemovedChildren => IsChildCollection && (ChildSchema?.IsDeletableThroughParent ?? false);
+
+        private bool IsChildCollection => _isChildCollection;
+        private readonly bool _isChildCollection;
         public readonly Func<T?, TPropertyType?>? PropertyCreator;
         public readonly Type? ChildType;
         public readonly bool IsParentObject;
@@ -143,7 +160,7 @@ namespace TFM.Nucleus
         public bool IsUnique => DBColumnAttribute?.Unique ?? false;
         //public bool ForceTimestamp => DBColumnAttribute?.ForceTimestamp ?? false;
         public IObjectSchema? ChildSchema =>
-            IsLinkedChildCollection ? ObjectSchema.Get(ChildType!) : null;
+            ChildType is not null ? ObjectSchema.Get(ChildType) : null;
 
 
         //Func<object, object> IPropertySchema.privateGetter => privateGetter;
@@ -220,7 +237,12 @@ namespace TFM.Nucleus
         bool IPropertySchema.LinkWhenLogging => LinkWhenLogging;
         bool IPropertySchema.IsLinkedObject => IsLinkedObject;
         bool IPropertySchema.ForceLinkedSave => ForceLinkedSave;
+#pragma warning disable CS0618 // the obsolete flag is still reported as it is
         bool IPropertySchema.IsLinkedChildCollection => IsLinkedChildCollection;
+#pragma warning restore CS0618
+        DeletableAttribute? IPropertySchema.DeleteDeclaration => DeleteDeclaration;
+        bool IPropertySchema.DeletesRemovedChildren => DeletesRemovedChildren;
+        bool IPropertySchema.IsLazyChildCollection => IsLazyChildCollection;
         Type? IPropertySchema.ChildType => ChildType;
         bool IPropertySchema.IsParentObject => IsParentObject;
         string? IPropertySchema.ParentIDPropertyName => ParentIDPropertyName;
@@ -286,15 +308,20 @@ namespace TFM.Nucleus
             IsLinkedObject = Attribute.IsDefined(PropertyInfo, typeof(LinkedObject));
             if (IsLinkedObject)
                 ForceLinkedSave = ((LinkedObject?)pInfo.GetCustomAttribute(typeof(LinkedObject)))?.ForceSave ?? false;
+#pragma warning disable CS0618 // the obsolete attribute keeps its v1 property creator until it is removed
             IsLinkedChildCollection = Attribute.IsDefined(PropertyInfo, typeof(LinkedChildCollection));
+#pragma warning restore CS0618
             SuppressLogging = Attribute.IsDefined(PropertyInfo, typeof(SuppressLogging));
             AbbreviatedLogging = Attribute.IsDefined(PropertyInfo, typeof(AbbreviatedLogging));
             LinkWhenLogging = Attribute.IsDefined(PropertyInfo, typeof(LinkWhenLogging));
             var childInterface = Type.GetInterfaces()
                 .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INucleusChildCollection<,>));
+            _isChildCollection = childInterface is not null;
             if (childInterface is not null)
                 ChildType = childInterface.GetGenericArguments()[0];
+#pragma warning disable CS0618
             else if (IsLinkedChildCollection)
+#pragma warning restore CS0618
             {
                 ChildType = pInfo.PropertyType.GetGenericArguments()[0];
                 var meth = new DynamicMethod(string.Empty, typeof(TPropertyType), new Type[] { typeof(T) });
@@ -313,6 +340,11 @@ namespace TFM.Nucleus
                 il.Emit(OpCodes.Ret);
                 PropertyCreator = (Func<T?, TPropertyType>)meth.CreateDelegate(typeof(Func<T?, TPropertyType>));
             }
+            DeleteDeclaration = (DeletableAttribute?)Attribute.GetCustomAttribute(PropertyInfo, typeof(DeletableAttribute));
+            if (DeleteDeclaration is not null && !_isChildCollection)
+                throw new PropertySchemaException(
+                    "[Deletable] on a property applies to a NucleusChildCollection only; declare it on the entity type to make its rows deletable.", Name, Type);
+            IsLazyChildCollection = RetrieveOnDemand && _isChildCollection;
             IsParentObject = Attribute.IsDefined(PropertyInfo, typeof(ParentObject));
             if (IsParentObject)
             {
@@ -344,10 +376,12 @@ namespace TFM.Nucleus
                 throw new PropertySchemaException("[LinkWhenLogging] requires a property whose type implements ICoreObject.", Name, Type);
             if (IsLinkedObject && IsParentObject)
                 throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedObject].", Name, Type);
+#pragma warning disable CS0618
             if (IsLinkedObject && IsLinkedChildCollection)
                 throw new PropertySchemaException("A property cannot be both [LinkedObject] and [LinkedChildCollection].", Name, Type);
             if (IsLinkedChildCollection && IsParentObject)
                 throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedChildCollection].", Name, Type);
+#pragma warning restore CS0618
         }
         //public void SetDelegateValue<TDeclaring,Tthis>(TDeclaring obj, Tthis value)
         //{

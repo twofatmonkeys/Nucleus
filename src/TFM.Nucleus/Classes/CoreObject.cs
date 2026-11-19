@@ -74,8 +74,15 @@ namespace TFM.Nucleus
 
 
         private void CommitChanges(bool makeReadOnly, ILogger? logger = null) => CommitChanges(makeReadOnly, true, logger);
+        /// <summary>
+        /// Makes pending changes committed once a save has written them. A root also commits the
+        /// forceSave links the save wrote (read from the same <see cref="SaveGraph"/> the save
+        /// was built from, before anything here is committed); every object commits its held
+        /// children and forgets the removals the save deleted.
+        /// </summary>
         private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger = null)
         {
+            var links = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]).Links : [];
             LogChanges(logger);
             if (makeReadOnly)
                 _isReadOnly = true;
@@ -90,14 +97,26 @@ namespace TFM.Nucleus
             if (!_properties.ContainsKey(nameof(Timestamp)))
                 _properties[nameof(Timestamp)] = DateTimeOffset.Now;
             _isNew = false;
-            if(ObjectSchema.HasNucleusChildCollections)
-                foreach(var coll in NucleusChildCollections)
-                    foreach(var child in coll.ChildObjects)
-                        child.CommitChanges();
-            if (isRootObj)
-                if (HasChangedLinkedObjects(out var objs))
-                    foreach (CoreObject obj in objs!)
-                        obj.CommitChanges(makeReadOnly, false);
+            if (ObjectSchema.HasNucleusChildCollections)
+                foreach (var coll in NucleusChildCollections)
+                {
+                    coll.AcknowledgeRemovals();
+                    foreach (var child in coll.ChildObjects)
+                    {
+                        // Not as a root: the root's graph already holds the links below its children.
+                        if (child is CoreObject coreChild)
+                            coreChild.CommitChanges(false, false);
+                        else
+                            child.CommitChanges();
+                    }
+                }
+            foreach (var link in links)
+            {
+                if (link is CoreObject coreLink)
+                    coreLink.CommitChanges(makeReadOnly, false);
+                else
+                    link.CommitChanges();
+            }
         }
 
         void ICoreObject.ChildPropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e) => ChildPropertyChanged(sender, e);
@@ -149,8 +168,12 @@ namespace TFM.Nucleus
             }
         }
 
-        protected internal NucleusChildCollection<TChild, TParent> GetChildCollection<TChild, TParent>([CallerMemberName] string? property = null) 
-            where TParent : CoreObject<TParent>, new()
+        /// <summary>
+        /// The child collection behind a <c>NucleusChildCollection</c> property, created on first
+        /// read. A child entity can hold one too, so owned rows nest to any depth.
+        /// </summary>
+        protected internal NucleusChildCollection<TChild, TParent> GetChildCollection<TChild, TParent>([CallerMemberName] string? property = null)
+            where TParent : CoreObject, ICoreObject<TParent>, new()
             where TChild : ICoreChildObject<TChild, TParent>, new()
         {
             ArgumentNullException.ThrowIfNull(property);
@@ -320,56 +343,19 @@ namespace TFM.Nucleus
             return false;
         }
 
+        /// <summary>
+        /// The objects a save of this one also writes and validates: the new or changed children
+        /// in its child collections at every depth, and the forceSave links the save writes.
+        /// </summary>
         protected internal bool HasChangedLinkedObjects(out CoreObject[]? objects)
         {
-            if (!(ObjectSchema.HasLinkedObjects || ObjectSchema.HasLinkedChildObjects))
+            if (!SaveGraph.CanReachDependents(this))
             {
                 objects = null;
                 return false;
             }
-            else
-            {
-                return _hasChangedLinkedObjects(out objects);
-            }
-        }
-        private bool _hasChangedLinkedObjects(out CoreObject[]? objects)
-        {
-            var objList = new List<CoreObject>();
-            var exclusions = new Dictionary<Guid, object?>() { { ID, null } };
-            if (ObjectSchema.HasLinkedChildObjects)
-                foreach (var child in ObjectSchema.GetLinkedChildObjects(this).Cast<CoreObject>())
-                    child._checkLinkedObjects(objList, exclusions);
-
-            if (ObjectSchema.HasLinkedObjects)
-                foreach (var prop in ObjectSchema.LinkedObjectProperties!)
-                    if (prop.ForceLinkedSave)
-                        if (GetRawCurrentValue(prop.Name) is CoreObject @object)
-                            @object._checkLinkedObjects(objList, exclusions);
-
-            objects = objList.ToArray();
-            return objList.Count > 0;
-        }
-
-
-
-        private void _checkLinkedObjects(List<CoreObject> outCollection, Dictionary<Guid, object?> exclusions)
-        {
-            if (!exclusions.ContainsKey(ID))
-            {
-                if (HasChangedProperties)
-                    outCollection.Add(this);
-                exclusions.Add(ID, null);
-                if (ObjectSchema.HasLinkedObjects)
-                    foreach (var prop in ObjectSchema.LinkedObjectProperties!)
-                        if (prop.ForceLinkedSave)
-                            if (GetRawCurrentValue(prop.Name) is CoreObject @object)
-                                @object._checkLinkedObjects(outCollection, exclusions);
-
-
-                if (ObjectSchema.HasLinkedChildObjects)
-                    foreach (CoreObject child in ObjectSchema.GetLinkedChildObjects(this))
-                        child._checkLinkedObjects(outCollection, exclusions);
-            }
+            objects = [.. SaveGraph.Walk([this]).ChangedDependents.OfType<CoreObject>()];
+            return objects.Length > 0;
         }
 
 
@@ -419,6 +405,7 @@ namespace TFM.Nucleus
         //Overwrite these properties in child classes to change behaviour
         protected internal virtual bool DisableLogging => false; //Setting true disables logging of actions within the Save() method of the object instance.
         protected internal virtual bool AllowCaching => true; //Setting true allows the object collection to be stored in the cache, false forces retrieval from the DB in every case
+        [Obsolete("Has no effect. Deletion is declared with [Deletable] on the type, a child collection property or an owner.")]
         protected internal virtual bool AllowDeletions => false;
         protected internal virtual int CacheRefreshInterval => 120; //Cache refresh interval in seconds
         protected internal virtual int CacheLifetime => 900; //Cache lifetime interval in seconds
@@ -525,6 +512,12 @@ namespace TFM.Nucleus
 
         }
 
+        /// <summary>
+        /// Checks the object before a save; throw to reject it. On the object being saved, this
+        /// also runs <c>Validate()</c> on every new or changed child in its child collections at
+        /// every depth, and on each forceSave link the save writes, so a child's rules hold
+        /// without the parent restating them. An override must call <c>base.Validate()</c>.
+        /// </summary>
         public virtual void Validate()
         {
             _isValidated = true;
@@ -689,20 +682,12 @@ namespace TFM.Nucleus
         [JsonIgnore]
         protected internal bool IsLoading = false;
 
-        /// <summary>Clears the recorded change summary on this object and its loaded children.</summary>
+        /// <summary>Clears the recorded change summary on this object and its held children, loading none.</summary>
         public void ClearChanges()
         {
-            if (ObjectSchema.HasLinkedChildObjects)
-                foreach (var childCollection in ObjectSchema.LinkedChildObjectProperties!)
-                {
-                    // The collection property may not have been materialised yet.
-                    if (childCollection.GetValue(this) is not IEnumerable<ICoreObject> children)
-                        continue;
-                    foreach (var childObj in children)
-                        // CoreObject does not implement ITFMHasChanges, so casting to it always
-                        // yielded null and the child was silently skipped.
-                        (childObj as CoreObject)?.ClearChanges();
-                }
+            foreach (var collection in NucleusChildCollections)
+                foreach (var childObj in collection.ChildObjects)
+                    (childObj as CoreObject)?.ClearChanges();
 
             _changes?.Clear();
         }

@@ -25,8 +25,15 @@ namespace TFM.Nucleus.IntegrationTests
 
         public async ValueTask InitializeAsync()
         {
-            if (Database.IsConfigured)
-                _stack = await Database.StartSharedStackAsync();
+            if (!Database.IsConfigured)
+                return;
+            // Booting a stack allocates heavily (the schema compare, the catalog read). When the
+            // benchmarks run it waits for the benchmark lock, so it never lands inside another
+            // provider's measurement, which counts every allocation in the process.
+            using var quiet = TFM.Nucleus.TestSupport.Benchmarking.BenchmarkSettings.Enabled
+                ? await TFM.Nucleus.TestSupport.Benchmarking.BenchmarkLock.AcquireAsync()
+                : null;
+            _stack = await Database.StartSharedStackAsync();
         }
 
         /// <summary>A second stack on the same database with its options changed by <paramref name="configure"/>.</summary>
@@ -73,6 +80,13 @@ namespace TFM.Nucleus.IntegrationTests
 
         /// <summary>The cross-process lock over the database's schema, per provider. Not reentrant.</summary>
         internal Task<NucleusTestLock> SchemaLockAsync() => Database.SchemaLockAsync();
+
+        /// <summary>
+        /// Reclaims the space that bulk inserts and deletes leave behind, so a scan reads the same
+        /// pages whatever ran before it. The benchmarks call it before measuring; an engine that
+        /// reclaims on its own does nothing.
+        /// </summary>
+        internal virtual Task SettleAsync(CancellationToken token) => Task.CompletedTask;
     }
 
     /// <summary>SQL Server, configured by the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.</summary>
@@ -96,7 +110,11 @@ namespace TFM.Nucleus.IntegrationTests
     }
 
     /// <summary>PostgreSQL, configured by the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.</summary>
-    public sealed class PostgresFixture() : DatabaseFixture(NucleusTestDatabase.Postgres);
+    public sealed class PostgresFixture() : DatabaseFixture(NucleusTestDatabase.Postgres)
+    {
+        /// <summary>Dead rows stay in the heap until vacuumed, and a scan reads them.</summary>
+        internal override Task SettleAsync(CancellationToken token) => Database.ExecuteAsync("VACUUM ANALYZE", token);
+    }
 
     [CollectionDefinition(Name)]
     public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>
@@ -105,7 +123,11 @@ namespace TFM.Nucleus.IntegrationTests
     }
 
     /// <summary>SQLite, configured by the Nucleus:Sqlite:Database user secret or NUCLEUS_SQLITE_TEST_DATABASE, a file path.</summary>
-    public sealed class SqliteFixture() : DatabaseFixture(NucleusTestDatabase.Sqlite);
+    public sealed class SqliteFixture() : DatabaseFixture(NucleusTestDatabase.Sqlite)
+    {
+        /// <summary>Deleted pages stay in the file, scattered, until it is vacuumed.</summary>
+        internal override Task SettleAsync(CancellationToken token) => Database.ExecuteAsync("VACUUM", token);
+    }
 
     [CollectionDefinition(Name)]
     public sealed class SqliteCollection : ICollectionFixture<SqliteFixture>

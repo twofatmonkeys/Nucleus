@@ -21,6 +21,9 @@ namespace TFM.Nucleus
         /// <summary>Serve-stale-while-revalidate interval in seconds ([Cacheable] refreshInterval); 0 = disabled.</summary>
         public int CacheRefreshInterval { get; }
         public bool IsDatabaseEnabled { get; }
+
+        /// <summary>The same as <see cref="HasNucleusChildCollections"/>.</summary>
+        [Obsolete("Use HasNucleusChildCollections.")]
         public bool HasLinkedChildObjects { get; }
         public bool HasParentObject { get; }
         public IPropertySchema? ParentObjectProperty { get; }
@@ -28,11 +31,28 @@ namespace TFM.Nucleus
         public bool HasNucleusChildCollections { get; }
         public bool SuppressLogging { get; }
 
-        /// <summary>True when the type is decorated with [Deletable]; undecorated types cannot be deleted.</summary>
+        /// <summary>
+        /// True when the type itself carries an enabled [Deletable], so its rows can be deleted
+        /// directly. A type deletable only through its owner is false here.
+        /// </summary>
         public bool IsDeletable { get; }
 
-        /// <summary>The delete behavior declared by [Deletable]; meaningful only when IsDeletable.</summary>
+        /// <summary>The delete behavior declared by the type's own [Deletable]; meaningful only when IsDeletable.</summary>
         public DeleteBehavior DeleteBehavior { get; }
+
+        /// <summary>
+        /// True when the type's rows can be deleted as part of their owner's graph: removed from
+        /// their collection, or cascaded when an owner is deleted. Declared by [Deletable] on the
+        /// type, on its collection property, or on any owner above it.
+        /// </summary>
+        public bool IsDeletableThroughParent => IsDeletable;
+
+        /// <summary>
+        /// How the type's rows are deleted wherever they are deleted from: the type's own
+        /// [Deletable] behaviour, else the nearest declaration above it that enables deleting
+        /// them, else hard. A soft behaviour gives the table the soft-delete columns.
+        /// </summary>
+        public DeleteBehavior EffectiveDeleteBehavior => DeleteBehavior;
 
         public bool Check();
         public IPropertySchema GetProperty(string propertyName);
@@ -44,13 +64,22 @@ namespace TFM.Nucleus
         //public Guid GetParentID(object childObj);
         //public ICoreObject? GetParentObject(object childObj);
         public IEnumerable<ICoreObject> GetLinkedObjects(ICoreObject obj);
+
+        /// <summary>The children held in the object's child collections, without loading any.</summary>
+        [Obsolete("Use ICoreObject.NucleusChildCollections.")]
         public IEnumerable<ICoreObject> GetLinkedChildObjects(ICoreObject obj);
         //public IPropertySchema ParentIDProperty { get; }
         //public string ParentIDPropertyName { get; }
         public IPropertySchema[]? LinkedObjectProperties { get; }
+
+        /// <summary>The same as <see cref="NucleusChildCollectionProperties"/>.</summary>
+        [Obsolete("Use NucleusChildCollectionProperties.")]
         public IPropertySchema[]? LinkedChildObjectProperties { get; }
         public IPropertySchema[]? NucleusChildCollectionProperties { get; }
         public IObjectSchema[]? LinkedObjectSchemas { get; }
+
+        /// <summary>The schemas of the child collections' types.</summary>
+        [Obsolete("Use NucleusChildCollectionProperties and each property's ChildSchema.")]
         public IObjectSchema[]? LinkedChildObjectSchemas { get; }
         //public IPropertySchema[]? ChildObjectCollections { get; }
         //public IObjectSchema? ParentObjectSchema { get; }
@@ -58,6 +87,7 @@ namespace TFM.Nucleus
         //public ISqlSchema? SqlSchema { get; }
         public IPropertySchema[] AllProperties { get; }
         public IPropertySchema[] AllDBColumns { get; }
+        /// <summary>The child collection property holding <paramref name="type"/>; null when there is none.</summary>
         public IPropertySchema? TryGetChildCollectionProperty(Type type);
 
         public Task<IDictionary> Extract(DbDataReader reader, CancellationToken token);

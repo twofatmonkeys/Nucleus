@@ -31,8 +31,29 @@ namespace TFM.Nucleus
 
         public bool IsLinkedObject { get; }
         public bool ForceLinkedSave { get; }
+
+        /// <summary>True when the property carries the obsolete [LinkedChildCollection], which has no effect.</summary>
+        [Obsolete("[LinkedChildCollection] has no effect. A child collection is a NucleusChildCollection property; test ChildType.")]
         public bool IsLinkedChildCollection { get; }
+
+        /// <summary>The child type of a NucleusChildCollection property; null for any other property.</summary>
         public Type? ChildType { get; }
+
+        /// <summary>The [Deletable] declared on the property itself, if any. Only a child collection may carry one.</summary>
+        public DeletableAttribute? DeleteDeclaration => null;
+
+        /// <summary>
+        /// For a child collection, true when removing a stored child and saving the parent
+        /// deletes the child's row. Declared by [Deletable] on the child type, on this property,
+        /// or on the parent or any owner above it. False for any other property.
+        /// </summary>
+        public bool DeletesRemovedChildren => false;
+
+        /// <summary>
+        /// For a child collection marked [RetrieveOnDemand]: a parent load leaves its rows out
+        /// and the collection loads them the first time it is read.
+        /// </summary>
+        public bool IsLazyChildCollection => false;
         public bool IsParentObject { get; }
         public string? ParentIDPropertyName { get; }
         public Type Type { get; }

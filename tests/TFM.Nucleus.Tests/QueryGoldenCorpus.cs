@@ -170,6 +170,16 @@ namespace TFM.Nucleus.Tests
                 ["where.and.or"] = () => Where<TestWidget>(w => w.Name == "a" && (w.Quantity == 1 || w.Quantity == 2)),
                 ["where.methods"] = () => Where<TestWidget>(w => w.Name!.StartsWith("a") && w.Name.EndsWith("z") && w.Name.Contains("m")),
                 ["where.ignorecase"] = () => Where<TestWidget>(w => string.Equals(w.Name, "A", StringComparison.OrdinalIgnoreCase)),
+                ["where.parent.id"] = () =>
+                {
+                    var id = Guid.NewGuid();
+                    return Where<TestDeletableChild>(c => c.Parent.ID == id && c.Sequence > 1);
+                },
+                ["where.parent.in"] = () =>
+                {
+                    var parents = new List<TestDeletableParent> { Loaded<TestDeletableParent>(Guid.NewGuid()), Loaded<TestDeletableParent>(Guid.NewGuid()) };
+                    return Where<TestDeletableChild>(c => parents.Contains(c.Parent));
+                },
                 ["where.in"] = () =>
                 {
                     var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
@@ -256,6 +266,11 @@ namespace TFM.Nucleus.Tests
                     Tables(typeof(TestDeletableParent), typeof(TestDeletableChild))),
                 ["delete.soft.cascade"] = () => DeleteWhere<TestSoftParent>(p => p.Name == "old",
                     Tables(typeof(TestSoftParent), typeof(TestSoftChild))),
+                ["delete.where.parent"] = () =>
+                {
+                    var id = Guid.NewGuid();
+                    return DeleteWhere<TestDeletableChild>(c => c.Parent.ID == id, Tables(typeof(TestDeletableChild)));
+                },
                 ["delete.ids"] = () =>
                 {
                     var tables = Tables(typeof(TestDeletableParent), typeof(TestDeletableChild));

@@ -55,7 +55,7 @@ namespace TFM.Nucleus.Tests
             }
             sb.Append("        };\n    }\n}\n");
 
-            File.WriteAllText(Path.Combine(RawGoldens.TestSourceDirectory(), "PublicApiSnapshot.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
+            File.WriteAllText(Path.Combine(TFM.Nucleus.TestSupport.TestSourcePaths.ProjectDirectory(), "PublicApiSnapshot.cs"), sb.ToString().Replace("\n", "\r\n"), new UTF8Encoding(true));
         }
 
         private const BindingFlags Declared =
