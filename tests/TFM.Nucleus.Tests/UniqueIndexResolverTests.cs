@@ -1,5 +1,6 @@
 ﻿using TFM.Nucleus.Data.PostgreSQL;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.SQLite;
 
 namespace TFM.Nucleus.Tests
 {
@@ -24,12 +25,13 @@ namespace TFM.Nucleus.Tests
         private const string UniqueTable = "tbl_TFM_Nucleus_Tests_TestUniqueIndexedWidget";
         private const string LongTable = "tbl_AVeryLongTableNameThatPushesItsIndexNamesPastTheLimit";
 
-        public static TheoryData<string> Engines() => new("sqlserver", "postgres");
+        public static TheoryData<string> Engines() => new("sqlserver", "postgres", "sqlite");
 
         private static ISchemaDialect Dialect(string engine) => engine switch
         {
             "sqlserver" => new SqlServerSchemaDialect(null),
             "postgres" => new PostgresSchemaDialect("public", null),
+            "sqlite" => new SqliteSchemaDialect(),
             _ => throw new ArgumentOutOfRangeException(nameof(engine)),
         };
 

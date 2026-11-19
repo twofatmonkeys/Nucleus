@@ -1,0 +1,81 @@
+using Microsoft.Data.Sqlite;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace TFM.Nucleus.Data.SQLite
+{
+    /// <summary>
+    /// How the SQLite provider reads the driver's errors. SQLite reports a unique violation by
+    /// the columns it broke (<c>UNIQUE constraint failed: Table.A, Table.B</c>), not by the index,
+    /// so the provider maps those columns back to the index name; an index over an expression is
+    /// reported by name (<c>UNIQUE constraint failed: index 'Name'</c>).
+    /// </summary>
+    internal static class SqliteErrors
+    {
+        /// <summary>SQLITE_CONSTRAINT_UNIQUE: a unique index was violated.</summary>
+        public const int UniqueViolation = 2067;
+
+        /// <summary>SQLITE_CONSTRAINT_PRIMARYKEY: the primary key was violated.</summary>
+        public const int PrimaryKeyViolation = 1555;
+
+        private const string Marker = "constraint failed: ";
+        private const string IndexMarker = "index '";
+
+        /// <summary>What a unique violation names: the table and its columns in key order, or an index by name.</summary>
+        internal readonly record struct UniqueViolationTarget(string? TableName, IReadOnlyList<string> Columns, string? IndexName, bool IsPrimaryKey);
+
+        /// <summary>The unique or primary key violation anywhere in the chain, with what it names.</summary>
+        public static bool TryGetUniqueViolation(Exception exception, out UniqueViolationTarget target)
+        {
+            for (var e = exception; e != null; e = e.InnerException)
+            {
+                if (e is SqliteException { SqliteExtendedErrorCode: UniqueViolation or PrimaryKeyViolation } sqlite)
+                {
+                    target = Parse(sqlite.Message, sqlite.SqliteExtendedErrorCode == PrimaryKeyViolation);
+                    return true;
+                }
+            }
+            target = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Reads the constraint's target out of the driver's message. A table name can hold dots
+        /// (a full-name table), a column name cannot, so each column is split at its last dot.
+        /// </summary>
+        internal static UniqueViolationTarget Parse(string message, bool isPrimaryKey)
+        {
+            var start = message.IndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+            if (start < 0)
+                return new UniqueViolationTarget(null, [], null, isPrimaryKey);
+            var text = message[(start + Marker.Length)..];
+            // The driver wraps the engine's text as: SQLite Error 19: '...'.
+            var end = text.IndexOf("'.", StringComparison.Ordinal);
+            if (text.StartsWith(IndexMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                var name = text[IndexMarker.Length..];
+                var close = name.IndexOf('\'');
+                return new UniqueViolationTarget(null, [], close < 0 ? name : name[..close], isPrimaryKey);
+            }
+            if (end >= 0)
+                text = text[..end];
+            text = text.TrimEnd('\'', '.', ' ');
+            string? table = null;
+            List<string> columns = [];
+            foreach (var part in text.Split(", ", StringSplitOptions.RemoveEmptyEntries))
+            {
+                var dot = part.LastIndexOf('.');
+                if (dot <= 0)
+                    continue;
+                table ??= part[..dot];
+                columns.Add(part[(dot + 1)..]);
+            }
+            return new UniqueViolationTarget(table, columns, null, isPrimaryKey);
+        }
+
+        /// <summary>True when the columns name the same key, in order, as SQLite compares identifiers.</summary>
+        internal static bool SameColumns(IReadOnlyList<string> reported, IEnumerable<string> keys) =>
+            reported.SequenceEqual(keys, SqliteIdentifiers.Comparer);
+    }
+}

@@ -17,6 +17,7 @@ namespace TFM.Nucleus.Tests
             typeof(ObjectDataManager).Assembly,                          // TFM.Nucleus.Data
             typeof(SQLConfiguration).Assembly,                           // TFM.Nucleus.Data.SQL
             typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly,
+            typeof(TFM.Nucleus.Data.SQLite.SqliteConfiguration).Assembly,
             typeof(TFM.Nucleus.Testing.NucleusTestDatabase).Assembly,     // TFM.Nucleus.Testing
         ];
 

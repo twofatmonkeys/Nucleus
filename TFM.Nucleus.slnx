@@ -26,6 +26,7 @@
   <Project Path="src/TFM.Nucleus.Data/TFM.Nucleus.Data.csproj" />
   <Project Path="src/TFM.Nucleus.Data.SQL/TFM.Nucleus.Data.SQL.csproj" />
   <Project Path="src/TFM.Nucleus.Data.PostgreSQL/TFM.Nucleus.Data.PostgreSQL.csproj" />
+  <Project Path="src/TFM.Nucleus.Data.SQLite/TFM.Nucleus.Data.SQLite.csproj" />
   <Project Path="src/TFM.Nucleus.Testing/TFM.Nucleus.Testing.csproj" />
   <Folder Name="/tests/">
     <Project Path="tests/TFM.Nucleus.Tests/TFM.Nucleus.Tests.csproj" />

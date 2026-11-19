@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- The test harness packages and the IsPackable/IsTestProject settings come from
-       ..\Directory.Build.props. These tests need a live SQL Server: configuration comes from
-       NUCLEUS_TEST_* environment variables or the user secrets store below (read by TFM.Nucleus.Testing), and every test
-       skips cleanly when no server is configured. -->
+       ..\Directory.Build.props. These tests need a live database per provider: SQL Server, PostgreSQL
+       or a SQLite file. Configuration comes from the NUCLEUS_TEST_*, NUCLEUS_PG_TEST_* and
+       NUCLEUS_SQLITE_TEST_DATABASE environment variables or the user secrets store below (read by
+       TFM.Nucleus.Testing), and every provider's tests skip cleanly when it is not configured. -->
 
   <PropertyGroup>
     <UserSecretsId>tfm-nucleus-integrationtests</UserSecretsId>
@@ -26,6 +27,7 @@
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQLite\TFM.Nucleus.Data.SQLite.csproj" />
     <ProjectReference Include="..\..\src\TFM.Nucleus.Testing\TFM.Nucleus.Testing.csproj" />
   </ItemGroup>
 

@@ -30,6 +30,12 @@
         /// <summary>A plain index with the given name over the given columns, in order.</summary>
         protected abstract string CreatePlainIndexSql(string table, string index, params string[] columns);
 
+        /// <summary>
+        /// What <see cref="IndexColumnsSql"/> reads for the declared index: its keys, then its
+        /// included columns. An engine whose indexes carry no included columns reads the keys alone.
+        /// </summary>
+        protected virtual string ExpectedIndexColumns => "Batch,At,+Amount,+Name,+Notes";
+
         protected abstract Task ExecuteAsync(string sql);
 
         protected abstract Task<object?> ScalarAsync(string sql);
@@ -40,7 +46,7 @@
             Fixture.RequireSettings();
             using var schema = await Fixture.SchemaLockAsync();
 
-            Assert.Equal("Batch,At,+Amount,+Name,+Notes", await ScalarAsync(IndexColumnsSql(Table, Index)));
+            Assert.Equal(ExpectedIndexColumns, await ScalarAsync(IndexColumnsSql(Table, Index)));
             Assert.Equal(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
         }
 
@@ -57,7 +63,7 @@
                 using var stack = await Fixture.StartStackAsync(_ => { });
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
-                Assert.Equal("Batch,At,+Amount,+Name,+Notes", await ScalarAsync(IndexColumnsSql(Table, Index)));
+                Assert.Equal(ExpectedIndexColumns, await ScalarAsync(IndexColumnsSql(Table, Index)));
                 Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
             }
             finally

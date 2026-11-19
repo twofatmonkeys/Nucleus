@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything shared lives in ..\Directory.Build.props and ..\..\Directory.Build.props. A package
+    csproj should only carry what is genuinely specific to this package: its identity, its
+    description, its tags and its dependencies.
+  -->
+
+  <PropertyGroup>
+    <PackageId>TFM.Nucleus.Data.SQLite</PackageId>
+    <Title>TFM.Nucleus.Data.SQLite</Title>
+    <RootNamespace>TFM.Nucleus.Data.SQLite</RootNamespace>
+    <Description>SQLite provider for the Nucleus ORM, for file databases in embedded and local applications: query rendering, the SQLite schema dialect and catalog for automatic schema create, compare and migrate, write-ahead logging, Unicode-aware pattern matching and AddNucleusSqliteDataProvider registration. Requires SQLite 3.35 or later (bundled).</Description>
+    <PackageTags>tfm;nucleus;orm;sqlite;provider</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Package references are pinned per target framework so each consumer gets the assemblies
+         built for their runtime rather than a lowest common denominator set. Microsoft.Data.Sqlite
+         brings the bundled native SQLite through SQLitePCLRaw. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.34" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+    <ProjectReference Include="..\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep the list to real test projects: every entry here is a hole in the assembly boundary. -->
+    <InternalsVisibleTo Include="TFM.Nucleus.Tests" />
+  </ItemGroup>
+
+</Project>

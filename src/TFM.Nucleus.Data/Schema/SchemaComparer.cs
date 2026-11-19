@@ -164,8 +164,12 @@ namespace TFM.Nucleus.Data.Schema
                 return false;
             var keys = rows.Where(r => !r.IsIncluded).OrderBy(r => r.KeyOrdinal).Select(r => r.ColumnName).ToList();
             var included = rows.Where(r => r.IsIncluded).Select(r => r.ColumnName).ToList();
-            return keys.SequenceEqual(index.Keys.Select(k => dialect.PhysicalName(k.ColumnName)), comparer) &&
-                   included.Count == index.Include.Count &&
+            if (!keys.SequenceEqual(index.Keys.Select(k => dialect.PhysicalName(k.ColumnName)), comparer))
+                return false;
+            // An engine without included columns stores the keys alone, so the keys are the whole index.
+            if (!dialect.SupportsIncludedColumns)
+                return included.Count == 0;
+            return included.Count == index.Include.Count &&
                    index.Include.All(c => included.Contains(dialect.PhysicalName(c.ColumnName), comparer));
         }
 

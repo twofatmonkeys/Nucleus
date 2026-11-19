@@ -43,6 +43,31 @@ on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCL
   `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
   but a write-heavy table pays it on every statement.
 
+### Found with the SQLite provider (November 2026)
+
+- **A nullable enum column's `ClrType` is the enum, not `int`.** `ColumnSchema.GetClrType` maps an
+  enum property to `int`, but `Nullable<TEnum>.IsEnum` is false, so a nullable enum falls through
+  to its underlying enum type. SQL Server and PostgreSQL never notice, because their drivers hand
+  back an `int` regardless; the SQLite provider reads each value as the column's `ClrType`, so it
+  narrows an enum target to its integer itself. Left as it is in Data: changing `ClrType` changes
+  what every provider binds for a nullable enum, and that wants its own review.
+- **The parallel write path cannot work on a single-writer engine.** An oversized write without a
+  bulk engine fanned out to child contexts, each on its own connection and transaction; under
+  SQLite each child waits on its parent's write lock until it times out. Data now lets a context
+  say so (`DbDataContext.AllowsConcurrentWriters`), and the parts run in order on its own context.
+- **A large multi-statement command is quadratic in Microsoft.Data.Sqlite.** The driver binds each
+  statement by searching every parameter of the command, so a command of N single-row statements
+  over P parameters costs about N x P. At 30000 parameters an oversized save held the write lock for
+  33 s, long enough for the other target framework's run to time out on the shared file; at 2000 it
+  took 0.3 s. `SqliteConfiguration` therefore defaults `MaxParametersPerQuery` to 2000. Raising it
+  is the first thing to measure if SQLite saves look slow.
+- **A lower SQLite limit would write faster still, but deletes stop it.** At 500 parameters a command
+  the oversized saves measured about five times faster again (a late unique violation over 12001
+  rows: 1 s at 2000, 0.2 s at 500). `DeleteWhereQuery.ForIds` puts a fixed 1000 IDs in each
+  statement, and the delete path refuses a chunk over the limit, so any limit under about 1001
+  breaks deleting a list of objects. Chunking the IDs by the provider's limit would lift that; it
+  changes the delete batches every provider sends, so it is left for its own change.
+
 ### The parameterless AddNucleus() enables schema migration
 
 `NucleusOptions.ReadOnlySchema` defaults to `true`, but the convenience `AddNucleus()` overload sets

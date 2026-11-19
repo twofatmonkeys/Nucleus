@@ -155,6 +155,14 @@ namespace TFM.Nucleus.Data.Providers
         protected virtual Task ExecuteBulkAsync(Query query, CancellationToken token) =>
             throw new NotSupportedException($"{GetType().Name} has no bulk engine.");
 
+        /// <summary>
+        /// False for an engine that lets one connection write at a time. An oversized write the
+        /// bulk engine cannot take then runs as commands one after another on this context, as the
+        /// sync path does, instead of fanning out to child contexts: a child's connection would wait
+        /// on this context's write lock until it timed out.
+        /// </summary>
+        protected virtual bool AllowsConcurrentWriters => true;
+
         /// <summary>The connection in diagnostics.</summary>
         protected virtual string DescribeConnection() => _connection?.GetHashCode().ToString() ?? "null connection";
 
@@ -789,6 +797,12 @@ namespace TFM.Nucleus.Data.Providers
                     if (queriesByType.GetParameterCount() > Options.MaxParametersPerQuery && CanUseBulkPath(queriesByType))
                     {
                         await ExecuteBulkAsync(queriesByType, token);
+                    }
+                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerQuery)
+                    {
+                        // One writer at a time: the parts run in order on this context's connection.
+                        foreach (var part in queriesByType.Split(Options.MaxParametersPerQuery))
+                            await ExecuteWriteAsync(part, async: true, token);
                     }
                     else if (queriesByType.NeedsSplitting(Options.MaxParametersPerQuery, out var queries))
                     {
