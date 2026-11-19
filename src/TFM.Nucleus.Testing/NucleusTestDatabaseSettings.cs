@@ -27,6 +27,17 @@ public sealed record NucleusTestDatabaseSettings(string Server, string Database,
     /// <summary>PostgreSQL: the <c>Nucleus:Postgres:Server</c> etc. user secrets, or <c>NUCLEUS_PG_TEST_SERVER</c> etc. Null when any part is missing.</summary>
     public static NucleusTestDatabaseSettings? TryGetPostgres() => Read("Nucleus:Postgres:", "NUCLEUS_PG_TEST_");
 
+    /// <summary>
+    /// SQLite: the path of the database file, from the <c>Nucleus:Sqlite:Database</c> user secret or
+    /// <c>NUCLEUS_SQLITE_TEST_DATABASE</c>. It is the only part SQLite needs, so the server, user
+    /// name and password are empty. Null when the path is missing.
+    /// </summary>
+    public static NucleusTestDatabaseSettings? TryGetSqlite()
+    {
+        var path = Configuration.Value["Nucleus:Sqlite:Database"] ?? Configuration.Value["NUCLEUS_SQLITE_TEST_DATABASE"];
+        return string.IsNullOrWhiteSpace(path) ? null : new NucleusTestDatabaseSettings("", path, "", "");
+    }
+
     /// <summary>The settings without the password.</summary>
     public override string ToString() => $"{Username}@{Server}/{Database}";
 

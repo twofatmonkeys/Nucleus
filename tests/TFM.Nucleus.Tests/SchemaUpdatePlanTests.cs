@@ -1,5 +1,6 @@
 using TFM.Nucleus.Data.PostgreSQL;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.SQLite;
 
 namespace TFM.Nucleus.Tests
 {
@@ -10,12 +11,13 @@ namespace TFM.Nucleus.Tests
     /// </summary>
     public class SchemaUpdatePlanTests
     {
-        public static TheoryData<string> Providers() => new("sqlserver", "postgres");
+        public static TheoryData<string> Providers() => new("sqlserver", "postgres", "sqlite");
 
         private static ISchemaDialect Dialect(string provider) => provider switch
         {
             "sqlserver" => new SqlServerSchemaDialect(null),
             "postgres" => new PostgresSchemaDialect("public", null),
+            "sqlite" => new SqliteSchemaDialect(),
             _ => throw new ArgumentOutOfRangeException(nameof(provider)),
         };
 
@@ -251,11 +253,20 @@ namespace TFM.Nucleus.Tests
         public static CatalogSnapshot Current(string provider, TableSchema table)
         {
             List<CatalogColumn> columns = [.. table.Columns.Select(c => Column(provider, table.TableName, c))];
-            columns.Add(new CatalogColumn { TableName = table.TableName, Name = TableSchema.ClusterIdColumn, TypeName = provider == "sqlserver" ? "int" : "bigint" });
+            // SQLite tables have no cluster ID: the rowid keeps their insertion order.
+            if (provider != "sqlite")
+                columns.Add(new CatalogColumn { TableName = table.TableName, Name = TableSchema.ClusterIdColumn, TypeName = provider == "sqlserver" ? "int" : "bigint" });
             if (table.IsSoftDeletable)
             {
-                columns.Add(new CatalogColumn { TableName = table.TableName, Name = SoftDelete.IsDeletedColumn, TypeName = provider == "sqlserver" ? "bit" : "boolean", IsNullable = false });
-                columns.Add(new CatalogColumn { TableName = table.TableName, Name = SoftDelete.DeletedAtColumn, TypeName = provider == "sqlserver" ? "datetimeoffset" : "timestamp with time zone" });
+                var (isDeleted, deletedAt) = provider switch
+                {
+                    "sqlserver" => ("bit", "datetimeoffset"),
+                    "postgres" => ("boolean", "timestamp with time zone"),
+                    "sqlite" => ("BOOLEAN", "DATETIMEOFFSET"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(provider)),
+                };
+                columns.Add(new CatalogColumn { TableName = table.TableName, Name = SoftDelete.IsDeletedColumn, TypeName = isDeleted, IsNullable = false });
+                columns.Add(new CatalogColumn { TableName = table.TableName, Name = SoftDelete.DeletedAtColumn, TypeName = deletedAt });
             }
             List<CatalogIndex> indexes = [.. table.IndexedColumns.Select(c => new CatalogIndex
             {
@@ -288,7 +299,13 @@ namespace TFM.Nucleus.Tests
         {
             TableName = table,
             Name = column.ColumnName,
-            TypeName = provider == "sqlserver" ? SqlServerTypeMapper.SqlType(column).ToString().ToLowerInvariant() : PostgresTypes.CatalogTypeName(column),
+            TypeName = provider switch
+            {
+                "sqlserver" => SqlServerTypeMapper.SqlType(column).ToString().ToLowerInvariant(),
+                "postgres" => PostgresTypes.CatalogTypeName(column),
+                "sqlite" => SqliteTypes.CatalogTypeName(column),
+                _ => throw new ArgumentOutOfRangeException(nameof(provider)),
+            },
             DataLength = column.DataLength ?? 0,
             Precision = column.Precision ?? 0,
             Scale = column.Scale ?? 0,

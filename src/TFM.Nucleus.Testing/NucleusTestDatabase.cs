@@ -8,7 +8,7 @@ namespace TFM.Nucleus.Testing;
 /// <summary>
 /// One provider's integration-test database: whether it is configured, how to boot a Nucleus
 /// stack on it, the cross-process locks over it, and the raw statements a test uses to set a table
-/// up by hand. <see cref="SqlServer"/> and <see cref="Postgres"/> are the two there are.
+/// up by hand. <see cref="SqlServer"/>, <see cref="Postgres"/> and <see cref="Sqlite"/> are the ones there are.
 /// </summary>
 /// <remarks>
 /// Framework neutral on purpose: nothing here skips a test. A framework shim checks
@@ -19,12 +19,16 @@ public abstract class NucleusTestDatabase
 {
     private static readonly Lazy<SqlServerTestDatabase> SqlServerDatabase = new(() => new SqlServerTestDatabase(NucleusTestDatabaseSettings.TryGetSqlServer()));
     private static readonly Lazy<PostgresTestDatabase> PostgresDatabase = new(() => new PostgresTestDatabase(NucleusTestDatabaseSettings.TryGetPostgres()));
+    private static readonly Lazy<SqliteTestDatabase> SqliteDatabase = new(() => new SqliteTestDatabase(NucleusTestDatabaseSettings.TryGetSqlite()));
 
     /// <summary>The SQL Server test database, from <see cref="NucleusTestDatabaseSettings.TryGetSqlServer"/>.</summary>
     public static SqlServerTestDatabase SqlServer => SqlServerDatabase.Value;
 
     /// <summary>The PostgreSQL test database, from <see cref="NucleusTestDatabaseSettings.TryGetPostgres"/>.</summary>
     public static PostgresTestDatabase Postgres => PostgresDatabase.Value;
+
+    /// <summary>The SQLite test database, from <see cref="NucleusTestDatabaseSettings.TryGetSqlite"/>.</summary>
+    public static SqliteTestDatabase Sqlite => SqliteDatabase.Value;
 
     /// <param name="settings">Where the database is; null when it is not configured.</param>
     protected NucleusTestDatabase(NucleusTestDatabaseSettings? settings)
@@ -38,7 +42,7 @@ public abstract class NucleusTestDatabase
     /// <summary>True when <see cref="Settings"/> is complete, so the database tests can run.</summary>
     public bool IsConfigured => Settings != null;
 
-    /// <summary>The provider's short name, in skip messages and lock names: <c>sqlserver</c> or <c>postgres</c>.</summary>
+    /// <summary>The provider's short name, in skip messages and lock names: <c>sqlserver</c>, <c>postgres</c> or <c>sqlite</c>.</summary>
     public abstract string ProviderName { get; }
 
     /// <summary>How to configure this provider's test database, for the skip message.</summary>

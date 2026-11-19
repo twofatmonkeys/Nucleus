@@ -103,4 +103,13 @@ namespace TFM.Nucleus.IntegrationTests
     {
         public const string Name = "Postgres";
     }
+
+    /// <summary>SQLite, configured by the Nucleus:Sqlite:Database user secret or NUCLEUS_SQLITE_TEST_DATABASE, a file path.</summary>
+    public sealed class SqliteFixture() : DatabaseFixture(NucleusTestDatabase.Sqlite);
+
+    [CollectionDefinition(Name)]
+    public sealed class SqliteCollection : ICollectionFixture<SqliteFixture>
+    {
+        public const string Name = "Sqlite";
+    }
 }

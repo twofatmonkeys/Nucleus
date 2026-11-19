@@ -10,7 +10,7 @@
     <PackageId>TFM.Nucleus.Testing</PackageId>
     <Title>TFM.Nucleus.Testing</Title>
     <RootNamespace>TFM.Nucleus.Testing</RootNamespace>
-    <Description>Live-database test support for code built on the Nucleus ORM, framework neutral: the SQL Server and PostgreSQL test database settings (user secrets or environment variables), a booted Nucleus stack per provider, cross-process locks so parallel target framework runs never reset each other's rows, and the raw statements a test needs to set up a table by hand. Each test framework turns "not configured" into its own skip.</Description>
+    <Description>Live-database test support for code built on the Nucleus ORM, framework neutral: the SQL Server, PostgreSQL and SQLite test database settings (user secrets or environment variables), a booted Nucleus stack per provider, cross-process locks so parallel target framework runs never reset each other's rows, and the raw statements a test needs to set up a table by hand. Each test framework turns "not configured" into its own skip.</Description>
     <PackageTags>tfm;nucleus;orm;testing;integration-tests</PackageTags>
   </PropertyGroup>
 
@@ -34,6 +34,7 @@
     <ProjectReference Include="..\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
     <ProjectReference Include="..\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
     <ProjectReference Include="..\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
+    <ProjectReference Include="..\TFM.Nucleus.Data.SQLite\TFM.Nucleus.Data.SQLite.csproj" />
   </ItemGroup>
 
 </Project>

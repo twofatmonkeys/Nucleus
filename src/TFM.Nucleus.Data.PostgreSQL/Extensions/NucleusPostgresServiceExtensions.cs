@@ -41,13 +41,8 @@ namespace Microsoft.Extensions.DependencyInjection
             });
         }
 
-        public static IServiceCollection AddNucleusPostgresDataProvider(this IServiceCollection services, Action<PostgresConfiguration> config)
-        {
-            services.Configure(config);
-            services.AddSingleton<IConfigureOptions<PostgresConfiguration>, ConfigureAppName<PostgresConfiguration>>();
-            services.AddSingleton<IDataProvider, PostgresDataProvider>();
-            return services;
-        }
+        public static IServiceCollection AddNucleusPostgresDataProvider(this IServiceCollection services, Action<PostgresConfiguration> config) =>
+            ProviderRegistration.Add<PostgresDataProvider, PostgresConfiguration>(services, config);
 
         /// <summary>
         /// Registers a PostgreSQL provider rooted at <typeparamref name="TRoot"/>: every entity
@@ -62,21 +57,12 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Type-based root registration; use for open-generic roots such as
         /// <c>abstract class AppRoot&lt;T&gt; : CoreObject&lt;T&gt;</c> via <c>typeof(AppRoot&lt;&gt;)</c>.
         /// </summary>
-        public static IServiceCollection AddNucleusPostgresDataProvider(this IServiceCollection services, Type rootType, Action<PostgresConfiguration> config)
-        {
-            var optionsName = rootType.FullName ?? rootType.Name;
-            services.Configure(optionsName, config);
-            services.AddSingleton<IConfigureOptions<PostgresConfiguration>, ConfigureAppName<PostgresConfiguration>>();
-            services.AddSingleton<IDataProvider>(sp => new PostgresDataProvider(
+        public static IServiceCollection AddNucleusPostgresDataProvider(this IServiceCollection services, Type rootType, Action<PostgresConfiguration> config) =>
+            ProviderRegistration.AddRooted<PostgresConfiguration>(services, rootType, config, (sp, options) => new PostgresDataProvider(
                 sp.GetRequiredService<IObjectSchemaProvider>(),
                 sp.GetRequiredService<IOptionsMonitor<NucleusOptions>>(),
-                new NamedOptionsMonitor<PostgresConfiguration>(sp.GetRequiredService<IOptionsMonitor<PostgresConfiguration>>(), optionsName),
+                options,
                 sp.GetService<ILogger<PostgresDataProvider>>(),
-                sp.GetService<ILogger<SchemaManager>>())
-            {
-                RootType = rootType,
-            });
-            return services;
-        }
+                sp.GetService<ILogger<SchemaManager>>()));
     }
 }

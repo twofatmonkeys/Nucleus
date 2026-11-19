@@ -76,6 +76,13 @@ namespace TFM.Nucleus.Data.Providers
         SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index) =>
             throw new NotSupportedException($"{GetType().Name} does not support [TableIndex] indexes.");
 
+        /// <summary>
+        /// False for an engine whose indexes cannot carry non-key columns. Its [TableIndex] indexes
+        /// are created with their keys only, and the schema check compares their keys only, so the
+        /// included columns neither appear nor make an index look stale.
+        /// </summary>
+        bool SupportsIncludedColumns => true;
+
         /// <summary>True when building a unique index failed because existing rows hold duplicate keys.</summary>
         bool IsDuplicateKeyOnIndexBuild(Exception exception);
 

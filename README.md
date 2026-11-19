@@ -2,7 +2,7 @@
 
 Nucleus is a custom entity framework (ORM) for .NET by Two Fat Monkeys. Domain objects derive from a common `CoreObject` base; the framework discovers their schema from reflection and attributes, tracks property changes, translates LINQ expressions into parameterised queries, materialises objects from result sets, and creates and migrates the physical database schema automatically.
 
-This repository holds the whole family. Six packages ship from it, all on one version.
+This repository holds the whole family. Seven packages ship from it, all on one version.
 
 ## Packages
 
@@ -13,9 +13,10 @@ This repository holds the whole family. Six packages ship from it, all on one ve
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](#provider-seam)). Contains no SQL, proven by a tripwire test. |
 | `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
 | `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](#postgresql). |
-| `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server and PostgreSQL test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](#testing-against-a-live-database). |
+| `TFM.Nucleus.Data.SQLite` | SQLite provider for file databases in embedded and local applications (SQLite 3.35 or later, bundled, over Microsoft.Data.Sqlite): query rendering, the SQLite schema dialect and catalog, and write-ahead logging. No change notifications or full-text indexes. Its public surface is its registration (`AddNucleusSqliteDataProvider`) and `SqliteConfiguration`. See [SQLite](#sqlite). |
+| `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server, PostgreSQL and SQLite test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](#testing-against-a-live-database). |
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`). The core and neutral layers never reference a concrete provider, and neither provider references the other, so an application picks its database by picking a provider package, and a store written against the neutral layers works over either. `Testing` sits above both providers, because a test picks its database too. See [Stores for other libraries](#stores-for-other-libraries).
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`, `Data.SQLite`). The core and neutral layers never reference a concrete provider, and no provider references another, so an application picks its database by picking a provider package, and a store written against the neutral layers works over any of them. `Testing` sits above the providers, because a test picks its database too. See [Stores for other libraries](#stores-for-other-libraries).
 
 ## Install
 
@@ -24,6 +25,7 @@ The packages are published to GitHub Packages. Add the feed once, then reference
 ```bash
 dotnet add package TFM.Nucleus.Data.SQL          # SQL Server
 dotnet add package TFM.Nucleus.Data.PostgreSQL   # PostgreSQL 16 or later
+dotnet add package TFM.Nucleus.Data.SQLite       # a SQLite database file
 ```
 
 The feed is `https://nuget.pkg.github.com/twofatmonkeys/index.json` and requires authentication even for reads. Set `GITHUB_USER` and `GITHUB_TOKEN` (a classic PAT with `read:packages`) in your environment. See [docs/publishing.md](docs/publishing.md).
@@ -60,6 +62,15 @@ services.AddNucleusPostgresDataProvider(options =>
     options.Database = "myapp";
     options.Username = "app";                // or ConnectionString
     options.Password = secret;
+});
+```
+
+On SQLite the database is a file:
+
+```csharp
+services.AddNucleusSqliteDataProvider(options =>
+{
+    options.Database = @"C:\ProgramData\MyApp\myapp.db";   // created with its folder when missing
 });
 ```
 
@@ -152,6 +163,62 @@ lacks columns has them added in place, and one whose column types change is rebu
 Server, in one transaction: PostgreSQL's DDL is transactional, so a failed update leaves nothing
 behind. Adding a column, `IsDeleted` with its constant default included, is a catalog-only change.
 
+## SQLite
+
+`TFM.Nucleus.Data.SQLite` runs the same entities and queries on a SQLite database file, for
+desktop, edge and other single-machine applications. It uses the SQLite bundled with
+Microsoft.Data.Sqlite and refuses to start on one older than 3.35. Everything in this document
+applies to it, except where a section says otherwise. These are the differences an application can
+see:
+
+- **The database is one file on a local disk.** `Database` is its path, created with its folder on
+  initialise when it is missing and the schema is writable. An in-memory database is refused: it
+  ends with its connection, and Nucleus closes a connection after each read. Keep the file off
+  network shares, where SQLite's locking, and write-ahead logging, are not safe.
+- **One connection writes at a time.** Initialise puts the file in write-ahead log mode
+  (`UseWriteAheadLog`), so reads run while another connection writes. A save begins its transaction
+  IMMEDIATE, taking the write lock at once, and any other writer, in this process or another,
+  waits up to `BusyTimeoutSeconds` (30 by default) for it. SQLite does not queue its waiters, so a
+  writer in one process can wait out its timeout while another process writes back to back; give
+  each process its own file, or one process the writing, when several write heavily. A write too large for one command runs
+  its commands one after another on its own transaction, so it still commits or rolls back whole.
+  There is no bulk engine; none is needed in-process.
+- **No change notifications.** SQLite tells no other connection about a write, so
+  `SubscribeToChangesAsync<T>()` throws `NotSupportedException` and `Capabilities` says so.
+- **No full-text index.** `string.Contains` on a `FullTextSearch` column is a substring match
+  without regard to case, not a word search, and no full-text index is created.
+- **Case folding matches the other engines.** SQLite's own `LIKE` and `lower()` fold ASCII only, so
+  Nucleus registers small functions on every connection it opens and its pattern terms
+  (`StartsWith`, `EndsWith`, `Contains`, `Like`) and case-insensitive equality fold case across
+  Unicode, as they do on SQL Server and PostgreSQL. Equality is exact, as on PostgreSQL. The SQL
+  Nucleus writes therefore runs only on its own connections; the file itself is plain SQLite, which
+  any tool reads and writes.
+- **Values are stored in fixed text forms.** SQLite keeps only integers, reals, text and blobs. A
+  `Guid` is 36 lower-case characters; a `DateTime` is `yyyy-MM-dd HH:mm:ss.fffffff`; a
+  `DateTimeOffset` is UTC in the same form with `+00:00` (the instant is kept, the offset is not, as
+  on PostgreSQL); a date is `yyyy-MM-dd`; a `bool` is 0 or 1. The forms are fixed width, so ordering
+  and comparing them orders and compares the values. Values the server sets (`Timestamp`,
+  `DeletedAt`) are written in the same forms, to the tick.
+- **A `decimal` is stored as a real.** SQLite has no exact decimal type, so a value keeps about 15
+  significant digits and is read back rounded to the column's scale. A value that needs more digits,
+  or exact sums, belongs on another provider or in a `long` of minor units.
+- **A string's length is not enforced.** `varchar(255)` is kept as the declared type, so the schema
+  check sees a changed length, but SQLite stores a longer string as it is.
+- **A `[TableIndex]` has no included columns.** SQLite indexes carry keys only, so `Include` is
+  ignored and the index is created over its keys. A unique `[TableIndex]` enforces exactly its keys,
+  as on the other engines.
+- **Unique violations name columns, not indexes.** SQLite reports the columns a write broke, and the
+  provider maps them back to the column's `UQ_` index or the unique `[TableIndex]` with those keys,
+  so `UniqueViolationException` reads the same as on the other engines.
+- **Paging is `LIMIT`/`OFFSET`** (`LIMIT -1` when only a skip is given), ordered by ID when the query
+  asks for no order.
+
+Each table carries the Guid `ID` primary key and a column per `[DatabaseColumn]` property, with no
+`ClusterID`: the table's rowid keeps its insertion order, which a rebuild's copy orders by. SQLite
+cannot change a column's type, so a table that only lacks columns has them added in place, one
+`ALTER TABLE ADD COLUMN` each, and any other change rebuilds it, in one transaction: SQLite's DDL is
+transactional, so a failed update leaves nothing behind.
+
 ## Stores for other libraries
 
 The stores that keep other libraries' data in Nucleus tables live with the library whose contract
@@ -177,7 +244,7 @@ store against the same databases through `TFM.Nucleus.Testing`.
 ```csharp
 using TFM.Nucleus.Testing;
 
-var database = NucleusTestDatabase.SqlServer;          // or NucleusTestDatabase.Postgres
+var database = NucleusTestDatabase.SqlServer;          // or .Postgres, or .Sqlite
 if (!database.IsConfigured)
     return;                                            // skip with database.SkipReason, your framework's way
 
@@ -188,8 +255,8 @@ var store = new MyStore(stack.Manager);
 
 | Type | What it gives a test |
 |---|---|
-| `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server) and `Nucleus:Postgres:*` user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*` and `NUCLEUS_PG_TEST_*` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
-| `NucleusTestDatabase` | `SqlServer` and `Postgres`: `IsConfigured`, `SkipReason`, `StartSharedStackAsync` (a fixture's shared stack, booted under the schema lock), `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
+| `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server), `Nucleus:Postgres:*` and `Nucleus:Sqlite:Database` (a file path) user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*`, `NUCLEUS_PG_TEST_*` and `NUCLEUS_SQLITE_TEST_DATABASE` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
+| `NucleusTestDatabase` | `SqlServer`, `Postgres` and `Sqlite`: `IsConfigured`, `SkipReason`, `StartSharedStackAsync` (a fixture's shared stack, booted under the schema lock), `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
 | `NucleusEntityTable` | `NucleusEntityTable.For(typeof(MyEntity))`: the table an entity's rows live in and its `[LegacyTableNames]`, computed without a database, for a test that pins them. `NucleusTestDatabase.MoveToLegacyNamesAsync(entities)` puts live tables back under their old names, so a test can prove the next start adopts them with their rows. |
 | `NucleusTestStack` | A booted stack: `Provider`, `Manager` (what a store under test is given), `Log` (the warnings and errors it logged) and `Services`. Dispose it. |
 | `NucleusTestLock` | A cross-process lock held as an exclusively opened temp file, so the two target framework runs of a suite never reset each other's rows. Waits up to five minutes. |
@@ -228,27 +295,27 @@ Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLeng
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
 | `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
-| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 **Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and adds it empty, so **the property reads null on every existing row**. The old column and its values stay in the table, but nothing reads them. If the same deployment also changes a column's type, the table is rebuilt instead, copying only the columns whose names the old and new tables share, and the old column's values are lost. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
 Each property maps to a column type by its CLR type, or by `DataType` when one is given:
 
-| Property | SQL Server | PostgreSQL |
-|---|---|---|
-| `string` | `varchar(255)`, or the given length; `-1` is `varchar(max)` | `varchar(255)`, or the given length; `-1` is `text` |
-| `string` with `DataType.Unicode` | `nvarchar(510)`, or the given length | `varchar(510)`, or the given length |
-| `int`, any enum (stored as its integer) | `int` | `integer` |
-| `long` | `bigint` | `bigint` |
-| `double` | `float` | `double precision` |
-| `bool` | `bit` | `boolean` |
-| `decimal` | `decimal(15,5)`, or as `Scale` and `DataLength` give | `numeric(15,5)`, the same way |
-| `DateTime` | `datetime2(7)` | `timestamp` |
-| `DateTime` with `DataType.Date` | `date` | `date` |
-| `DateTimeOffset` | `datetimeoffset(7)` | `timestamptz` (UTC, microseconds) |
-| `Guid`, or an entity stored by its `ID` | `uniqueidentifier` | `uuid` |
-| `byte[]` | `varbinary(max)` | `bytea` |
-| a type named `TFMJsonString` | `json` | `jsonb` |
+| Property | SQL Server | PostgreSQL | SQLite (declared type) |
+|---|---|---|---|
+| `string` | `varchar(255)`, or the given length; `-1` is `varchar(max)` | `varchar(255)`, or the given length; `-1` is `text` | `VARCHAR(255)`, or the given length (not enforced); `-1` is `TEXT` |
+| `string` with `DataType.Unicode` | `nvarchar(510)`, or the given length | `varchar(510)`, or the given length | `VARCHAR(510)`, or the given length |
+| `int`, any enum (stored as its integer) | `int` | `integer` | `INTEGER` |
+| `long` | `bigint` | `bigint` | `BIGINT` |
+| `double` | `float` | `double precision` | `REAL` |
+| `bool` | `bit` | `boolean` | `BOOLEAN` (0 or 1) |
+| `decimal` | `decimal(15,5)`, or as `Scale` and `DataLength` give | `numeric(15,5)`, the same way | `DECIMAL(15,5)`, stored as a real |
+| `DateTime` | `datetime2(7)` | `timestamp` | `DATETIME` (text) |
+| `DateTime` with `DataType.Date` | `date` | `date` | `DATE` (text) |
+| `DateTimeOffset` | `datetimeoffset(7)` | `timestamptz` (UTC, microseconds) | `DATETIMEOFFSET` (UTC text, ticks) |
+| `Guid`, or an entity stored by its `ID` | `uniqueidentifier` | `uuid` | `UUID` (lower-case text) |
+| `byte[]` | `varbinary(max)` | `bytea` | `BLOB` |
+| a type named `TFMJsonString` | `json` | `jsonb` | `JSON_TEXT` |
 
 The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. The same holds below the attributes, for a provider author: `IPropertySchema.IsIndexed` and `IsFullTextSearch` replace `IsNonClusteredIndex` and `HasFullTextIndex`, and `ServerFunction.CurrentDateTime` and `CurrentDateTimeOffset` (with the matching `ServerFunctionKind` values) replace `SysDateTime` and `SysDateTimeOffset`. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
 
@@ -316,7 +383,7 @@ A `[DatabaseTable]` name is the whole table name, prefix included: letters, digi
 - `[LegacyTableNames]` on the entity lists the names its table had. It applies under any policy.
 - `RenameFullNameTables` on the provider adopts the table under the entity's full-name form, the name every table had before policies existed, whenever the configured name differs from it. Set it when turning on a shorter policy, or when adding `[DatabaseTable]` to an existing entity.
 
-The rename covers the table's primary key, constraints and Nucleus-named indexes, which take the new table's names, so no index is rebuilt; on PostgreSQL the old change notification trigger is dropped and the new one created. The table is then brought up to date like any existing table: columns it lacks are added in place, and a changed column type rebuilds it. On SQL Server a full-text index cannot change inside a transaction, so it moves with the table and is recreated in the new table's catalog by the full-text sync.
+The rename covers the table's primary key, constraints and Nucleus-named indexes, which take the new table's names, so no index is rebuilt (SQLite cannot rename an index, so there the index sync drops the old-named ones and creates them again under the new names); on PostgreSQL the old change notification trigger is dropped and the new one created. The table is then brought up to date like any existing table: columns it lacks are added in place, and a changed column type rebuilds it. On SQL Server a full-text index cannot change inside a transaction, so it moves with the table and is recreated in the new table's catalog by the full-text sync.
 
 If more than one of a missing table's old tables exists, nothing is renamed: initialisation fails, nothing is changed, and the error names the tables. Nucleus does not merge tables, because their rows can share IDs, their children point at parents by ID, and their columns can differ, so which rows to keep is a decision for a person. Move the rows you want into one of them, drop the others, and initialise again. If the entity's table exists and an old one does too, the old table is left alone and a warning is logged. Nothing is renamed while the schema is read-only; the check logs what an update would rename. Two processes starting together against a database that still needs a rename can both try it, and the second fails its initialisation and succeeds on its next start, as a racing table create does.
 
@@ -458,6 +525,10 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `AddNucleusPostgresDataProvider(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Configures explicitly. |
 | `AddNucleusPostgresDataProvider<TRoot>(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Registers a provider rooted at `TRoot`. Roots on SQL Server and on PostgreSQL can live in one application. |
 | `AddNucleusPostgresDataProvider(Type rootType, Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | The same for open-generic roots. |
+| `AddNucleusSqliteDataProvider()` | `TFM.Nucleus.Data.SQLite` | Configures the database file from the `SQLITE_DATABASE` environment variable. |
+| `AddNucleusSqliteDataProvider(Action<SqliteConfiguration>)` | `TFM.Nucleus.Data.SQLite` | Configures explicitly. |
+| `AddNucleusSqliteDataProvider<TRoot>(Action<SqliteConfiguration>)` | `TFM.Nucleus.Data.SQLite` | Registers a provider rooted at `TRoot`, with its own database file. |
+| `AddNucleusSqliteDataProvider(Type rootType, Action<SqliteConfiguration>)` | `TFM.Nucleus.Data.SQLite` | The same for open-generic roots. |
 
 ### NucleusOptions
 
@@ -510,6 +581,23 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
+| `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
+| `RenameFullNameTables` | `false` | As for SQL Server. |
+
+### SqliteConfiguration
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Database` | none | The path of the database file. A relative path is resolved against the current directory. Created with its folder on initialise when missing and the schema is writable. |
+| `ConnectionString` | none | A raw Microsoft.Data.Sqlite connection string; its data source is the file when `Database` is not set. The provider still sets the file, the open mode and the busy timeout. |
+| `Password` | none | Refused: the bundled SQLite does not encrypt, and ignoring a password would leave the file readable. |
+| `Server`, `Username` | none | Ignored. |
+| `UseWriteAheadLog` | `true` | Puts the file in write-ahead log mode on initialise, so reads run while one connection writes. The mode is kept in the file. |
+| `BusyTimeoutSeconds` | `30` | How long a command waits for another connection's write lock before it fails. |
+| `MaxConnectionPoolSize` | `100` | The most contexts open at once. |
+| `MaxParametersPerQuery` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
+| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
+| `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
 
@@ -663,9 +751,9 @@ can change what existing code sees.
 - **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types automatically gain `IsDeleted` and `DeletedAt` columns.
 - **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
-- **Change notifications.** `IDataProvider.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates.
-- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL with `LIMIT` and `OFFSET`.
-- **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update.
+- **Change notifications.** `IDataProvider.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates. SQLite has none.
+- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
+- **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
 - **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.
 
 ## Provider seam
@@ -676,7 +764,7 @@ Applications code against `TFM.Nucleus.Data` and touch a provider package only t
 
 - **The query model** (`TFM.Nucleus.Data.Queries`): `SelectQuery`, `InsertQuery`, `UpdateQuery` and `DeleteWhereQuery` decide what a query means: its condition tree, order, page, child collection queries, soft-delete filter and the children-first order of a delete cascade. `WhereRenderer` is the one walk of a condition tree; `ParameterBinding` names the parameters an IN term expands to.
 - **The schema model** (`TFM.Nucleus.Data.Schema`): `TableSchema` and `ColumnSchema` describe each entity's table, with what each column stores (`ColumnTypeIntent`) and its size. `SchemaManager` compares them with the database and creates tables, adds missing columns in place, rebuilds a table whose column types changed, and syncs indexes.
-- **The provider SDK** (`TFM.Nucleus.Data.Providers`): `RelationalDataProvider` and `DbDataContext<TSelf>` are the provider and context over System.Data.Common, with pooling, the transaction tree, reads, deletes, the write paths and failure translation. `BulkWritePlanner` stages bulk writes, and `ChangeSubscriptionBase<T>` and `ListenerRefCounter` back change notifications.
+- **The provider SDK** (`TFM.Nucleus.Data.Providers`): `RelationalDataProvider` and `DbDataContext<TSelf>` are the provider and context over System.Data.Common, with pooling, the transaction tree, reads, deletes, the write paths and failure translation. `BulkWritePlanner` stages bulk writes, `ChangeSubscriptionBase<T>` and `ListenerRefCounter` back change notifications, and `ProviderRegistration` is the registration every provider's `Add...` extensions share. An engine that lets one connection write at a time sets `DbDataContext.AllowsConcurrentWriters` to false, and an oversized write then runs on its own context instead of fanning out; one whose indexes cannot carry included columns sets `ISchemaDialect.SupportsIncludedColumns` to false.
 
 A provider package implements the dialect: an `IQueryRenderer` that writes each query, an `ISchemaDialect` that writes DDL and maps column types, an `ICatalogReader` over the engine's catalog and an `ISchemaStore` that ties them together. It derives its provider and context from the SDK base classes, recognises its engine's unique violations, and exposes only its registration and configuration. Unit tests enforce the boundary: one scans the compiled strings of the neutral and store assemblies for SQL and for provider names, one checks they reference no provider, and one holds each provider's public surface to its registration and configuration.
 
@@ -688,9 +776,10 @@ src\TFM.Nucleus\                 entity core
 src\TFM.Nucleus.Data\            provider-neutral data layer
 src\TFM.Nucleus.Data.SQL\        SQL Server provider
 src\TFM.Nucleus.Data.PostgreSQL\ PostgreSQL provider
+src\TFM.Nucleus.Data.SQLite\     SQLite provider
 src\TFM.Nucleus.Testing\         live-database test support
 tests\TFM.Nucleus.Tests\         unit tests, no database
-tests\TFM.Nucleus.IntegrationTests\  live database tests: every suite runs once per provider (SqlServer\ and Postgres\ hold the subclasses and the engine-only tests)
+tests\TFM.Nucleus.IntegrationTests\  live database tests: every suite runs once per provider (SqlServer\, Postgres\ and Sqlite\ hold the subclasses and the engine-only tests)
 ```
 
 ## Build and test
@@ -700,7 +789,7 @@ dotnet build TFM.Nucleus.slnx --configuration Release
 dotnet test  TFM.Nucleus.slnx --configuration Release
 ```
 
-The unit tests need no database and cover golden-SQL snapshots (raw goldens pin every space of the SQL Server output), the public API snapshot of every package, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwires. The two snapshots regenerate only when `NUCLEUS_ACCEPT_GOLDENS=1` is set, so a change to either is a reviewed diff. The integration tests run every suite once per provider. The SQL Server suites activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database; the PostgreSQL suites when `NUCLEUS_PG_TEST_SERVER`, `NUCLEUS_PG_TEST_DATABASE`, `NUCLEUS_PG_TEST_USERNAME` and `NUCLEUS_PG_TEST_PASSWORD` (or `Nucleus:Postgres:*`) do. A provider without settings skips cleanly. A disposable PostgreSQL is one command away:
+The unit tests need no database and cover golden-SQL snapshots (raw goldens pin every space of the SQL Server output), the public API snapshot of every package, expression translation, materialiser equivalence, the cache, multi-provider routing and the provider-seam tripwires. The two snapshots regenerate only when `NUCLEUS_ACCEPT_GOLDENS=1` is set, so a change to either is a reviewed diff. The integration tests run every suite once per provider. The SQL Server suites activate when `NUCLEUS_TEST_SERVER`, `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` (or the matching `Nucleus:*` user secrets) point at a disposable test database; the PostgreSQL suites when `NUCLEUS_PG_TEST_SERVER`, `NUCLEUS_PG_TEST_DATABASE`, `NUCLEUS_PG_TEST_USERNAME` and `NUCLEUS_PG_TEST_PASSWORD` (or `Nucleus:Postgres:*`) do; the SQLite suites when `NUCLEUS_SQLITE_TEST_DATABASE` (or `Nucleus:Sqlite:Database`) names a file path, which the provider creates; each .NET runtime gets its own file beside it (`nucleus.net8.db`, `nucleus.net10.db`), so the two framework runs never wait on each other's write lock. A provider without settings skips cleanly. A disposable PostgreSQL is one command away:
 
 ```bash
 docker run -d --name nucleus-pg -e POSTGRES_USER=nucleus -e POSTGRES_PASSWORD=<password> -p 15432:5432 postgres:16

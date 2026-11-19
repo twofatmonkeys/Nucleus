@@ -28,6 +28,12 @@ namespace TFM.Nucleus.Tests
                 "TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration",
                 "TFM.Nucleus.Data.PostgreSQL.PostgresDataProviderException",
             ]),
+            ["TFM.Nucleus.Data.SQLite"] = (typeof(TFM.Nucleus.Data.SQLite.SqliteConfiguration).Assembly,
+            [
+                "Microsoft.Extensions.DependencyInjection.NucleusSqliteServiceExtensions",
+                "TFM.Nucleus.Data.SQLite.SqliteConfiguration",
+                "TFM.Nucleus.Data.SQLite.SqliteDataProviderException",
+            ]),
         };
 
         [Theory]

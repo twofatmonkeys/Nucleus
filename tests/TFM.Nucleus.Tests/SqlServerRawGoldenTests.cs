@@ -96,4 +96,20 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void Accept_WritesTheGoldensFile() => RawGoldens.Accept(PostgresGoldenCorpus.Cases, nameof(PostgresGoldens));
     }
+
+    /// <summary>Pins the exact SQLite text for every case in <see cref="SqliteGoldenCorpus"/>.</summary>
+    public class SqliteRawGoldenTests
+    {
+        public static TheoryData<string> CaseNames() => new(SqliteGoldenCorpus.Cases.Keys.Order(StringComparer.Ordinal));
+
+        [Theory]
+        [MemberData(nameof(CaseNames))]
+        public void Rendered_MatchesGolden(string name) => RawGoldens.AssertMatches(SqliteGoldenCorpus.Cases, SqliteGoldens.Expected, name);
+
+        [Fact]
+        public void EveryGolden_HasACase() => Assert.Empty(SqliteGoldens.Expected.Keys.Except(SqliteGoldenCorpus.Cases.Keys));
+
+        [Fact]
+        public void Accept_WritesTheGoldensFile() => RawGoldens.Accept(SqliteGoldenCorpus.Cases, nameof(SqliteGoldens));
+    }
 }

@@ -29,13 +29,8 @@ namespace Microsoft.Extensions.DependencyInjection
             });
         }
 
-        public static IServiceCollection AddNucleusSQLDataProvider(this IServiceCollection services, Action<SQLConfiguration> config)
-        {
-            services.Configure(config);
-            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureAppName<SQLConfiguration>>();
-            services.AddSingleton<IDataProvider, SQLDataProvider>();
-            return services;
-        }
+        public static IServiceCollection AddNucleusSQLDataProvider(this IServiceCollection services, Action<SQLConfiguration> config) =>
+            ProviderRegistration.Add<SQLDataProvider, SQLConfiguration>(services, config);
 
         /// <summary>
         /// Registers a SQL Server provider rooted at <typeparamref name="TRoot"/>: every entity
@@ -50,21 +45,12 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Type-based root registration; use for open-generic roots such as
         /// <c>abstract class AppRoot&lt;T&gt; : CoreObject&lt;T&gt;</c> via <c>typeof(AppRoot&lt;&gt;)</c>.
         /// </summary>
-        public static IServiceCollection AddNucleusSQLDataProvider(this IServiceCollection services, Type rootType, Action<SQLConfiguration> config)
-        {
-            var optionsName = rootType.FullName ?? rootType.Name;
-            services.Configure(optionsName, config);
-            services.AddSingleton<IConfigureOptions<SQLConfiguration>, ConfigureAppName<SQLConfiguration>>();
-            services.AddSingleton<IDataProvider>(sp => new SQLDataProvider(
+        public static IServiceCollection AddNucleusSQLDataProvider(this IServiceCollection services, Type rootType, Action<SQLConfiguration> config) =>
+            ProviderRegistration.AddRooted<SQLConfiguration>(services, rootType, config, (sp, options) => new SQLDataProvider(
                 sp.GetRequiredService<IObjectSchemaProvider>(),
                 sp.GetRequiredService<IOptionsMonitor<NucleusOptions>>(),
-                new NamedOptionsMonitor<SQLConfiguration>(sp.GetRequiredService<IOptionsMonitor<SQLConfiguration>>(), optionsName),
+                options,
                 sp.GetService<ILogger<SQLDataProvider>>(),
-                sp.GetService<ILogger<SchemaManager>>())
-            {
-                RootType = rootType,
-            });
-            return services;
-        }
+                sp.GetService<ILogger<SchemaManager>>()));
     }
 }

@@ -70,7 +70,8 @@ namespace TFM.Nucleus.Tests
 
         /// <summary>Every provider package's assembly name, and the engine client it is built on.</summary>
         public static readonly string[] ProviderAssemblyNames =
-            ["TFM.Nucleus.Data.SQL", "Microsoft.Data.SqlClient", "TFM.Nucleus.Data.PostgreSQL", "Npgsql"];
+            ["TFM.Nucleus.Data.SQL", "Microsoft.Data.SqlClient", "TFM.Nucleus.Data.PostgreSQL", "Npgsql",
+             "TFM.Nucleus.Data.SQLite", "Microsoft.Data.Sqlite", "SQLitePCLRaw.core"];
 
         [Fact]
         public void NeutralAssemblies_ReferenceNoProvider()
@@ -89,11 +90,20 @@ namespace TFM.Nucleus.Tests
         {
             var sqlReferences = typeof(SQLConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
             var postgresReferences = typeof(TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
+            var sqliteReferences = typeof(TFM.Nucleus.Data.SQLite.SqliteConfiguration).Assembly.GetReferencedAssemblies().Select(r => r.Name).ToList();
 
             Assert.DoesNotContain("TFM.Nucleus.Data.PostgreSQL", sqlReferences);
             Assert.DoesNotContain("Npgsql", sqlReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.SQLite", sqlReferences);
+            Assert.DoesNotContain("Microsoft.Data.Sqlite", sqlReferences);
             Assert.DoesNotContain("TFM.Nucleus.Data.SQL", postgresReferences);
             Assert.DoesNotContain("Microsoft.Data.SqlClient", postgresReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.SQLite", postgresReferences);
+            Assert.DoesNotContain("Microsoft.Data.Sqlite", postgresReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.SQL", sqliteReferences);
+            Assert.DoesNotContain("Microsoft.Data.SqlClient", sqliteReferences);
+            Assert.DoesNotContain("TFM.Nucleus.Data.PostgreSQL", sqliteReferences);
+            Assert.DoesNotContain("Npgsql", sqliteReferences);
         }
 
         [Fact]
@@ -112,6 +122,7 @@ namespace TFM.Nucleus.Tests
                 "@@ROWCOUNT", "COUNT_BIG", "ROW_NUMBER", "COLLATE", "CONTAINS(", "OFFSET ", "LIMIT ", "RETURNING",
                 "CREATE ", "DROP ", "ALTER ", "VALUES", "pg_", "information_schema", "INFORMATION_SCHEMA", "sys.", "::",
                 "SqlException", "SqlClient", "PostgresException", "Npgsql", "AddNucleusSQLDataProvider", "AddNucleusPostgres",
+                "sqlite_schema", "sqlite_master", "PRAGMA", "pragma_", "SqliteException", "Microsoft.Data.Sqlite", "AddNucleusSqlite", "nucleus_like",
             ];
 
             var offenders = new List<string>();

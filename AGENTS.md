@@ -4,7 +4,7 @@ Repo level notes for anyone, human or agent, working in this repo.
 
 ## What this repo is
 
-The Nucleus entity framework: a custom ORM for .NET, shipped as six packages that version and
+The Nucleus entity framework: a custom ORM for .NET, shipped as seven packages that version and
 release together.
 
 | Package | Source | Role |
@@ -14,6 +14,7 @@ release together.
 | `TFM.Nucleus.Data` | `src\TFM.Nucleus.Data` | Provider-neutral data layer, the shared query and schema model, and the provider SDK. Zero SQL. |
 | `TFM.Nucleus.Data.SQL` | `src\TFM.Nucleus.Data.SQL` | SQL Server provider. |
 | `TFM.Nucleus.Data.PostgreSQL` | `src\TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql). |
+| `TFM.Nucleus.Data.SQLite` | `src\TFM.Nucleus.Data.SQLite` | SQLite provider for database files (SQLite 3.35 or later, bundled, over Microsoft.Data.Sqlite). |
 | `TFM.Nucleus.Testing` | `src\TFM.Nucleus.Testing` | Live-database test support, framework neutral: test database settings, a booted stack per provider, cross-process locks, raw setup statements. What this repo's integration tests and every store repo's tests run on. |
 
 Until August 2026 these lived in four separate repositories, with the shared tests and the only
@@ -29,10 +30,10 @@ schema and the workflows are the shared TFM standard and are documented in `docs
 
 ## Architecture
 
-Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`), and
-`Testing` sits above both providers: it registers them and holds the raw SQL a test sets a table up
-with, so it is deliberately outside `ProviderSeamTests`, like a provider.
-Neither provider references the other. Direction is enforced by project references and by
+Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`,
+`Data.SQLite`), and `Testing` sits above the providers: it registers them and holds the raw SQL a
+test sets a table up with, so it is deliberately outside `ProviderSeamTests`, like a provider.
+No provider references another. Direction is enforced by project references and by
 `ProviderSeamTests`, which also scans the compiled string literals of the three neutral
 assemblies for SQL and provider names; `ProviderSurfaceTests` holds each provider's public surface
 to its registration and configuration.
@@ -85,7 +86,13 @@ existing table; several old tables fail the update rather than being merged. The
 SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
-over System.Data.Common. I/O in the dialect interfaces takes an async flag and returns ValueTask,
+over System.Data.Common; `ProviderRegistration` is the registration every provider's `Add...`
+extensions share, so a provider's extensions only name its types. An engine that lets one
+connection write at a time sets `DbDataContext.AllowsConcurrentWriters` false, and an oversized
+write the bulk engine cannot take then runs its parts in order on its own context instead of
+fanning out to child contexts, which would wait on its write lock. A dialect whose indexes carry no
+included columns sets `ISchemaDialect.SupportsIncludedColumns` false: its `[TableIndex]` indexes
+are created and compared by their keys alone. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
@@ -141,6 +148,31 @@ unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a
 retries a transient failure (`ConnectRetryCount`). Its output is pinned by `PostgresGoldens.cs`,
 built from the same query corpus as the SQL Server goldens.
 
+`TFM.Nucleus.Data.SQLite` is SQLite's dialect over the same SDK, for one database file on a local
+disk: `SqliteQueryRenderer`, `SqliteSchemaDialect` with `SqliteTypes`, `SqliteCatalogReader`
+(`sqlite_schema` and the `pragma_table_info`, `pragma_index_list` and `pragma_index_xinfo`
+functions) and `SqliteDataContext`. It has no change notifications (`SubscribeToChangesAsync`
+throws `NotSupportedException`), no extras and no bulk engine. Every connection is built by
+`SqliteConfiguration.BuildConnection`, which registers the C# functions in `SqliteFunctions` that
+the rendered SQL calls: Unicode-folding pattern terms and `lower`, a substring `Contains` for a
+FullTextSearch column, and the server functions, which write the same text forms `SqliteValues`
+binds. `SqliteValues` is the one place values become stored forms and back: a Guid as lower-case
+text, a DateTime and a DateTimeOffset (in UTC) as fixed-width text that sorts as the instants do, a
+bool and an enum as integers, a decimal as a real (about 15 significant digits, read back rounded
+to the scale). Declared types keep their size facets for the schema check and are chosen so their
+affinity leaves those forms alone. There is no ClusterID: a rebuild copies in rowid order. SQLite
+cannot rename an index and its index names are database-wide, so `RenameForRebuild` drops the
+indexes the new table will create and `AdoptTable` only renames the table, leaving the index sync
+to replace old-named indexes; the primary key is unnamed because a rename would leave its name
+stale. A unique violation (extended code 2067, or 1555 for the key) names columns, not the index, so
+the provider maps them back to the index through its table schemas. Initialise refuses a SQLite
+older than 3.35 and puts the file in write-ahead log mode (`UseWriteAheadLog`); transactions begin
+IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerQuery` is 2000, far under
+SQLite's 32766, because the driver binds each statement of a command by searching all its
+parameters, so a large multi-statement command is quadratic and holds the write lock throughout
+(an oversized save measured 33 s at 30000 against 0.3 s at 2000). Its output is pinned by
+`SqliteGoldens.cs`, built from the same query corpus.
+
 ## Build and test
 
 ```powershell
@@ -159,13 +191,18 @@ dotnet build TFM.Nucleus.slnx --configuration Release -p:ContinuousIntegrationBu
 ```
 
 The integration tests run every suite once per provider: each neutral suite is an abstract class
-with a sealed subclass per provider under `SqlServer\` and `Postgres\`, next to that engine's own
-tests. SQL Server needs a disposable database configured through the `NUCLEUS_TEST_SERVER`,
+with a sealed subclass per provider under `SqlServer\`, `Postgres\` and `Sqlite\`, next to that
+engine's own tests. SQL Server needs a disposable database configured through the `NUCLEUS_TEST_SERVER`,
 `NUCLEUS_TEST_DATABASE`, `NUCLEUS_TEST_USERNAME` and `NUCLEUS_TEST_PASSWORD` environment variables
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
-`Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database).
+`Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database);
+SQLite through `NUCLEUS_SQLITE_TEST_DATABASE` or `Nucleus:Sqlite:Database`, a file path the provider
+creates. SQLite is the exception to the shared-database rule below: `SqliteTestDatabase` gives each
+.NET runtime its own file (`.net8`, `.net10` before the extension), because SQLite does not queue
+writers and two runs writing one file back to back starved a writer past its busy timeout.
 A provider with no settings skips cleanly, which is what happens in CI. Settings, stack boot, locks
-and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer` and `.Postgres`);
+and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer`, `.Postgres` and
+`.Sqlite`);
 `DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
 configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
 stack whose initialisation fails includes its warnings and errors in the message. A fixture boots
@@ -217,7 +254,7 @@ warning in new code fails CI.
   `tests`) is the standard. A csproj carries package identity, description, tags, dependencies and
   nothing else.
 - **Do not hardcode a version anywhere.** `VersionMajor` in `Directory.Build.props` is the only
-  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The six packages
+  version value in the repo. CI supplies the rest. See `docs/versioning.md`. The seven packages
   share one version by design.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
@@ -233,5 +270,5 @@ warning in new code fails CI.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name (TFM.S3Library.Nucleus's `S3AssetRecord.SoftDeleted`).
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all six packages and is the reference documentation consumers see on the feed.
+  all seven packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.
