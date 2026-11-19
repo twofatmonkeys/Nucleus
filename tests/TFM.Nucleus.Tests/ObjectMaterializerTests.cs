@@ -43,6 +43,21 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void BuiltObjects_ValidateAsRoots()
+        {
+            // The builders skip field initialisers. The flag that marks a root validation used to
+            // be initialised to true, so a built object validated as a dependent and skipped the
+            // root's checks; a child type validated on its own must refuse, as a constructed one does.
+            var values = new Dictionary<string, object?> { ["ID"] = Guid.NewGuid(), ["Sequence"] = 1 };
+            var emitted = ObjectSchema<TestDeletableChild>.CreateEmitObjectBuilder()(values);
+            var reflected = ObjectSchema<TestDeletableChild>.BuildObjectViaReflection(values);
+
+            Assert.Equal(CoreObjectExceptionType.UnableToSaveFromChildObject, Assert.Throws<CoreObjectException>(emitted.Validate).ErrorType);
+            Assert.Equal(CoreObjectExceptionType.UnableToSaveFromChildObject, Assert.Throws<CoreObjectException>(reflected.Validate).ErrorType);
+            Assert.Throws<CoreObjectException>(new TestDeletableChild().Validate);
+        }
+
+        [Fact]
         public void EmitAndReflectionBuilders_ProduceEquivalentObjects()
         {
             var id = Guid.NewGuid();

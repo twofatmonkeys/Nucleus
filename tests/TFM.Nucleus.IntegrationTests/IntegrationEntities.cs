@@ -399,3 +399,61 @@ namespace TFM.Nucleus.IntegrationTests
         public int Sequence { get => GetValue<int>(); set => SetValue(value); }
     }
 }
+
+namespace TFM.Nucleus.IntegrationTests
+{
+    /// <summary>Records its load hook, to prove every load path runs it once the object is finished.</summary>
+    [Deletable]
+    public class IntHookOwner : CoreObject<IntHookOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntHookLine, IntHookOwner> Lines => GetChildCollection<IntHookLine, IntHookOwner>();
+
+        [RetrieveOnDemand]
+        public NucleusChildCollection<IntHookNote, IntHookOwner> Notes => GetChildCollection<IntHookNote, IntHookOwner>();
+
+        public int HookRuns;
+        public bool LinesWereLoaded;
+        public int FinishedLinesSeen;
+
+        protected override void OnAfterLoadFromDB()
+        {
+            HookRuns++;
+            LinesWereLoaded = Lines.IsLoaded;
+            if (LinesWereLoaded)
+                FinishedLinesSeen = Lines.Count(l => l.HookRuns == 1 && l.SawParent);
+        }
+    }
+
+    public class IntHookLine : CoreChildObject<IntHookLine, IntHookOwner>
+    {
+        [DatabaseColumn]
+        public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+
+        public int HookRuns;
+        public bool SawParent;
+
+        protected override void OnAfterLoadFromDB()
+        {
+            HookRuns++;
+            SawParent = Parent != null;
+        }
+    }
+
+    public class IntHookNote : CoreChildObject<IntHookNote, IntHookOwner>
+    {
+        [DatabaseColumn]
+        public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+
+        public int HookRuns;
+        public bool SawParent;
+
+        protected override void OnAfterLoadFromDB()
+        {
+            HookRuns++;
+            SawParent = Parent != null;
+        }
+    }
+}

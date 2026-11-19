@@ -242,17 +242,23 @@ namespace TFM.Nucleus
             return enumType is { IsEnum: true } ? Enum.ToObject(enumType, value) : value;
         }
 
+        /// <summary>
+        /// Writes the audit entry for this commit. Nothing is built when there is no logger, the
+        /// type is [SuppressLogging], or the logger would drop an Information entry: children
+        /// commit with no logger, and building their text only to throw it away cost every
+        /// commit an allocation per object. The test used to be <c>!SuppressLogging || logger
+        /// != null</c>, so every manager save, which passes a logger, audited suppressed types.
+        /// </summary>
         private void LogChanges(ILogger? logger = null)
         {
+            if (logger is null || ObjectSchema.SuppressLogging || !logger.IsEnabled(LogLevel.Information))
+                return;
             try
             {
-                if (!ObjectSchema.SuppressLogging || logger != null)
-                {
-                    var sb = new StringBuilder(IsNew ? $"Created {this}" : $"Updated {this}");
-                    if (!IsNew)
-                        sb.Append(_getChangeLogEntry());
-                    logger?.LogInformation(sb.ToString());
-                }
+                var sb = new StringBuilder(IsNew ? $"Created {this}" : $"Updated {this}");
+                if (!IsNew)
+                    sb.Append(_getChangeLogEntry());
+                logger.LogInformation(sb.ToString());
             }
             catch (Exception ex)
             {
@@ -503,10 +509,17 @@ namespace TFM.Nucleus
 
 
 
+        /// <summary>
+        /// Runs once a load has finished this object: its columns and parent are bound, its loaded
+        /// children are attached and have run theirs, and an excluded collection reads as unloaded.
+        /// Every load path calls it, through <see cref="ICoreObject.OnAfterLoadFromDB"/>.
+        /// </summary>
         protected internal virtual void OnAfterLoadFromDB()
         {
 
         }
+
+        void ICoreObject.OnAfterLoadFromDB() => OnAfterLoadFromDB();
         protected internal virtual void OnAfterInitializeDB()
         {
 
@@ -521,7 +534,7 @@ namespace TFM.Nucleus
         public virtual void Validate()
         {
             _isValidated = true;
-            if (_ValidationRootFlag)
+            if (!_validatingAsDependent)
             {
                 if (ObjectSchema.HasParentObject)
                     throw new CoreObjectException(CoreObjectExceptionType.UnableToSaveFromChildObject);
@@ -531,12 +544,28 @@ namespace TFM.Nucleus
             }
 
         }
-        private bool _ValidationRootFlag = true;
+
+        /// <summary>
+        /// True while this object validates as a dependent of the object being saved (a child or a
+        /// forceSave link), which skips the root's checks and cascade. False, its default, means
+        /// root: an object built without running its constructor or field initialisers (the
+        /// schema's emit and reflection builders) used to start as not-root and skip them.
+        /// </summary>
+        private bool _validatingAsDependent;
+
         private void LinkedObjectValidate()
         {
-            _ValidationRootFlag = false;
-            Validate();
-            _ValidationRootFlag = true;
+            _validatingAsDependent = true;
+            try
+            {
+                Validate();
+            }
+            finally
+            {
+                // A dependent whose rules throw must not stay a dependent: a forceSave link is
+                // saved as a root later, and would skip its own cascade.
+                _validatingAsDependent = false;
+            }
         }
         public virtual void PreSave()
         {

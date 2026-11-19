@@ -44,6 +44,19 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void Indexer_OutsideTheRows_ThrowsIndexOutOfRange()
+        {
+            using var ds = NewDataSet();
+            ds.FillNext([Guid.NewGuid(), "A", 1]);
+            ds.FillNext([Guid.NewGuid(), "B", 2]);
+
+            // Row 2 is one past the last; it used to pass the check and fail later on a null slot.
+            Assert.Throws<IndexOutOfRangeException>(() => ds[2]);
+            Assert.Throws<IndexOutOfRangeException>(() => ds[-1]);
+            Assert.Equal("B", ds[1][1]);
+        }
+
+        [Fact]
         public void GetColumn_ByName_ReturnsValue()
         {
             using var ds = NewDataSet();

@@ -600,7 +600,7 @@ Override these on an entity to run logic at defined points:
 |---|---|
 | `Validate()` | At the start of every instance save. Throw to reject the save. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
 | `PreSave()` | Before the write is issued. |
-| `OnAfterLoadFromDB()` | After the entity is materialised from a result set. |
+| `OnAfterLoadFromDB()` | Once per loaded object, at the end of every load: after its columns and parent are bound, its loaded children are attached and have run theirs, and an excluded collection reads as unloaded. A lazy collection's rows run theirs when it loads. |
 | `OnAfterInitializeDB()` | After schema initialisation for the type. |
 
 ## Async query operators
@@ -762,6 +762,18 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   `Include` or `LoadAsync()` where that matters.
 
 ## Behaviour changes
+
+These came in with the audit fixes.
+
+- **`OnAfterLoadFromDB()` runs.** It ran on no load path before, so an override never ran. It now
+  runs once per loaded object on every load, children before their parent.
+- **`[SuppressLogging]` on a type omits its audit entries.** A save through the manager, which
+  always passes a logger, used to audit a suppressed type anyway.
+- **A synchronous save of a mixed batch splits within the parameter limit.** A batch whose updates
+  went over the limit used to go out as one command; on SQL Server more than about 1,050 changed
+  rows with new ones failed.
+- **`FindAsync` reads asynchronously**, through the new `LoadByIDAsync`. It used to block the
+  calling thread.
 
 These came in with entity reference predicates.
 

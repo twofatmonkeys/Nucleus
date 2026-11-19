@@ -29,8 +29,10 @@ namespace TFM.Nucleus
         }
         private ref object?[] CheckedArrayRef(int i)
         {
-            if (i > RowCount)
-                throw new IndexOutOfRangeException($"{i} is greater than the number of rows - {RowCount}");
+            // Row RowCount is one past the last: it used to pass and hand back an empty slot, so the
+            // caller failed later with a NullReferenceException instead of here.
+            if (i < 0 || i >= RowCount)
+                throw new IndexOutOfRangeException($"Row {i} is outside the {RowCount} rows of the data set.");
             var (left, right) = ArrayIndex(i);
             return ref _primaryArray[left][right];
         }

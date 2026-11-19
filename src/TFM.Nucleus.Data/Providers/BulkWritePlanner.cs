@@ -42,9 +42,14 @@ namespace TFM.Nucleus.Data.Providers
         /// A linked insert or update chain over a schema'd table. Must be called before
         /// NeedsSplitting, which detaches linked queries.
         /// </summary>
+        /// <remarks>
+        /// It once also tested <c>CountLinkedQueries() &gt; 0</c>, which is always true (the count
+        /// includes the query itself). No statement count belongs here: the caller sends only a
+        /// group over the parameter limit, and the bulk engine is the right path even for a
+        /// single statement over it, which splitting cannot divide.
+        /// </remarks>
         public static bool CanUseBulkPath(Query query) =>
-            query.CountLinkedQueries() > 0
-            && (query.Type == QueryType.INSERT || query.Type == QueryType.UPDATE)
+            (query.Type == QueryType.INSERT || query.Type == QueryType.UPDATE)
             && query.TableSchema is TableSchema;
 
         /// <summary>A SET term evaluated by the server rather than bound, such as the timestamp.</summary>

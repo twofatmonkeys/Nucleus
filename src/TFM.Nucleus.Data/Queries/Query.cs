@@ -241,31 +241,49 @@ namespace TFM.Nucleus.Data.Queries
                 splitQueries = null;
                 return false;
             }
-            else
+            // Every statement of the chain in the order the unsplit command would run them, each
+            // detached, then packed into chunks. A nested chain (an update chain linked from an
+            // insert, a child's chain under its parent's) used to move as one unit, so a chunk
+            // could still be over the limit; now only a single statement over it on its own can be.
+            splitQueries = [];
+            Query? current = null;
+            var count = 0;
+            foreach (var query in FlattenInOrder())
             {
-                splitQueries = new List<Query>();
-                var tempList = new List<Query>();
-                tempList.AddRange(LinkedQueries);
-                LinkedQueries.Clear();
-                var paramCount = GetParameterCount();
-                var currentQuery = this;
-                splitQueries.Add(this);
-                foreach (var qry in tempList)
+                var own = query.GetParameterCount();
+                if (current is null || count + own > paramLimit)
                 {
-                    var paramCountForQry = qry.GetParameterCount();
-                    if (paramCount + paramCountForQry <= paramLimit)
-                    {
-                        currentQuery.LinkedQueries.Add(qry);
-                        paramCount += paramCountForQry;
-                    }
-                    else
-                    {
-                        splitQueries.Add(qry);
-                        currentQuery = qry;
-                        paramCount = paramCountForQry;
-                    }
+                    splitQueries.Add(query);
+                    current = query;
+                    count = own;
                 }
-                return true;
+                else
+                {
+                    current.LinkedQueries.Add(query);
+                    count += own;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The chain's statements in the order it renders them (each query, then its linked
+        /// queries in turn), each detached from its links and its parent query.
+        /// </summary>
+        private List<Query> FlattenInOrder()
+        {
+            var all = new List<Query>(CountLinkedQueries());
+            Collect(this);
+            return all;
+
+            void Collect(Query query)
+            {
+                var linked = query.LinkedQueries.ToArray();
+                query.LinkedQueries.Clear();
+                query.ParentQuery = null;
+                all.Add(query);
+                foreach (var child in linked)
+                    Collect(child);
             }
         }
 

@@ -8,22 +8,92 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
-### Found by the benchmarks (November 2026)
+### Save, load and schema audit (November 2026)
 
-Measured by `ReadBenchmarks` and `SaveBenchmarks` on SQL Server, PostgreSQL and SQLite (net10.0,
-Release). None is a regression; each was already there and is now pinned by a baseline, so making
-it worse fails, and fixing it shows as "down by N%".
+An audit of the save, load and schema paths against the "ask the schema first" rule in AGENTS.md,
+after the benchmarks were in. Each item is one small step: fix it, test it, tick it off here.
+"Verified" means the code was read and the behaviour confirmed; "read" means it was traced from
+the code but not reproduced; byte figures are estimates from the code unless marked "measured".
+The performance steps touch the save and load pipeline, so run the benchmarks
+(`tools/Run-Benchmarks.ps1`) after each group.
 
-- **`LoadByID` allocates about 255 KB per call** on every provider (`by id x50`: 12.8 MB). A load of
-  1,000 rows allocates about 1 MB, so the cost is per call, not per row: look at the query build,
-  the predicate compile and the cache lookup before the read.
-- **The SQLite write path allocates five to eight times what the other providers do.** The split
-  sync save of 1,000 rows (inserted, then updated) allocates about 97 MB on SQLite against 13-14 MB
-  on SQL Server and PostgreSQL, and the 20,000-row bulk save about 2.5 GB against 120-135 MB.
-- **Graph saves cost 6-17% more allocations than before the child model** (`graph insert 50x20`,
-  `graph update one line x50`): the save now walks the graph, runs the children's rules and tracks
-  removals. Accepted as the price of those features in the first baselines. One walk shared by
-  validation, the build and the commit would recover part of it.
+#### Bugs
+
+All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
+
+#### Performance steps, most gain first
+
+- **P1. `DataSet` allocates about 240 KB before it holds a row.** Verified. A 10,000-slot outer
+  array, a 10,000-slot first block in the constructor, and a second first block when the first row
+  arrives (`GetNewRow` sees `right == 0` and calls `NewArray(0)`). This is nearly all of
+  `LoadByID`'s 255 KB per call (measured) and of a lazy collection's first read (270 KB measured),
+  and every child result set of a graph load pays it again, empty or not. Grow on demand.
+- **P2. Cache `ObjectSchema.NucleusChildCollectionProperties`.** Verified. It builds a new array on
+  every read (`[.. _nucleusChildCollectionProperties.Values]`), and it is read per object on every
+  walk, commit, query build, `ClearChanges` and lazy marking. Build it once in the constructor, as
+  `LinkedObjectProperties` already is; the same for the obsolete aliases, `LinkedObjectSchemas`,
+  `ChildCollectionSchemas`, `AllProperties` and `AllDBColumns`.
+- **P3. Return early from `NucleusChildCollection.RemovedObjects`.** Verified. It runs a LINQ
+  filter and builds a list on every call, even with nothing removed, and every walk calls it per
+  collection. Return an empty array when `_removedChildren` is empty.
+- **P4. Guard `LogChanges`.** Verified; fixed with B2. Return before building any text when there
+  is no logger, the type is suppressed, or the logger is not enabled for Information, and skip
+  objects with nothing to commit.
+- **P5. Stop allocating per streamed row and per added row.** Verified.
+  `ObjectDataManager.LoadStreamAsync` calls `MarkUnloaded([obj], excluded)` per row, allocating an
+  array before `MarkUnloaded`'s own empty check; `NucleusCollection.Add` builds
+  `NotifyCollectionChangedEventArgs` per item with no subscriber, and a load's collection
+  expression binds to that `Add`.
+- **P6. Bind rows without wrapper objects.** Read. `DataSet.BindRows` builds a `DataSetRow`, a
+  `DataSetValue[]` and a `DataSetValue` per column for every row (about 450 B a row at 10 columns);
+  `Bind<T>()` in the same file already loops the row array by index. Presize each object's property
+  dictionary for its column count and create `_newProperties` only when something is edited.
+- **P7. Skip walks a save does not need.** Read. A save walks the graph up to six times (validation,
+  the manager's link types, the save builder, the query constructors' own recursion, a walk per root
+  at commit, the commit's recursion). First step: a cached per-type answer to "can this graph reach
+  a forceSave link", so the link-type and commit walks are skipped for children without forceSave
+  links. Later step: walk once and pass the graph through validation, building and commit.
+- **P8. Make the walk itself cheaper.** Read. The seen-set grows from 3 slots and records every
+  child, though a child can sit under only one parent (`BindParent` refuses a second); `foreach`
+  boxes the `NucleusChildCollections` iterator and each `ChildObjects` enumerator; validation copies
+  the result through several LINQ steps. This and P2-P3 explain validation's 7.8 KB per parent
+  (measured).
+- **P9. Translate a predicate once per load.** Read. `Classify` and then the parse each normalise
+  the expression again (twice per load, three times in `RowQuery.CountAsync` and `DeleteWhere`), and
+  `Evaluator` compiles a lambda for every captured variable each time, about 7 KB each (a 5-term
+  predicate: 22 KB measured). Normalise once, and read closure fields with reflection instead of
+  compiling them.
+- **P10. Build the write chain once and in order.** Verified for the first part.
+  `InsertQuery.Create` calls `Count()` and `ElementAt(i)` on a lazy query on every loop pass (O(n²)
+  for 100 objects or fewer); above 100 it builds in parallel into a `ConcurrentBag`, so statement
+  order varies run to run; `UpdateQuery.Create` always uses the bag. Materialise once and loop.
+- **P11. Cache per-table write answers.** Read. `Query.AddWriteTerms` filters the table's columns
+  for overridden ones per object; the renderers quote every column name and format every variable
+  per row; parameter lists are rebuilt several times per command; each `Query` allocates about seven
+  collections it may never use.
+- **P12. Use the compiled getter in the binder.** Read. `ChildGraphBinder.CollectionOf` and
+  `ObjectDataManager` call `property.Getter.Invoke` (reflection) per object where
+  `IPropertySchema.GetValue` has a compiled delegate; `MarkLazy` allocates a closure per lazy
+  property per object; `AttachLoaded` builds a set of IDs even when the collection is empty.
+- **P13. Smaller per-call costs.** Read. `SetValue` boxes value types to compare them;
+  `NucleusChildCollection.BindChild` allocates a closure per add (verified); a collection subscribes
+  to its own `CollectionChanged`, so every mutation builds event arguments; `NotifyParent` builds a
+  `PropertyChangedEventArgs` per change per level; `AuditLoggerFor` creates a delegate per root;
+  `EvictCache` recomputes the same per-type answer per save; `CoerceBoundValue` looks up the
+  property for every integer column of every row.
+- **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable load every match and its
+  children.** Read. They stream the whole result through `LoadStreamAsync`, which first runs every
+  child query. First and Any should take one row; Count should count in the database.
+- **P15. The SQLite write path allocates five to eight times what the others do.** Measured: the
+  1,000-row split save allocates about 97 MB on SQLite against 13-14 MB elsewhere, the 20,000-row
+  bulk save about 2.5 GB against 120-135 MB. SQLite has no bulk engine, so each row is a statement in
+  commands of up to 2,000 parameters, and (inferred from the driver) binding each statement scans
+  every parameter of the command. Reuse one prepared single-row command, or write multi-row
+  `VALUES`. The largest change here.
+
+Also open, from before: graph saves allocate 6-17% more than before the child model, accepted in
+the first baselines; P2, P3, P7 and P8 recover part of it. Unchanged loaded children are still
+rewritten with a Timestamp-only update (see "Saving a parent rewrites every loaded child" below).
 
 ### Found with the child model (November 2026)
 
@@ -148,6 +218,49 @@ timestamp. `SaveGraph` now works out whether anything below an object is new, ch
 (it decides whether a forceSave link is written), which is the recursive check this needs.
 
 ## Fixed
+
+### Audit bugs (November 2026)
+
+The bugs from the save, load and schema audit (B1 to B7 above), each with a test that fails on
+the code before the fix unless noted.
+
+- **B1. `OnAfterLoadFromDB()` never ran on a normal load.** Its only caller was
+  `CoreObject<T>.BindDataSet`, which no load path used. Every load now ends in
+  `ChildGraphBinder.Complete`, through `ICoreObject.OnAfterLoadFromDB`: it marks excluded
+  collections unloaded, then runs the hooks of the loaded children at every depth and then the
+  object's, so a hook sees its parent bound and its children finished. A lazy collection's rows
+  run theirs when it loads, after their parent is bound. The manager's own `MarkUnloaded` moved
+  into the binder, which also ended an array allocated per streamed row. Cover:
+  `LoadHookTests`, and `LoadHookIntegrationTests` on every provider (stream, sync, async, paged,
+  by ID, data context, lazy, included, excluded).
+- **B2. `[SuppressLogging]` was ignored whenever a logger was passed**, which every manager save
+  does, so a suppressed type was audited anyway. `LogChanges` now returns before building anything
+  when there is no logger, the type is suppressed, or the logger drops Information; children,
+  which commit with no logger, no longer build text to throw away. Cover: `AuditLoggingTests`.
+- **B3. A synchronous save could send one command over the parameter limit.**
+  `Query.NeedsSplitting` moved a nested chain as one unit, so a mixed batch (an update chain
+  linked from the inserts) split into a chunk with every update in it. It now flattens the chain
+  in the order it renders and packs the statements into chunks, so only a single statement over
+  the limit on its own can exceed it. Reproduced on SQL Server: a sync save of 1,100 changed rows
+  and one new one failed with "Too many parameters were provided in this RPC request. The maximum
+  is 2100". Cover: `QuerySplitTests`, and `MixedBatchIntegrationTests.SyncSaveOfAMixedBatch_SplitsTheUpdateChainToo`
+  on every provider.
+- **B4. `DataSet`'s indexer let the row one past the end through**, and a negative row, handing back
+  an empty slot that failed later with a `NullReferenceException`. It now throws
+  `IndexOutOfRangeException` at the call. Cover: `DataSetTests`.
+- **B5. `BulkWritePlanner.CanUseBulkPath` tested `CountLinkedQueries() > 0`, which is always true.**
+  The term is removed rather than tightened: the only caller sends a group over the parameter
+  limit, and the bulk engine is the right path even for a single statement over it. No behaviour
+  changed, so no new test.
+- **B6. Objects built without their constructor validated as dependents.** The flag that marked a
+  root validation was initialised to true, which the schema's emit and reflection builders skip,
+  so such an object skipped the root's checks. It is now `_validatingAsDependent`, false by
+  default, and restored in a `finally`, so a dependent whose rules throw does not stay one. Cover:
+  `ObjectMaterializerTests.BuiltObjects_ValidateAsRoots`.
+- **B7. `IObjectDataAdaptor.FindAsync` blocked** on the synchronous `LoadByID`. It now reads
+  through the new `ObjectDataManager.LoadByIDAsync`, which shares `LoadByID`'s cache and predicate
+  helpers; a [Cacheable] type with a cold cache still fills it synchronously once, as
+  `Load<T>()` does. Cover: `FindAsyncTests`.
 
 ### Found by the benchmarks, fixed (November 2026)
 

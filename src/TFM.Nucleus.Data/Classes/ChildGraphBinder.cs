@@ -33,13 +33,67 @@ namespace TFM.Nucleus.Data
         /// collections the query fetched attached, and its lazy collections, at every depth, left
         /// to <paramref name="lazyLoader"/> to load on first read.
         /// </summary>
-        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) where T : ICoreObject<T>, new()
+        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) where T : ICoreObject<T>, new() =>
+            BuildCollection<T>(query, dataSet, lazyLoader, []);
+
+        /// <summary>
+        /// Materialises a data set's rows as <typeparamref name="T"/> with the child collections
+        /// the query fetched attached, marks the <paramref name="excluded"/> collections unloaded,
+        /// and runs every object's load hook (<see cref="Complete"/>).
+        /// </summary>
+        /// <param name="query">The select whose child queries the data set mirrors.</param>
+        /// <param name="dataSet">The rows read for the query.</param>
+        /// <param name="lazyLoader">Loads a lazy collection on first read; the ambient runtime when null.</param>
+        /// <param name="excluded">The collections the load left out, which read as unloaded.</param>
+        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader,
+            IReadOnlyList<IPropertySchema> excluded) where T : ICoreObject<T>, new()
+        {
+            ArgumentNullException.ThrowIfNull(excluded);
+            var collection = BuildAttached<T>(query, dataSet, lazyLoader);
+            foreach (var obj in collection)
+                Complete(obj, excluded);
+            return collection;
+        }
+
+        /// <summary>
+        /// The rows bound and their children attached, but not completed: for a caller that binds
+        /// the objects into a parent first and completes them once they are, as a lazy collection
+        /// does when it loads.
+        /// </summary>
+        internal static NucleusCollection<T> BuildAttached<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) where T : ICoreObject<T>, new()
         {
             var collection = dataSet.BuildCollection<T>();
             var children = FromDataSet(query, dataSet, lazyLoader);
             foreach (var obj in collection)
                 Attach(obj, children, lazyLoader);
             return collection;
+        }
+
+        /// <summary>
+        /// Finishes a loaded object: marks the <paramref name="excluded"/> collections unloaded, then
+        /// runs <see cref="ICoreObject.OnAfterLoadFromDB"/> on its loaded children at every depth and
+        /// then on the object, so a hook sees its parent bound and its children finished. Every
+        /// load path ends here, once per object; a lazy collection's children are completed when
+        /// it loads.
+        /// </summary>
+        public static void Complete(ICoreObject obj, IReadOnlyList<IPropertySchema> excluded)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
+            ArgumentNullException.ThrowIfNull(excluded);
+            for (var i = 0; i < excluded.Count; i++)
+                if (excluded[i].GetValue(obj) is INucleusChildCollection collection)
+                    collection.MarkUnloaded();
+            RunLoadHooks(obj);
+        }
+
+        private static void RunLoadHooks(ICoreObject obj)
+        {
+            if (obj.ObjectSchema.HasNucleusChildCollections)
+                foreach (var collection in obj.NucleusChildCollections)
+                    if (collection.IsLoaded)
+                        foreach (var child in collection.ChildObjects)
+                            RunLoadHooks(child);
+            obj.OnAfterLoadFromDB();
         }
 
         /// <summary>

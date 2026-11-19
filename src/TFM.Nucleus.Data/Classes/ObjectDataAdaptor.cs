@@ -246,7 +246,8 @@ namespace TFM.Nucleus.Data
 
         T? IObjectDataAdaptor<T>.Find(Guid id) => _odm.LoadByID<T>(id, _excluded, _included);
 
-        Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id) => Task.FromResult(_odm.LoadByID<T>(id, _excluded, _included));
+        // It used to wrap the synchronous LoadByID in Task.FromResult, so the caller's thread waited on the database.
+        Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id) => _odm.LoadByIDAsync<T>(id, _excluded, _included);
 
         /// <summary>One page plus the unpaged total, in a single round trip.</summary>
         public Task<PagedResult<T>> ToPagedResultAsync(int skip, int take, CancellationToken cancellationToken = default) =>

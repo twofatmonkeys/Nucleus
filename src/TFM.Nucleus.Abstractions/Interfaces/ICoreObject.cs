@@ -26,6 +26,14 @@ namespace TFM.Nucleus
         public void BindValue(string property, object? value);
 
         /// <summary>
+        /// Runs the entity's load hook once a load has finished it: its columns and parent bound,
+        /// its loaded children attached (their hooks run first), and any excluded collection
+        /// marked unloaded. Nucleus calls this once at the end of every load; application code
+        /// overrides <c>CoreObject.OnAfterLoadFromDB</c> rather than calling this.
+        /// </summary>
+        public void OnAfterLoadFromDB() { }
+
+        /// <summary>
         /// Takes the value the server stored for a property during a write, such as a value it
         /// computed. It replaces any value the entity holds or has pending for the property.
         /// </summary>

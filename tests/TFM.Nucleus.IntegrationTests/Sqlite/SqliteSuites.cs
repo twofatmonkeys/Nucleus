@@ -80,6 +80,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteChildModelIntegrationTests(SqliteFixture fixture) : ChildModelIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteLoadHookIntegrationTests(SqliteFixture fixture) : LoadHookIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteSaveCancellationIntegrationTests(SqliteFixture fixture) : SaveCancellationIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]

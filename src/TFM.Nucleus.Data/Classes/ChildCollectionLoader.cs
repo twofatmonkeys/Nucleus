@@ -42,6 +42,7 @@ namespace TFM.Nucleus.Data
                 throw;
             }
             collection.AttachLoaded(children);
+            CompleteAttached(collection, children);
         }
 
         /// <inheritdoc cref="Load(IDataProvider, INucleusChildCollection)"/>
@@ -55,13 +56,29 @@ namespace TFM.Nucleus.Data
                 typeof(ChildCollectionLoader).GetMethod(nameof(ChildrenOfAsync), BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(t));
             var children = await ((Task<List<ICoreObject>>)loader.Invoke(null, [provider, collection.ParentObject, token])!).ConfigureAwait(false);
             collection.AttachLoaded(children);
+            CompleteAttached(collection, children);
+        }
+
+        /// <summary>
+        /// Runs the load hooks of the loaded children the collection took, now that their parent
+        /// is bound. A row whose ID the collection already held (a child added since) was not
+        /// taken, and is not a loaded object of the collection, so its hook does not run.
+        /// </summary>
+        private static void CompleteAttached(INucleusChildCollection collection, List<ICoreObject> loaded)
+        {
+            if (loaded.Count == 0)
+                return;
+            var held = new HashSet<ICoreObject>(collection.ChildObjects, ReferenceEqualityComparer.Instance);
+            foreach (var child in loaded)
+                if (held.Contains(child))
+                    ChildGraphBinder.Complete(child, []);
         }
 
         private static List<ICoreObject> ChildrenOf<TChild>(IDataProvider provider, ICoreObject parent) where TChild : ICoreObject<TChild>, new()
         {
             var query = ChildrenOfQuery<TChild>(provider, parent);
             using var context = provider.CreateContext();
-            var loaded = ChildGraphBinder.BuildCollection<TChild>(query, context.GetDataSet(query), c => Load(provider, c));
+            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, context.GetDataSet(query), c => Load(provider, c));
             return [.. loaded.Cast<ICoreObject>()];
         }
 
@@ -69,7 +86,7 @@ namespace TFM.Nucleus.Data
         {
             var query = ChildrenOfQuery<TChild>(provider, parent);
             using var context = await provider.CreateContextAsync(token: token).ConfigureAwait(false);
-            var loaded = ChildGraphBinder.BuildCollection<TChild>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false), c => Load(provider, c));
+            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false), c => Load(provider, c));
             return [.. loaded.Cast<ICoreObject>()];
         }
 

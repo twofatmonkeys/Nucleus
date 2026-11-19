@@ -53,5 +53,57 @@ namespace TFM.Nucleus.Tests
 
             Assert.Equal([limit, limit, 2 * ParametersPerRow], chunks.Select(c => c.GetParameterCount()));
         }
+
+        /// <summary>
+        /// Inserts with an update chain linked from them, as a mixed save builds it: the update
+        /// chain hangs off the insert root with its own linked updates.
+        /// </summary>
+        private static InsertQuery MixedChain(int inserts, int updates)
+        {
+            var root = Chain(inserts);
+            UpdateQuery? updateRoot = null;
+            for (var i = 0; i < updates; i++)
+            {
+                var row = new UpdateQuery(SqlServerQueryRenderer.Instance, "[dbo].[tbl_TestWidget]", "ID", Guid.NewGuid());
+                row.SetParameters.Add(new Parameter("Quantity", i));
+                if (updateRoot == null)
+                    updateRoot = row;
+                else
+                    updateRoot.LinkedQueries.Add(row);
+            }
+            root.LinkedQueries.Add(updateRoot!);
+            return root;
+        }
+
+        private static string Normalised(IEnumerable<Query> chunks) =>
+            string.Join(";", chunks.Select(c => SqlSnapshot.Normalize(c.BuildQuery()))
+                .SelectMany(sql => sql.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)));
+
+        [Fact]
+        public void ANestedChainOverTheLimit_IsSplitToo()
+        {
+            // 10 inserts, then a chain of 50 updates linked from them. The update chain used to
+            // move as one unit, so its chunk carried every update's parameters, over the limit.
+            const int limit = 20;
+            var query = MixedChain(10, 50);
+            var total = query.GetParameterCount();
+
+            var chunks = query.Split(limit);
+
+            Assert.All(chunks, c => Assert.True(c.GetParameterCount() <= limit, $"A chunk carries {c.GetParameterCount()} parameters, over {limit}."));
+            Assert.Equal(total, chunks.Sum(c => c.GetParameterCount()));
+        }
+
+        [Fact]
+        public void SplittingKeepsTheStatementsInTheOrderTheUnsplitCommandRunsThem()
+        {
+            var unsplit = Normalised([MixedChain(6, 9)]);
+            var split = Normalised(MixedChain(6, 9).Split(7));
+
+            // The parameter names differ per instance, so compare the statement shapes in order.
+            static string Shape(string sql) => string.Join(";", sql.Split(';').Select(s => s.Split(' ')[0]));
+            Assert.Equal(Shape(unsplit), Shape(split));
+            Assert.StartsWith("INSERT", split);
+        }
     }
 }

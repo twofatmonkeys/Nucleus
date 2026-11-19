@@ -439,8 +439,7 @@ namespace TFM.Nucleus.Data
             query.WithTotalCount = true;
             using var context = await provider.CreateContextAsync(token: cancellationToken);
             var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader);
-            MarkUnloaded(rows, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader, excluded);
             var result = new PagedResult<T>(rows)
             {
                 Skip = skip,
@@ -471,18 +470,48 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            var schema = _objectSchema.Get<T>();
-            if (schema is { IsCacheable: true } && excludedCollections.Count == 0 && includedCollections.Count == 0)
-            {
-                Load<T>(); // ensure the collection (and its index) is populated
-                return Cache.TryGetById<T>(id, out var cached) ? cached : default;
-            }
-            var parameter = Expression.Parameter(typeof(T), "x");
-            var predicate = Expression.Equal(
-                Expression.Property(parameter, nameof(ICoreObject.ID)),
-                Expression.Constant(id));
-            return ((NucleusCollection<T>?)Load<T>(predicate, excludedCollections, includedCollections)) is { Count: > 0 } loaded ? loaded[0] : default;
+            if (AnswersFromCache<T>(excludedCollections, includedCollections))
+                return FromCache<T>(id);
+            return Load<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections) is { } loaded ? loaded.FirstOrDefault() : default;
         }
+
+        /// <inheritdoc cref="LoadByIDAsync{T}(Guid, IReadOnlyCollection{string}, IReadOnlyCollection{string}, CancellationToken)"/>
+        public Task<T?> LoadByIDAsync<T>(Guid id, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadByIDAsync<T>(id, [], [], cancellationToken);
+
+        /// <summary>
+        /// Loads by primary key on the asynchronous path, leaving the named child collections
+        /// unloaded and loading the named lazy ones with it. A [Cacheable] type answers from its
+        /// cache when nothing is excluded or included; a cold cache is filled on the synchronous
+        /// path once, as <c>Load&lt;T&gt;()</c> fills it, since the cache has no asynchronous fill.
+        /// </summary>
+        public async Task<T?> LoadByIDAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            ArgumentNullException.ThrowIfNull(excludedCollections);
+            ArgumentNullException.ThrowIfNull(includedCollections);
+            if (id == Guid.Empty)
+                return default;
+            if (AnswersFromCache<T>(excludedCollections, includedCollections))
+                return FromCache<T>(id);
+            return await LoadAsync<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, cancellationToken) is { } loaded ? loaded.FirstOrDefault() : default;
+        }
+
+        /// <summary>A [Cacheable] type with nothing excluded or included: the cache holds whole objects.</summary>
+        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new() =>
+            excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true };
+
+        private T? FromCache<T>(Guid id) where T : ICoreObject<T>, new()
+        {
+            Load<T>(); // ensure the collection (and its index) is populated
+            return Cache.TryGetById<T>(id, out var cached) ? cached : default;
+        }
+
+        /// <summary><c>x =&gt; x.ID == id</c>, as the body a load translates.</summary>
+        private static Expression ByIdPredicate<T>(Guid id) where T : ICoreObject<T>, new() =>
+            Expression.Equal(
+                Expression.Property(Expression.Parameter(typeof(T), "x"), nameof(ICoreObject.ID)),
+                Expression.Constant(id));
 
         /// <summary>
         /// The schemas of the child collection properties a load leaves out. Throws for a name
@@ -538,17 +567,6 @@ namespace TFM.Nucleus.Data
             foreach (var property in excluded)
                 query.ExcludeChildCollection(property.Name);
             return query;
-        }
-
-        /// <summary>Marks each excluded collection of each loaded object as not loaded.</summary>
-        private static void MarkUnloaded<T>(IEnumerable<T> objs, IPropertySchema[] excluded) where T : ICoreObject<T>
-        {
-            if (excluded.Length == 0)
-                return;
-            foreach (var obj in objs)
-                foreach (var property in excluded)
-                    if (property.Getter?.Invoke(obj, null) is INucleusChildCollection collection)
-                        collection.MarkUnloaded();
         }
 
         #region INucleusRuntime
@@ -679,8 +697,7 @@ namespace TFM.Nucleus.Data
                 return new NucleusCollection<T>();
             var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = ProviderFor<T>().CreateContext();
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader);
-            MarkUnloaded(rows, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, excluded);
             return rows;
         }
 
@@ -707,8 +724,7 @@ namespace TFM.Nucleus.Data
                 return new NucleusCollection<T>();
             var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader);
-            MarkUnloaded(rows, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, excluded);
             return rows;
         }
 
@@ -751,7 +767,7 @@ namespace TFM.Nucleus.Data
                     obj.BindValue(row.ColumnNames[i], row.Values[i]);
                 }
                 ChildGraphBinder.Attach(obj, children, LazyLoader);
-                MarkUnloaded([obj], excluded);
+                ChildGraphBinder.Complete(obj, excluded);
                 yield return obj;
             }
         }
