@@ -774,6 +774,16 @@ These came in with the audit fixes.
   rows with new ones failed.
 - **`FindAsync` reads asynchronously**, through the new `LoadByIDAsync`. It used to block the
   calling thread.
+- **A NULL column reads as the default of a non-nullable value property.** An `int`, `bool`,
+  `DateTimeOffset` or enum property whose column is NULL, which is what a property never set is
+  saved as, used to throw `NullReferenceException` on read after a load. It now reads 0, false or
+  the type's default, as `RowQuery.Get` does. Declare the property nullable (`int?`) to tell NULL
+  from 0.
+- **An untyped write of null to a non-nullable value property throws `ArgumentException`.**
+  `IPropertySchema.SetValue(obj, null)` on an `int`, `bool`, `DateTimeOffset` or enum property
+  used to throw `NullReferenceException`. It now names the property and says to declare it
+  nullable. It does not write the default, unlike `PropertyInfo.SetValue`, so a caller's null is
+  never saved as 0.
 
 These came in with entity reference predicates.
 

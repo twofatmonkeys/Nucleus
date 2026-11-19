@@ -71,6 +71,92 @@ namespace TFM.Nucleus.Tests
             Assert.Null(widget.OptionalKind);
         }
 
+        // ---- A NULL column read into a non-nullable value property ------------------------------
+
+        private static TestAllTypesWidget LoadedAllTypesWidgetWithNulls(object? nullValue)
+        {
+            // Every column NULL, as a row saved without setting any property loads back.
+            var dataSet = DataSet.Initialize("tbl_TestAllTypesWidget",
+                ["ID", "Count", "Big", "Ratio", "Flag", "When", "At", "Reference", "Money", "Kind"]);
+            dataSet.FillNext([Guid.NewGuid(), nullValue, nullValue, nullValue, nullValue, nullValue,
+                nullValue, nullValue, nullValue, nullValue]);
+            return Assert.Single(TestAllTypesWidget.BindDataSet(dataSet));
+        }
+
+        private static void AssertAllValueColumnsAreDefault(TestAllTypesWidget widget)
+        {
+            Assert.Equal(0, widget.Count);
+            Assert.Equal(0L, widget.Big);
+            Assert.Equal(0d, widget.Ratio);
+            Assert.False(widget.Flag);
+            Assert.Equal(default, widget.When);
+            Assert.Equal(default, widget.At);
+            Assert.Equal(Guid.Empty, widget.Reference);
+            Assert.Equal(0m, widget.Money);
+            Assert.Equal(WidgetKind.Unknown, widget.Kind);
+        }
+
+        [Fact]
+        public void GetValue_DbNullIntoNonNullableValueProperty_ReadsDefault()
+        {
+            // Threw NullReferenceException: the getter unboxed null into int.
+            var widget = LoadedAllTypesWidgetWithNulls(DBNull.Value);
+
+            Assert.False(widget.IsNew);
+            AssertAllValueColumnsAreDefault(widget);
+        }
+
+        [Fact]
+        public void GetValue_NullIntoNonNullableValueProperty_ReadsDefault()
+        {
+            var widget = LoadedAllTypesWidgetWithNulls(null);
+
+            AssertAllValueColumnsAreDefault(widget);
+        }
+
+        [Fact]
+        public void GetValue_PendingNullOnLoadedObject_ReadsDefault()
+        {
+            var widget = LoadedAllTypesWidgetWithNulls(DBNull.Value);
+            widget.Count = 5;
+
+            widget.SetRawCurrentValue(nameof(TestAllTypesWidget.Count), null);
+
+            Assert.Equal(0, widget.Count);
+        }
+
+        [Fact]
+        public void GetValue_ServerNullIntoNonNullableValueProperty_ReadsDefault()
+        {
+            var widget = new TestAllTypesWidget { Count = 7 };
+
+            widget.AcceptServerValue(nameof(TestAllTypesWidget.Count), DBNull.Value);
+
+            Assert.Equal(0, widget.Count);
+        }
+
+        [Fact]
+        public void GetValue_DbNullIntoNullableValueProperty_StaysNull()
+        {
+            var dataSet = DataSet.Initialize("tbl_NullableWidget", ["ID", "OptionalQuantity", "OptionalPrice"]);
+            dataSet.FillNext([Guid.NewGuid(), DBNull.Value, DBNull.Value]);
+
+            var widget = Assert.Single(NullableWidget.BindDataSet(dataSet));
+
+            Assert.Null(widget.OptionalQuantity);
+            Assert.Null(widget.OptionalPrice);
+        }
+
+        [Fact]
+        public void GetValue_WrongTypeStillThrows()
+        {
+            // The null gate must not turn a genuine type mismatch into a silent default.
+            var widget = new TestAllTypesWidget();
+            widget.SetRawCurrentValue(nameof(TestAllTypesWidget.Count), "not an int");
+
+            Assert.Throws<InvalidCastException>(() => widget.Count);
+        }
+
         [Fact]
         public void GetDBValue_UnsetNullableIsDbNull()
         {
@@ -91,6 +177,55 @@ namespace TFM.Nucleus.Tests
             Property<NullableWidget>(nameof(NullableWidget.RestrictedName)).SetValue(widget, "restricted");
 
             Assert.Equal("restricted", widget.RestrictedName);
+        }
+
+        // ---- Untyped writes of null ------------------------------------------------------------
+
+        [Theory]
+        [InlineData(nameof(TestAllTypesWidget.Count))]
+        [InlineData(nameof(TestAllTypesWidget.Kind))]
+        [InlineData(nameof(TestAllTypesWidget.At))]
+        public void SetValue_NullIntoNonNullableValueProperty_ThrowsNamingTheProperty(string property)
+        {
+            // Threw NullReferenceException: the untyped write unboxed null into the property type.
+            var widget = new TestAllTypesWidget();
+
+            var ex = Assert.Throws<ArgumentException>(() =>
+                Property<TestAllTypesWidget>(property).SetValue(widget, null));
+
+            Assert.Equal("value", ex.ParamName);
+            Assert.Contains($"{nameof(TestAllTypesWidget)}.{property}", ex.Message);
+            Assert.Null(widget.GetRawCurrentValue(property));
+        }
+
+        [Fact]
+        public void SetValue_NullIntoNullableValueProperty_StoresNull()
+        {
+            var widget = new NullableWidget { OptionalQuantity = 3 };
+
+            Property<NullableWidget>(nameof(NullableWidget.OptionalQuantity)).SetValue(widget, null);
+
+            Assert.Null(widget.OptionalQuantity);
+        }
+
+        [Fact]
+        public void SetValue_NullIntoReferenceProperty_StoresNull()
+        {
+            var widget = new TestAllTypesWidget { Ansi = "text" };
+
+            Property<TestAllTypesWidget>(nameof(TestAllTypesWidget.Ansi)).SetValue(widget, null);
+
+            Assert.Null(widget.Ansi);
+        }
+
+        [Fact]
+        public void SetValue_ValueIntoNonNullableValueProperty_StillWrites()
+        {
+            var widget = new TestAllTypesWidget();
+
+            Property<TestAllTypesWidget>(nameof(TestAllTypesWidget.Count)).SetValue(widget, 9);
+
+            Assert.Equal(9, widget.Count);
         }
 
         // ---- Schema type tests that were always false ------------------------------------------

@@ -262,6 +262,28 @@ the code before the fix unless noted.
   helpers; a [Cacheable] type with a cold cache still fills it synchronously once, as
   `Load<T>()` does. Cover: `FindAsyncTests`.
 
+### A NULL column threw on read into a non-nullable value property (November 2026)
+
+`CoreObject.GetValue<T>` returned `(T?)value`. For an unconstrained generic `T?` on a value type
+is just `T`, so a stored null was unboxed into `int` and threw `NullReferenceException`. Every
+column is nullable and an unset property is written as NULL, so an `int` property saved without
+a value threw on its first read after a reload, while the same object before the save read 0.
+A stored null (from `BindValue`, `AcceptServerValue` or a pending clear) now reads as the type's
+default, as a missing value already did and as `RowQuery.Get` does. The cast stays a cast, so a
+value of the wrong type still throws `InvalidCastException`. The cost is one null compare per
+read, which the unbox already did internally, so no benchmark was run. Cover: the `GetValue_*`
+tests in `RegressionTests`, and `CrudIntegrationTests.UnsetValueProperty_LoadsAsDefault` on every
+provider.
+
+The write side had the same unbox: `IPropertySchema.SetValue(object?, object?)` cast with
+`(TPropertyType?)value`, so a null for a value-type property threw `NullReferenceException`.
+Writes are deliberately stricter than reads, because a null there comes from caller code and
+writing the default would save 0 over what the caller meant as NULL. It now throws an
+`ArgumentException` (`ParamName` "value") naming the type, the property and the nullable
+declaration to use. The test is `default(TPropertyType) is not null`, a constant per closed
+generic, so reference and `Nullable<T>` properties pay nothing and a plain value type pays one
+null compare. Cover: the `SetValue_*` tests in `RegressionTests`.
+
 ### Found by the benchmarks, fixed (November 2026)
 
 Measured by running the new benchmarks on the commit before the child model and on the child

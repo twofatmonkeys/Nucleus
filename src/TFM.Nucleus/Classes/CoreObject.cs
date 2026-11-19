@@ -187,16 +187,22 @@ namespace TFM.Nucleus
 
         
 
+        /// <summary>
+        /// The current value of a property. A stored null (a NULL column, or a value cleared on
+        /// write) reads as the type's default, the same as a property that was never set and the
+        /// same as <c>RowQuery.Get</c>. Every column is nullable and an unset property is written
+        /// as NULL, so a plain cast would unbox null into an int property and throw
+        /// NullReferenceException on reload. Declare the property nullable (int?) to tell NULL
+        /// from 0. The cast stays a cast, so a value of the wrong type still throws.
+        /// </summary>
         protected internal T? GetValue<T>([CallerMemberName] string? property = null)
         {
             ArgumentNullException.ThrowIfNull(property);
-            if (!IsReadOnly && !IsNew)
-                if (_newProperties.TryGetValue(property, out var newValue))
-                    return (T?)newValue;
-            if (_properties.TryGetValue(property, out var value))
-                return (T?)value;
-            else
-                return default;
+            if (!IsReadOnly && !IsNew && _newProperties.TryGetValue(property, out var newValue))
+                return newValue is null ? default : (T)newValue;
+            if (_properties.TryGetValue(property, out var value) && value is not null)
+                return (T)value;
+            return default;
         }
 
         internal object? GetRawCurrentValue(string property)
