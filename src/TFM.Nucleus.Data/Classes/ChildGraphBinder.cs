@@ -25,6 +25,9 @@ namespace TFM.Nucleus.Data
         {
             /// <summary>The entities of each included <c>[LinkedObject]</c> property, by ID.</summary>
             public List<(IPropertySchema Property, Dictionary<Guid, ICoreObject> Entities)> References { get; } = [];
+
+            /// <summary>The members of each included linked collection, by the ID of the one their key holds.</summary>
+            public List<(IPropertySchema Property, Dictionary<Guid, List<ICoreObject>> Members)> LinkedCollections { get; } = [];
         }
 
         /// <summary>
@@ -123,7 +126,14 @@ namespace TFM.Nucleus.Data
                     if (collection.IsLoaded)
                         foreach (var child in collection.ChildObjects)
                             RunLoadHooks(child, linkLoader);
-            if (linkLoader is not null && schema.HasLinkedObjects)
+            // Only an included collection exists yet; its members finish before their one, as
+            // children do. A collection loaded later completes its own members.
+            if (schema.HasLinkedCollections)
+                foreach (var collection in obj.NucleusLinkedCollections)
+                    if (collection.IsLoaded)
+                        foreach (var member in collection.Members)
+                            RunLoadHooks(member, linkLoader);
+            if (linkLoader is not null && (schema.HasLinkedObjects || schema.HasLinkedCollections))
                 obj.BindLinkedObjectLoader(linkLoader);
             obj.OnAfterLoadFromDB();
         }
@@ -162,8 +172,9 @@ namespace TFM.Nucleus.Data
             {
                 var linkedQuery = linkedQueries[i];
                 var reference = ReferencePropertyFor(schema, linkedQuery);
-                var property = reference is null ? CollectionPropertyFor(schema, linkedQuery) : null;
-                if (reference is null && property is null)
+                var linked = reference is null ? LinkedCollectionPropertyFor(schema, linkedQuery) : null;
+                var property = reference is null && linked is null ? CollectionPropertyFor(schema, linkedQuery) : null;
+                if (reference is null && linked is null && property is null)
                     continue;
                 var rows = dataSet.LinkedDataSets[i];
                 var linkedSchema = SchemaOf(linkedQuery);
@@ -174,6 +185,15 @@ namespace TFM.Nucleus.Data
                     for (int row = 0; row < rows.RowCount; row++)
                         AddReferenced(entities, linkedSchema, rows.ColumnNames, rows[row], below, lazyLoader, linkLoader);
                     graph.References.Add((reference, entities));
+                    continue;
+                }
+                if (linked is not null)
+                {
+                    var key = schema.GetLinkedCollectionKey(linked).Name;
+                    var members = new Dictionary<Guid, List<ICoreObject>>();
+                    for (int row = 0; row < rows.RowCount; row++)
+                        AddMember(members, linkedSchema, key, rows.ColumnNames, rows[row], below, lazyLoader);
+                    graph.LinkedCollections.Add((linked, members));
                     continue;
                 }
                 var map = new Dictionary<Guid, List<ICoreObject>>();
@@ -218,8 +238,9 @@ namespace TFM.Nucleus.Data
             foreach (var linkedQuery in linkedQueries)
             {
                 var reference = ReferencePropertyFor(schema, linkedQuery);
-                var property = reference is null ? CollectionPropertyFor(schema, linkedQuery) : null;
-                if (reference is null && property is null)
+                var linked = reference is null ? LinkedCollectionPropertyFor(schema, linkedQuery) : null;
+                var property = reference is null && linked is null ? CollectionPropertyFor(schema, linkedQuery) : null;
+                if (reference is null && linked is null && property is null)
                     continue;
                 var linkedSchema = SchemaOf(linkedQuery);
                 var below = await LoadAsync(linkedQuery, context, lazyLoader, linkLoader, cancellationToken).ConfigureAwait(false);
@@ -229,6 +250,15 @@ namespace TFM.Nucleus.Data
                     await foreach (var row in context.StreamAsync(linkedQuery, cancellationToken).ConfigureAwait(false))
                         AddReferenced(entities, linkedSchema, row.ColumnNames, row.Values, below, lazyLoader, linkLoader);
                     graph.References.Add((reference, entities));
+                    continue;
+                }
+                if (linked is not null)
+                {
+                    var key = schema.GetLinkedCollectionKey(linked).Name;
+                    var members = new Dictionary<Guid, List<ICoreObject>>();
+                    await foreach (var row in context.StreamAsync(linkedQuery, cancellationToken).ConfigureAwait(false))
+                        AddMember(members, linkedSchema, key, row.ColumnNames, row.Values, below, lazyLoader);
+                    graph.LinkedCollections.Add((linked, members));
                     continue;
                 }
                 var map = new Dictionary<Guid, List<ICoreObject>>();
@@ -260,6 +290,8 @@ namespace TFM.Nucleus.Data
             {
                 foreach (var (property, map) in graph)
                     CollectionOf(parent, property).AttachLoaded(map.TryGetValue(parent.ID, out var children) ? children : []);
+                foreach (var (property, members) in graph.LinkedCollections)
+                    LinkedCollectionOf(parent, property).AttachLoaded(members.TryGetValue(parent.ID, out var held) ? held : []);
                 BindReferences(parent, graph);
             }
             MarkLazy(parent, graph, lazyLoader);
@@ -297,6 +329,41 @@ namespace TFM.Nucleus.Data
         private static INucleusChildCollection CollectionOf(ICoreObject parent, IPropertySchema property) =>
             property.Getter?.Invoke(parent, null) as INucleusChildCollection
             ?? throw new InvalidOperationException($"{parent.GetType().Name}.{property.Name} did not return a child collection.");
+
+        private static INucleusLinkedCollection LinkedCollectionOf(ICoreObject parent, IPropertySchema property) =>
+            property.Getter?.Invoke(parent, null) as INucleusLinkedCollection
+            ?? throw new InvalidOperationException($"{parent.GetType().Name}.{property.Name} did not return a linked collection.");
+
+        /// <summary>
+        /// Materialises one member row of an included linked collection, attaches its own
+        /// children, and files it under the one its key holds. The key is bound as stored, an ID;
+        /// the collection binds the one itself when the key is a <c>[LinkedObject]</c>.
+        /// </summary>
+        private static void AddMember(Dictionary<Guid, List<ICoreObject>> members, IObjectSchema memberSchema, string keyProperty,
+            string[] columns, object?[] values, Graph? below, Action<INucleusChildCollection>? lazyLoader)
+        {
+            var member = (ICoreObject)Activator.CreateInstance(memberSchema.Type)!;
+            var ownerId = Guid.Empty;
+            for (int i = 0; i < columns.Length; i++)
+            {
+                if (columns[i] == keyProperty && values[i] is Guid id)
+                    ownerId = id;
+                member.BindValue(columns[i], values[i]);
+            }
+            if (ownerId == Guid.Empty)
+                return;
+            Attach(member, below, lazyLoader);
+            if (!members.TryGetValue(ownerId, out var list))
+                members[ownerId] = list = [];
+            list.Add(member);
+        }
+
+        /// <summary>The linked collection property an included members query fills; null for any other query.</summary>
+        private static IPropertySchema? LinkedCollectionPropertyFor(IObjectSchema parentSchema, IQuery linkedQuery) =>
+            linkedQuery.LinkedCollectionProperty is { } name
+                ? parentSchema.LinkedCollectionProperties.FirstOrDefault(p => p.Name == name)
+                    ?? throw new InvalidOperationException($"{parentSchema.Name} has no linked collection {name}.")
+                : null;
 
         /// <summary>
         /// Materialises one child row, attaches its own children, and files it under its parent.

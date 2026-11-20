@@ -1,9 +1,4 @@
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Linq.Expressions;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using TFM.Nucleus.Abstractions.Interfaces;
@@ -19,9 +14,6 @@ namespace TFM.Nucleus.Data
     /// </summary>
     public static class ChildCollectionLoader
     {
-        private static readonly ConcurrentDictionary<Type, MethodInfo> _sync = [];
-        private static readonly ConcurrentDictionary<Type, MethodInfo> _async = [];
-
         /// <summary>
         /// Loads the collection on the synchronous path; does nothing when it is loaded. The
         /// children's <c>[LinkedObject]</c> properties are read through the same provider.
@@ -33,8 +25,8 @@ namespace TFM.Nucleus.Data
         /// <param name="provider">The provider that stores the child type.</param>
         /// <param name="collection">The collection to load.</param>
         /// <param name="linkLoader">
-        /// What the children's <c>[LinkedObject]</c> properties are read through: the stack that
-        /// loaded the parent. The same provider when null.
+        /// What the children's <c>[LinkedObject]</c> properties and linked collections are read
+        /// through: the stack that loaded the parent. The same provider when null.
         /// </param>
         public static void Load(IDataProvider provider, INucleusChildCollection collection, ILinkedObjectLoader? linkLoader)
         {
@@ -43,20 +35,9 @@ namespace TFM.Nucleus.Data
             if (collection.IsLoaded)
                 return;
             linkLoader ??= new ProviderLinkedObjectLoader(provider);
-            var loader = _sync.GetOrAdd(collection.ChildType, static t =>
-                typeof(ChildCollectionLoader).GetMethod(nameof(ChildrenOf), BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(t));
-            List<ICoreObject> children;
-            try
-            {
-                children = (List<ICoreObject>)loader.Invoke(null, [provider, collection.ParentObject, linkLoader])!;
-            }
-            catch (TargetInvocationException ex) when (ex.InnerException is not null)
-            {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
-                throw;
-            }
+            var children = KeyedRowLoader.Rows(provider, collection.ChildType, ParentPropertyOf(collection), collection.ParentObject.ID, linkLoader);
             collection.AttachLoaded(children);
-            CompleteAttached(collection, children, linkLoader);
+            KeyedRowLoader.CompleteTaken(collection.ChildObjects, children, linkLoader);
         }
 
         /// <inheritdoc cref="Load(IDataProvider, INucleusChildCollection)"/>
@@ -72,56 +53,15 @@ namespace TFM.Nucleus.Data
             if (collection.IsLoaded)
                 return;
             linkLoader ??= new ProviderLinkedObjectLoader(provider);
-            var loader = _async.GetOrAdd(collection.ChildType, static t =>
-                typeof(ChildCollectionLoader).GetMethod(nameof(ChildrenOfAsync), BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(t));
-            var children = await ((Task<List<ICoreObject>>)loader.Invoke(null, [provider, collection.ParentObject, linkLoader, token])!).ConfigureAwait(false);
+            var children = await KeyedRowLoader.RowsAsync(provider, collection.ChildType, ParentPropertyOf(collection), collection.ParentObject.ID,
+                linkLoader, token).ConfigureAwait(false);
             collection.AttachLoaded(children);
-            CompleteAttached(collection, children, linkLoader);
+            KeyedRowLoader.CompleteTaken(collection.ChildObjects, children, linkLoader);
         }
 
-        /// <summary>
-        /// Runs the load hooks of the loaded children the collection took, now that their parent
-        /// is bound. A row whose ID the collection already held (a child added since) was not
-        /// taken, and is not a loaded object of the collection, so its hook does not run.
-        /// </summary>
-        private static void CompleteAttached(INucleusChildCollection collection, List<ICoreObject> loaded, ILinkedObjectLoader linkLoader)
-        {
-            if (loaded.Count == 0)
-                return;
-            var held = new HashSet<ICoreObject>(collection.ChildObjects, ReferenceEqualityComparer.Instance);
-            foreach (var child in loaded)
-                if (held.Contains(child))
-                    ChildGraphBinder.Complete(child, [], linkLoader);
-        }
-
-        private static List<ICoreObject> ChildrenOf<TChild>(IDataProvider provider, ICoreObject parent, ILinkedObjectLoader linkLoader) where TChild : ICoreObject<TChild>, new()
-        {
-            var query = ChildrenOfQuery<TChild>(provider, parent);
-            using var context = provider.CreateContext();
-            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, context.GetDataSet(query), c => Load(provider, c, linkLoader), linkLoader);
-            return [.. loaded.Cast<ICoreObject>()];
-        }
-
-        private static async Task<List<ICoreObject>> ChildrenOfAsync<TChild>(IDataProvider provider, ICoreObject parent, ILinkedObjectLoader linkLoader,
-            CancellationToken token) where TChild : ICoreObject<TChild>, new()
-        {
-            var query = ChildrenOfQuery<TChild>(provider, parent);
-            using var context = await provider.CreateContextAsync(token: token).ConfigureAwait(false);
-            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false),
-                c => Load(provider, c, linkLoader), linkLoader);
-            return [.. loaded.Cast<ICoreObject>()];
-        }
-
-        /// <summary>The select of one parent's children, with their own non-lazy collections.</summary>
-        private static ISelectQuery ChildrenOfQuery<TChild>(IDataProvider provider, ICoreObject parent) where TChild : ICoreObject<TChild>, new()
-        {
-            var query = provider.ParseSelectExpression<TChild>(Expression.Constant(true));
-            var childSchema = query.DataTableSchema?.ObjectSchema ?? parent.ObjectSchema.GetObjectSchema<TChild>();
-            var parentProperty = childSchema.ParentObjectProperty
-                ?? throw new InvalidOperationException($"{childSchema.Name} is used as a child collection but has no [ParentObject] property.");
-            var parentColumn = query.DataTableSchema?.FindByPropertyName(parentProperty.Name)?.ColumnName ?? parentProperty.Name;
-            query.AddWhere(new Parameter(parentColumn, parent.ID));
-            return query;
-        }
+        /// <summary>The child type's parent property, the key its rows are read by.</summary>
+        private static string ParentPropertyOf(INucleusChildCollection collection) =>
+            collection.ObjectSchema.ParentObjectProperty?.Name
+            ?? throw new InvalidOperationException($"{collection.ChildType.Name} is used as a child collection but has no [ParentObject] property.");
     }
 }

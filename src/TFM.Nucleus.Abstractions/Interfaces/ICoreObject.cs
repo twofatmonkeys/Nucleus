@@ -52,6 +52,19 @@ namespace TFM.Nucleus
         public void BindLinkedObjectLoader(ILinkedObjectLoader loader) { }
 
         /// <summary>
+        /// The loader <see cref="BindLinkedObjectLoader"/> bound: the stack that loaded the object,
+        /// which its linked collections load their members through. Null when none was bound.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public ILinkedObjectLoader? LinkedObjectLoader => null;
+
+        /// <summary>
+        /// The object's linked collections that exist: those read since it was created or loaded.
+        /// One never read holds nothing to save, so it is not created here.
+        /// </summary>
+        public IEnumerable<INucleusLinkedCollection> NucleusLinkedCollections => [];
+
+        /// <summary>
         /// Takes the value the server stored for a property during a write, such as a value it
         /// computed. It replaces any value the entity holds or has pending for the property.
         /// </summary>

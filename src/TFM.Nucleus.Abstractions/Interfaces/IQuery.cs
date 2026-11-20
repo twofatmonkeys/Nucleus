@@ -52,6 +52,15 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public bool IncludeLinkedObject(string propertyName) =>
             throw new NotSupportedException($"{GetType().Name} cannot include linked objects.");
+
+        /// <summary>
+        /// Loads the members of a linked collection with the rows, in the same round trip, so
+        /// reading the collection on each row runs no query of its own. Returns false when the
+        /// query's type has no such collection. Throws when the many type is stored by another
+        /// provider, since leaving it out would bring back a query per row.
+        /// </summary>
+        public bool IncludeLinkedCollection(string propertyName) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include linked collections.");
     }
 
     public interface IInsertQuery : IQuery
@@ -106,6 +115,12 @@ namespace TFM.Nucleus.Data
         /// refers to (an included reference), the name of that property; null for any other query.
         /// </summary>
         public string? LinkedObjectProperty => null;
+
+        /// <summary>
+        /// For a query that loads the members of a parent query's linked collection (an included
+        /// one), the name of that collection property; null for any other query.
+        /// </summary>
+        public string? LinkedCollectionProperty => null;
 
     }
 }

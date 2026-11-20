@@ -382,6 +382,47 @@ namespace TFM.Nucleus.IntegrationTests
         public IntLinkTarget? Target { get => GetValue<IntLinkTarget>(); set => SetValue(value); }
     }
 
+    /// <summary>The one of two linked collections: its vouchers are roots of their own.</summary>
+    [Deletable]
+    public class IntCampaign : CoreObject<IntCampaign>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedBy(nameof(IntVoucher.CampaignId))]
+        public NucleusLinkedCollection<IntVoucher, IntCampaign> Vouchers => GetLinkedCollection<IntVoucher, IntCampaign>();
+
+        [LinkedBy(nameof(IntVoucher.ReferredBy))]
+        public NucleusLinkedCollection<IntVoucher, IntCampaign> Referrals => GetLinkedCollection<IntVoucher, IntCampaign>();
+    }
+
+    /// <summary>
+    /// A member of a campaign's two collections: by a Guid key and by a [LinkedObject] key.
+    /// Unique by code, so a save can be made to fail in the database; "invalid" fails its rule.
+    /// </summary>
+    [Deletable]
+    public class IntVoucher : CoreObject<IntVoucher>
+    {
+        public const string InvalidCode = "invalid";
+
+        [DatabaseColumn(Unique = true)]
+        public string? Code { get => GetValue<string>(); set => SetValue(value); }
+
+        [DatabaseColumn(Indexed = true)]
+        public Guid CampaignId { get => GetValue<Guid>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn(Indexed = true)]
+        public IntCampaign? ReferredBy { get => GetValue<IntCampaign>(); set => SetValue(value); }
+
+        public override void Validate()
+        {
+            base.Validate();
+            if (Code == InvalidCode)
+                throw new InvalidOperationException("A voucher needs a real code.");
+        }
+    }
+
     /// <summary>Refers to a roster, a type with a child collection of its own, without owning it.</summary>
     [Deletable]
     public class IntRosterNote : CoreObject<IntRosterNote>

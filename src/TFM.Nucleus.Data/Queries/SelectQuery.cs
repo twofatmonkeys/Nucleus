@@ -226,5 +226,23 @@ namespace TFM.Nucleus.Data.Queries
             AddChildQuery(reference, targetTable.FindByPropertyName(nameof(ICoreObject.ID))?.ColumnName ?? nameof(ICoreObject.ID));
             return true;
         }
+
+        /// <inheritdoc cref="ISelectQuery.IncludeLinkedCollection"/>
+        public bool IncludeLinkedCollection(string propertyName)
+        {
+            if (LinkedQueries.Any(q => q.LinkedCollectionProperty == propertyName))
+                return true;
+            if (TableSchema is not { } table || table.ObjectSchema.LinkedCollectionProperties.FirstOrDefault(p => p.Name == propertyName) is not { } property)
+                return false;
+            var owner = table.ObjectSchema.Name;
+            var key = table.ObjectSchema.GetLinkedCollectionKey(property);
+            var membersTable = _resolveTable?.Invoke(property.LinkedType!)
+                ?? throw new InvalidQueryException(
+                    $"{owner}.{property.Name} holds {property.LinkedType!.Name}, which this provider does not store, so its members cannot be loaded in the same read. " +
+                    "Read the collection on its own, which loads it from its own provider.");
+            var members = new SelectQuery(Renderer, membersTable, _resolveTable) { LinkedCollectionProperty = property.Name };
+            AddChildQuery(members, membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name);
+            return true;
+        }
     }
 }

@@ -755,6 +755,11 @@ namespace TFM.Nucleus.Data.Providers
         private async ValueTask<int> ExecuteDeleteCore(DeleteWhereQuery query, bool async, CancellationToken token)
         {
             ArgumentNullException.ThrowIfNull(query);
+            // Every chunk is checked before any runs, so a refused delete deletes nothing.
+            if (query.TableSchema?.ObjectSchema.HasLinkedCollections == true)
+                foreach (var chunk in query.FlattenLinkedQueries())
+                    if (chunk is DeleteWhereQuery delete)
+                        await EnsureNoLinkedMembersAsync(delete, async, token);
             var affected = 0;
             foreach (var chunk in query.FlattenLinkedQueries())
             {
@@ -770,6 +775,38 @@ namespace TFM.Nucleus.Data.Providers
                 }
             }
             return affected;
+        }
+
+        /// <summary>
+        /// Refuses a delete of a one whose linked collections still have members, before anything
+        /// is deleted: their keys would point at a row that no longer exists. The check reads in
+        /// the delete's own transaction, so a member written earlier in it counts. Nucleus creates
+        /// no foreign keys, so a member another transaction inserts at the same moment is not seen.
+        /// </summary>
+        private async ValueTask EnsureNoLinkedMembersAsync(DeleteWhereQuery delete, bool async, CancellationToken token)
+        {
+            foreach (var (collection, members) in _provider.LinkedMembersOf(delete))
+            {
+                var owner = delete.TableSchema!.ObjectSchema.Name;
+                bool found;
+                try
+                {
+                    var command = NewReadCommand();
+                    command.CommandText = members.BuildQuery(includeChildQueries: false);
+                    PrepareCommand(command);
+                    BindParameters(command, members.AllQueryParameters);
+                    await using var reader = async ? await command.ExecuteReaderAsync(token) : command.ExecuteReader();
+                    found = async ? await reader.ReadAsync(token) : reader.Read();
+                }
+                catch (Exception ex)
+                {
+                    throw Failure($"Unable to check {owner}.{collection.Name} for members before deleting. {ex.Message}", ex);
+                }
+                if (found)
+                    throw new InvalidOperationException(
+                        $"Cannot delete {owner}: {owner}.{collection.Name} still has {collection.LinkedType!.Name} members, whose keys would point at a deleted row. " +
+                        $"Delete them, or point them at another {owner}, first.");
+            }
         }
 
         /// <summary>

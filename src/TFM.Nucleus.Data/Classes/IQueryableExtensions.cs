@@ -48,6 +48,19 @@ namespace TFM.Nucleus.Data
                     $"Include applies to Nucleus queries only; this source is a {source.GetType().Name}.");
 
         /// <summary>
+        /// Loads a linked collection's members with a Nucleus query's rows, so
+        /// <c>.Where(..).Include(c =&gt; c.Vouchers)</c> works as well as <c>.Include(..).Where(..)</c>.
+        /// Only queries from IObjectDataAdaptor support it.
+        /// </summary>
+        public static IQueryable<TSource> Include<TSource>(this IQueryable<TSource> source,
+            Expression<Func<TSource, TFM.Nucleus.Abstractions.Interfaces.INucleusLinkedCollection>> collection)
+            where TSource : ICoreObject<TSource>, new() =>
+            source is ObjectDataAdaptor<TSource> adaptor
+                ? adaptor.Include(collection)
+                : throw new InvalidOperationException(
+                    $"Include applies to Nucleus queries only; this source is a {source.GetType().Name}.");
+
+        /// <summary>
         /// One page of a Nucleus query's rows plus the unpaged total count, in a single round trip,
         /// so <c>.Where(..).ToPagedResultAsync(0, 20)</c> works as well as on the adaptor itself.
         /// Only queries from IObjectDataAdaptor support it.

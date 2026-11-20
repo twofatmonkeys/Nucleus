@@ -462,6 +462,7 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 | `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](#linked-objects). Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
 | `[Deletable]` | a `NucleusChildCollection` property | Removing a stored child from the collection and saving the parent deletes the child. See [Deleting](#deleting). |
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](#lazy-collections). |
+| `[LinkedBy(keyProperty)]` | a `NucleusLinkedCollection` property | Names the many type's key, the property holding the one's ID. See [Linked collections](#linked-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
 | `[LinkedChildCollection]` | a collection property | Obsolete, and has no effect: a child collection is a `NucleusChildCollection` property, found by its type. It was the v1 marker. |
 
@@ -684,6 +685,66 @@ referenced type must be stored by the same provider as the rows; including one s
 throws rather than leaving every row to load its own. A referenced entity included this way is
 loaded with its own child collections and runs its load hook.
 
+## Linked collections
+
+A `NucleusLinkedCollection<TMany, TOne>` is the many side of a one-to-many relationship between two
+root types, held on the one: a campaign's vouchers, where each voucher is a root of its own,
+loaded, saved, redeemed and voided without its campaign. Rows a parent owns, with no life of their
+own, are a [child collection](#child-collections) instead, and a reference from one entity to
+another is a [linked object](#linked-objects).
+
+The many type declares the key, the property holding the one's ID, and the collection names it:
+
+```csharp
+public class Campaign : CoreObject<Campaign>
+{
+    [LinkedBy(nameof(Voucher.CampaignId))]
+    public NucleusLinkedCollection<Voucher, Campaign> Vouchers => GetLinkedCollection<Voucher, Campaign>();
+}
+
+public class Voucher : CoreObject<Voucher>
+{
+    [DatabaseColumn(Indexed = true)]
+    public Guid CampaignId { get => GetValue<Guid>(); set => SetValue(value); }
+}
+```
+
+The key is a stored, indexed `Guid`, `Guid?`, or a `[LinkedObject]` typed as the one. With a
+`[LinkedObject]` key, loaded members hold the one itself, so reading it runs no query. Because the
+many type declares its key, its table, its queries (`v => v.CampaignId == id`) and its rules do not
+depend on the one. A many type can be the many side of several ones, with a key for each, and a one
+can hold several collections, two of them over one many type when each has its own key.
+
+**Loading.** Reading the property loads nothing. The whole collection loads, in one query, the first
+time a member is read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`, `Clear`,
+`Insert`, `CopyTo`), once however many threads read it, on the synchronous path and through the
+manager or data context that loaded the one. `await collection.LoadAsync()` loads it without
+blocking a thread. Adding does not load it, and the collection of a new one starts loaded and
+empty. A listing includes the collection, which loads every row's members in the same round trip,
+selected by the key of exactly the rows returned (page and `TOP` included):
+
+```csharp
+var campaigns = await manager.Get<Campaign>().Include(c => c.Vouchers).Where(c => c.Year == 2026).ToListAsync();
+```
+
+A linked collection is never part of a read unless it is included; there is no `[RetrieveOnDemand]`
+and no `Exclude` for one.
+
+**Saving.** Adding a member sets its key to the one. Saving the one writes the new and changed
+members it holds, after the one, in the same transaction, and runs each one's `Validate()` first;
+saving a member on its own still works as for any root. Removing a stored member deletes its row
+with the one's save when the many type is `[Deletable]`, and throws at the call otherwise (point
+its key at another one and save it instead). Removing a member that was never saved just drops it.
+
+**Deleting the one** is refused while it has members, on every delete path: the delete throws
+naming the collection and deletes nothing. Delete the members, or point them elsewhere, first.
+
+**Refused when the schema is built:** a collection without `[LinkedBy]`; a key the many type does
+not have, that is not a stored column, that is not indexed, or that is not a `Guid`, `Guid?` or
+`[LinkedObject]` of the one; two collections on one type with the same key; a many type that is a
+child type; a one that is a child type or `[Cacheable]`; and a many type stored by a different
+provider from the one.
+
 ## Lifecycle hooks
 
 Override these on an entity to run logic at defined points:
@@ -852,6 +913,13 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   the writes run. A caller who then rolls back must reload the objects.
 - **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
   `Include` or `LoadAsync()` where that matters.
+- **A linked collection's first read is a synchronous round trip**, like a lazy collection's. Use
+  `Include` or `LoadAsync()` where that matters.
+- **A refused delete of a one is a check, not a constraint.** Nucleus creates no foreign keys, so a
+  member another transaction inserts while the one is being deleted is not seen, and is left
+  pointing at a deleted row.
+- **The one side of a linked collection is a root.** A child type cannot hold one, because its
+  parent's cascade deletes it without loading it, where members could not be checked for.
 - **A `[LinkedObject]`'s first read is a synchronous round trip** too, with no asynchronous form.
   Use `Include` where that matters. Rows that read the same reference this way each load their own
   instance; included references share one.

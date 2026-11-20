@@ -74,6 +74,23 @@ namespace TFM.Nucleus.Tests
             return parent;
         }
 
+        /// <summary>
+        /// The select a delete of <typeparamref name="TOne"/> runs first, to refuse the delete while
+        /// a linked collection has members: the members' IDs whose key is in the rows it matches.
+        /// </summary>
+        private string LinkedMembersOfDelete<TOne, TMany>(string keyColumn, Action<SelectQuery> condition)
+            where TOne : ICoreObject where TMany : ICoreObject
+        {
+            var ones = new SelectQuery(renderer, Table<TOne>(), AnyTable);
+            ones.LinkedQueries.Clear();
+            condition(ones);
+            var members = new SelectQuery(renderer, Table<TMany>(), AnyTable);
+            members.LinkedQueries.Clear();
+            members.Columns = ["ID"];
+            ones.AddChildQuery(members, keyColumn);
+            return members.BuildQuery(includeChildQueries: false);
+        }
+
         private string DeleteWhere<T>(Expression<Func<T, bool>> predicate, Func<Type, TableSchema?> tables)
         {
             var query = new DeleteWhereQuery(renderer, tables(typeof(T))!, tables);
@@ -134,6 +151,12 @@ namespace TFM.Nucleus.Tests
                 ["select.reference.top"] = () => Select<TestLinkingWidget>(q => { q.Take = 5; q.AddOrderBy("Name"); q.IncludeLinkedObject("Widget"); }),
                 ["select.reference.paged"] = () => Select<TestLinkingWidget>(q => { q.Skip = 10; q.Take = 5; q.WithTotalCount = true; q.IncludeLinkedObject("Widget"); }),
                 ["select.reference.withchildren"] = () => Select<TestLinkingWidget>(q => q.IncludeLinkedObject("Owner")),
+                ["select.linked"] = () => Select<LcCampaign>(q => q.IncludeLinkedCollection("Vouchers")),
+                ["select.linked.where"] = () => Select<LcCampaign>(q => { q.Where.And("Name", "a"); q.IncludeLinkedCollection("Vouchers"); }),
+                ["select.linked.top"] = () => Select<LcCampaign>(q => { q.Take = 5; q.AddOrderBy("Name"); q.IncludeLinkedCollection("Vouchers"); }),
+                ["select.linked.paged"] = () => Select<LcCampaign>(q => { q.Skip = 10; q.Take = 5; q.WithTotalCount = true; q.IncludeLinkedCollection("Vouchers"); }),
+                ["select.linked.members.ofdelete"] = () => LinkedMembersOfDelete<LcCampaign, LcVoucher>("CampaignId",
+                    q => q.Where.And(new Parameter("ID", new List<Guid> { Guid.Empty }, Operator.In))),
                 ["select.alltypes"] = () => Select<TestAllTypesWidget>(),
 
                 // ---- Row reads: chosen columns, ordered and paged; groups with measures

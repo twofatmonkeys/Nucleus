@@ -81,6 +81,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresChildModelIntegrationTests(PostgresFixture fixture) : ChildModelIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresLinkedCollectionIntegrationTests(PostgresFixture fixture) : LinkedCollectionIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresLoadHookIntegrationTests(PostgresFixture fixture) : LoadHookIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

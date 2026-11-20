@@ -159,6 +159,10 @@ namespace TFM.Nucleus.Data.Queries
         public string? LinkedObjectProperty;
         string? IQuery.LinkedObjectProperty => LinkedObjectProperty;
 
+        /// <summary>For an included linked collection, the parent's collection property whose members this query loads.</summary>
+        public string? LinkedCollectionProperty;
+        string? IQuery.LinkedCollectionProperty => LinkedCollectionProperty;
+
         /// <summary>
         /// The parent's column that <see cref="LinkedColumn"/> is matched against. Null for a
         /// child collection, whose rows match the parent's ID; an included reference matches its

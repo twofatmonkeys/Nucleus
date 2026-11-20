@@ -190,6 +190,9 @@ namespace TFM.Nucleus
         public readonly bool HasLinkedObjects;
         public readonly bool HasNucleusChildCollections;
 
+        /// <summary>True when the type has NucleusLinkedCollection properties.</summary>
+        public readonly bool HasLinkedCollections;
+
         public readonly bool SuppressLogging;
         public readonly bool IsDeletable;
         public readonly DeleteBehavior DeleteBehavior;
@@ -200,6 +203,8 @@ namespace TFM.Nucleus
         private readonly Dictionary<string, IPropertySchema> _propertyCache = [];
         private readonly IPropertySchema[] _linkedObjectProperties;
         private readonly Dictionary<Type, IPropertySchema> _nucleusChildCollectionProperties = [];
+        private readonly IPropertySchema[] _linkedCollectionProperties;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IPropertySchema> _linkedCollectionKeys = new(StringComparer.Ordinal);
         private readonly Dictionary<string, FieldInfo> _fieldCache = [];
 
         private static readonly FieldInfo PropertiesField =
@@ -235,6 +240,9 @@ namespace TFM.Nucleus
                         "A parent can have one child collection of each child type.", Type);
             }
             HasNucleusChildCollections = _nucleusChildCollectionProperties.Count > 0;
+            _linkedCollectionProperties = [.. _propertyCache.Values.Where(x => x.IsLinkedCollection)];
+            HasLinkedCollections = _linkedCollectionProperties.Length > 0;
+            EnsureLinkedCollectionsAreDeclarable();
             _linkedObjectProperties = [.. _propertyCache.Values.Where(x => x.IsLinkedObject)];
             _ObjectBuilder = CreateObjectBuilder();
             _parentObjectProperty = _propertyCache.Values.SingleOrDefault(x => x.IsParentObject);
@@ -448,6 +456,100 @@ namespace TFM.Nucleus
             return l.ToArray();
         }
         public IPropertySchema? TryGetChildCollectionProperty(Type type) => _nucleusChildCollectionProperties.GetValueOrDefault(type);
+
+        #region Linked collections
+
+        /// <summary>The type's NucleusLinkedCollection properties, built once.</summary>
+        public IPropertySchema[] LinkedCollectionProperties => _linkedCollectionProperties;
+
+        bool IObjectSchema.HasLinkedCollections => HasLinkedCollections;
+        IPropertySchema[] IObjectSchema.LinkedCollectionProperties => _linkedCollectionProperties;
+
+        /// <summary>
+        /// The rules a linked collection can be checked against from this type alone, at schema
+        /// build: the collection is this type's own, two collections never share a key, and the
+        /// type is a root that is not [Cacheable].
+        /// </summary>
+        private void EnsureLinkedCollectionsAreDeclarable()
+        {
+            if (!HasLinkedCollections)
+                return;
+            var first = _linkedCollectionProperties[0];
+            // A child is deleted by its parent's cascade, whose rows nobody loaded; refusing to
+            // delete a one with members cannot be checked there, so a one is a root.
+            if (_propertyCache.Values.Any(x => x.IsParentObject))
+                throw new ObjectSchemaException(
+                    $"{Type.Name}.{first.Name} is a linked collection, but {Type.Name} is a child type. " +
+                    "The one side of a linked collection is a root, which is deleted only on its own.", Type);
+            // A cached instance is shared by every caller, and loading its members would change it
+            // under all of them, as for a lazy child collection.
+            if (Attribute.IsDefined(Type, typeof(Cacheable)))
+                throw new ObjectSchemaException(
+                    $"{Type.Name} is [Cacheable], so it cannot have the linked collection {first.Name}: " +
+                    "its cached instances are shared, and loading the members would change them for every caller.", Type);
+            foreach (var collection in _linkedCollectionProperties)
+            {
+                var owner = collection.Type.GetInterfaces()
+                    .First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(TFM.Nucleus.Abstractions.Interfaces.INucleusLinkedCollection<,>))
+                    .GetGenericArguments()[1];
+                if (owner != Type)
+                    throw new ObjectSchemaException(
+                        $"{Type.Name}.{collection.Name} is a linked collection of {owner.Name}. Declare it as NucleusLinkedCollection<{collection.LinkedType!.Name}, {Type.Name}>.", Type);
+            }
+            var shared = _linkedCollectionProperties
+                .GroupBy(p => (p.LinkedType, p.LinkedByPropertyName))
+                .FirstOrDefault(g => g.Count() > 1);
+            if (shared is not null)
+                throw new ObjectSchemaException(
+                    $"{string.Join(" and ", shared.Select(p => $"{Type.Name}.{p.Name}"))} are both kept by {shared.Key.LinkedType!.Name}.{shared.Key.LinkedByPropertyName}. " +
+                    "One key holds one relationship; give each collection a key of its own.", Type);
+        }
+
+        /// <inheritdoc cref="IObjectSchema.GetLinkedCollectionKey"/>
+        public IPropertySchema GetLinkedCollectionKey(IPropertySchema collection)
+        {
+            ArgumentNullException.ThrowIfNull(collection);
+            if (!collection.IsLinkedCollection || !_linkedCollectionProperties.Contains(collection))
+                throw new ArgumentException($"{collection.Name} is not a linked collection of {Type.Name}.", nameof(collection));
+            return _linkedCollectionKeys.GetOrAdd(collection.Name, static (_, args) => args.Self.ResolveLinkedCollectionKey(args.Collection), (Self: this, Collection: collection));
+        }
+
+        /// <summary>
+        /// The key a linked collection names, checked against the many type: resolved on first use
+        /// and forced when the one's table is built, since the many type's schema cannot be read
+        /// while this one's is being built (the many may have a collection of this type).
+        /// </summary>
+        private IPropertySchema ResolveLinkedCollectionKey(IPropertySchema collection)
+        {
+            var manyType = collection.LinkedType!;
+            var where = $"{Type.Name}.{collection.Name}";
+            var many = ObjectSchema.Get(manyType);
+            if (many.HasParentObject)
+                throw new ObjectSchemaException(
+                    $"{where} is a linked collection of {manyType.Name}, which is a child type. Rows a parent owns are a NucleusChildCollection on the parent.", Type);
+            var name = collection.LinkedByPropertyName!;
+            var key = many.TryGetProperty(name)
+                ?? throw new ObjectSchemaException($"{where} is kept by {manyType.Name}.{name}, which {manyType.Name} does not have.", Type);
+            if (!key.IsDBColumn)
+                throw new ObjectSchemaException(
+                    $"{where} is kept by {manyType.Name}.{name}, which is not a stored column. Mark it [DatabaseColumn(Indexed = true)].", Type);
+            var holdsId = key.Type == typeof(Guid) || key.Type == typeof(Guid?);
+            var holdsOne = key.IsLinkedObject && key.Type.IsAssignableFrom(Type);
+            if (!holdsId && !holdsOne)
+                throw new ObjectSchemaException(
+                    key.Type.IsAssignableFrom(Type)
+                        ? $"{where} is kept by {manyType.Name}.{name}, which holds a {Type.Name} but is not a [LinkedObject]. Mark it [LinkedObject]."
+                        : $"{where} is kept by {manyType.Name}.{name}, a {key.Type.Name}. The key holds the {Type.Name}'s ID: a Guid, a Guid? or a [LinkedObject] typed as {Type.Name}.",
+                    Type);
+            // Every load of the collection, every include and every refused delete filters on it.
+            if (!key.IsIndexed && !key.IsUnique)
+                throw new ObjectSchemaException(
+                    $"{where} is kept by {manyType.Name}.{name}, which is not indexed, so every load of the collection would scan {manyType.Name}'s table. " +
+                    "Mark it [DatabaseColumn(Indexed = true)].", Type);
+            return key;
+        }
+
+        #endregion
         public PropertyInfo? GetChildCollectionProperty(Type type) => TryGetChildCollectionProperty(type)?.PropertyInfo;
 
         public static ObjectSchema<T> Get()
@@ -478,6 +580,8 @@ namespace TFM.Nucleus
             try
             {
                 _ = _deletePolicy.Value; // a conflicting delete declaration fails here, not at the first delete
+                foreach (var collection in _linkedCollectionProperties)
+                    _ = GetLinkedCollectionKey(collection);
                 if (HasNucleusChildCollections)
                 {
                     foreach (var c in _nucleusChildCollectionProperties.Values)

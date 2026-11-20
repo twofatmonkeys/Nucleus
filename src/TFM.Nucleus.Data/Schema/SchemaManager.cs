@@ -84,7 +84,32 @@ namespace TFM.Nucleus.Data.Schema
             }
             List<TableSchema> tables = [.. TableCache.Values];
             EnsureTableNamesAreDistinct(tables);
+            EnsureLinkedCollectionsAreStoredTogether(tables);
             return tables;
+        }
+
+        /// <summary>
+        /// Checks every linked collection's key against its many type, and refuses a collection
+        /// whose many type this provider does not store: the members are saved in the one's
+        /// transaction, included in its read, and looked for before it is deleted, all on one
+        /// connection.
+        /// </summary>
+        private void EnsureLinkedCollectionsAreStoredTogether(IReadOnlyList<TableSchema> tables)
+        {
+            foreach (var table in tables)
+            {
+                var schema = table.ObjectSchema;
+                if (!schema.HasLinkedCollections)
+                    continue;
+                foreach (var collection in schema.LinkedCollectionProperties)
+                {
+                    _ = schema.GetLinkedCollectionKey(collection);
+                    if (!TableCache.ContainsKey(collection.LinkedType!))
+                        throw new InvalidOperationException(
+                            $"{schema.Name}.{collection.Name} holds {collection.LinkedType!.Name}, which is not stored by the provider that stores {schema.Name}. " +
+                            "The two types of a linked collection are stored by one provider.");
+                }
+            }
         }
 
         /// <summary>

@@ -142,6 +142,23 @@ included reference (`IncludeLinkedObject`) is a linked query like a child query,
 subquery selects that column of exactly the parent rows returned instead of their `ID`, and the
 binder files the entities by ID and binds them into every row that holds that ID.
 
+A `NucleusLinkedCollection<TMany, TOne>` (Abstractions) is the one-to-many between two roots: the
+many type declares the key and the one's property names it with `[LinkedBy]`. `ObjectSchema`
+refuses the per-type rules in its constructor (a one is a root and not `[Cacheable]`, two
+collections never share a key) and resolves each key lazily (`GetLinkedCollectionKey`), because the
+many type may hold a collection of the one; `SchemaManager.BuildSchema` forces the keys and refuses a
+many type the provider does not store. Collections are keyed by property name, never by element
+type. A collection exists only once its property is read (`CoreObject.NucleusLinkedCollections`
+lists those), loads on the first read of a member through the one's bound `ILinkedObjectLoader`, and
+an include is a child-shaped linked query marked `LinkedCollectionProperty` on the key column.
+`KeyedRowLoader` (Data, internal) is the one read of rows a load left for later, by a key column:
+child collections, linked collections and linked objects all load through it. `SaveGraph` holds a
+collection's new or changed members (`Members`, written after the roots) and its removed stored
+members (`RemovedMembers`, deleted first by ID as direct deletes); commit commits them as it does
+links. `DbDataContext.ExecuteDeleteCore` refuses a delete of a one with members before any chunk
+runs, by a select of member IDs whose key is in the rows the delete's own condition matches
+(`RelationalDataProvider.LinkedMembersOf`), in the delete's transaction.
+
 `SaveGraph` (Abstractions) is the one walk of what a save reaches: the held children at every
 depth, the `forceSave` links it must write, and the stored children removed from collections.
 Validation (`CoreObject.Validate`), the writes and the commit all read it, so they cannot disagree.
@@ -317,6 +334,10 @@ warning in new code fails CI.
 - A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(v => v.Recipient)`).
   Never load the referenced entities by their IDs by hand, and never keep a raw `Guid` column
   beside a reference to avoid the read.
+- Roots that belong to another root (a campaign's vouchers) are a `NucleusLinkedCollection<TMany, TOne>`
+  on the one, with `[LinkedBy]` naming an indexed key on the many. Never hold them in a private
+  `List<T>` loaded by hand, and never save them in a loop beside the one: add them to the
+  collection and save the one. A listing that reads the collection on every row `Include`s it.
 - Listings that do not need children use `Exclude(...)`; do not split a parent and its children
   into two queries and join them in memory.
 - Take `IObjectDataManager`, never the concrete `ObjectDataManager`, and never reach through its

@@ -54,6 +54,18 @@ namespace TFM.Nucleus
         /// and the collection loads them the first time it is read.
         /// </summary>
         public bool IsLazyChildCollection => false;
+
+        /// <summary>True for a <c>NucleusLinkedCollection</c> property.</summary>
+        public bool IsLinkedCollection => false;
+
+        /// <summary>The many type of a <c>NucleusLinkedCollection</c> property; null for any other property.</summary>
+        public Type? LinkedType => null;
+
+        /// <summary>
+        /// For a <c>NucleusLinkedCollection</c> property, the many type's key property its
+        /// <c>[LinkedBy]</c> names; null for any other property.
+        /// </summary>
+        public string? LinkedByPropertyName => null;
         public bool IsParentObject { get; }
         public string? ParentIDPropertyName { get; }
         public Type Type { get; }
