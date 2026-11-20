@@ -18,13 +18,37 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
     /// <inheritdoc />
     protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
 
+    /// <summary>
+    /// The connection pool of every provider this database registers, unless the test's own
+    /// <c>configure</c> sets another. The provider keeps two Npgsql pools of this size, one for
+    /// transactional connections and one for the rest (their connection strings differ by
+    /// <c>Enlist</c>), so at the default of 100 one test process could hold 200 connections
+    /// against PostgreSQL's default <c>max_connections</c> of 100. The net8.0 and net10.0 runs
+    /// share the server, and a store's suite failed with 53300 "too many clients" whenever their
+    /// PostgreSQL tests overlapped, with up to 99 connections idle in the pools. At 20, two runs
+    /// hold at most 80, which leaves room for the setup statements and a tool. A full pool waits
+    /// for a free connection rather than failing.
+    /// </summary>
+    private const int TestPoolSize = 20;
+
     /// <inheritdoc />
     public override void AddProvider(IServiceCollection services, Action<RelationalProviderOptions> configure) =>
-        services.AddNucleusPostgresDataProvider(options => UseTestDatabase(options, configure));
+        services.AddNucleusPostgresDataProvider(options => UseTestDatabase(options, WithTestPool(configure)));
 
     /// <inheritdoc />
     public override void AddRootedProvider(IServiceCollection services, Type rootType, Action<RelationalProviderOptions> configure) =>
-        services.AddNucleusPostgresDataProvider(rootType, options => UseTestDatabase(options, configure));
+        services.AddNucleusPostgresDataProvider(rootType, options => UseTestDatabase(options, WithTestPool(configure)));
+
+    /// <summary>Caps the pool at <see cref="TestPoolSize"/>, then applies the test's own options, which may change it.</summary>
+    private static Action<RelationalProviderOptions> WithTestPool(Action<RelationalProviderOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        return options =>
+        {
+            options.MaxConnectionPoolSize = TestPoolSize;
+            configure(options);
+        };
+    }
 
     /// <inheritdoc />
     public override async Task ExecuteAsync(string sql, CancellationToken token = default)

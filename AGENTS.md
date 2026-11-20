@@ -225,7 +225,9 @@ and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer
 `.Sqlite`);
 `DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
 configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
-stack whose initialisation fails includes its warnings and errors in the message. A fixture boots
+stack whose initialisation fails includes its warnings and errors in the message. A PostgreSQL
+stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because the provider
+keeps two pools of `MaxConnectionPoolSize` each and two runs at the default exhausted the server. A fixture boots
 its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
 runs once raced to create the same tables and one of them failed. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
