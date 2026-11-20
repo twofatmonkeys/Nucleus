@@ -231,6 +231,21 @@ committed), which changes every caller-owned context and so needs a coordinated 
 then, callers wrap the work in a try/catch that rolls back and rethrows. Verified by reading the
 code.
 
+### A provider holds two connection pools of MaxConnectionPoolSize each (November 2026)
+
+The SQL Server and PostgreSQL configurations build a transactional connection string and a
+non-transactional one with `Enlist=false`. The drivers pool by connection string, so a provider
+keeps two pools, each up to `MaxConnectionPoolSize`, and the setting the README called the
+connection pool ceiling allows twice that many server connections per process. The slot limit in
+`DbDataContext` counts open contexts, not pooled connections, so it does not bound them either;
+idle pooled connections stay open until the driver prunes them. Measured on a store's PostgreSQL
+contract suite: up to 99 idle connections across the net8.0 and net10.0 runs, against a
+`max_connections` of 100, which failed with 53300 "too many clients". The test package now caps
+its PostgreSQL stacks at 20 (`PostgresTestDatabase.TestPoolSize`, peak 84 over six runs, every
+run passing). The provider is unchanged: one pool, or the setting split across the two, changes
+how many connections a production site opens and needs a decision. The README documents the
+doubling in the option tables and the known limits.
+
 ## Fixed
 
 ### The manager interface did not carry what a store needs (November 2026)

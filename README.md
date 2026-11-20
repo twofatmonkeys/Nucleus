@@ -327,6 +327,8 @@ var store = new MyStore(stack.Manager);
 
 Stacks find entities the way an application does, from every assembly beside the entry assembly, so a store's test project initialises the store's tables just by referencing the store. The schema lock is not reentrant: take it once per test, around the whole change.
 
+A PostgreSQL stack sets `MaxConnectionPoolSize` to 20 before the test's own options run, so a test can still change it. At the provider default of 100, one process could hold 200 connections, and the net8.0 and net10.0 runs of a suite share a server whose default `max_connections` is 100, so overlapping runs failed with 53300 "too many clients".
+
 ## Entity base classes
 
 | Base class | Use for |
@@ -734,7 +736,7 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `Username`, `Password` | none | SQL authentication credentials. |
 | `UseIntegratedSecurity` | `false` | Use Windows authentication and ignore the credentials above. |
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
-| `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
+| `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
 | `SQLPacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
 | `MaxParametersPerQuery` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
@@ -759,7 +761,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 | `SslMode` | driver default | `Disable`, `Allow`, `Prefer`, `Require`, `VerifyCA` or `VerifyFull`. |
 | `ConnectionString` | none | A raw Npgsql connection string that bypasses the builder. `Database` still names the database to create and read. |
 | `ConnectRetryCount` | `3` | Attempts at opening a connection when the failure is transient, with an exponential back-off. |
-| `MaxConnectionPoolSize` | `100` | Connection pool ceiling. |
+| `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
 | `MaxParametersPerQuery` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
@@ -813,12 +815,22 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   the writes run. A caller who then rolls back must reload the objects.
 - **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
   `Include` or `LoadAsync()` where that matters.
+- **A provider can hold twice `MaxConnectionPoolSize` connections** on SQL Server and PostgreSQL.
+  Transactional and other connections differ by `Enlist`, so the driver keeps a pool of that size
+  for each. Size the server's connection limit for twice the setting per process, or lower the
+  setting.
 - **A caller-owned context commits when it is disposed** unless `Rollback()` or `TryRollback()`
   was called. A failed statement does not roll it back by itself, so wrap the work in a try/catch
   that rolls back and rethrows. Work done through it evicts no `[Cacheable]` cache. A single type's
   batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
 
 ## Behaviour changes
+
+This came in with the PostgreSQL test pool cap.
+
+- **A PostgreSQL test stack's pool is 20, not 100.** `TFM.Nucleus.Testing` sets it before a test's
+  own options, so a test that needs more sets `MaxConnectionPoolSize` itself. A full pool waits for
+  a free connection rather than failing. Nothing changes outside the test package.
 
 These came in with the manager interface fix.
 
