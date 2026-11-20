@@ -8,6 +8,8 @@ namespace TFM.Nucleus.IntegrationTests
     /// </summary>
     public abstract class ExcludeIntegrationTests(DatabaseFixture fixture)
     {
+        private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
         private static string Tag(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
         private async Task<IntBundle> SaveBundleAsync(string name, int files)
@@ -34,6 +36,30 @@ namespace TFM.Nucleus.IntegrationTests
 
             Assert.Equal(1, dataSet.RowCount);
             Assert.Empty(dataSet.LinkedDataSets);
+        }
+
+        /// <summary>
+        /// The same read as a store makes it: through IObjectDataManager, the type DI registers,
+        /// with a token on every call, paging after Where, finding by ID and loading the
+        /// excluded collection without a cast.
+        /// </summary>
+        [Fact]
+        public async Task ThroughTheInterface_PageFindAndLoadAnExcludedCollection()
+        {
+            IObjectDataManager data = fixture.RequireManager();
+            var name = Tag("if");
+            await SaveBundleAsync(name, files: 2);
+
+            var page = await data.Get<IntBundle>().Where(b => b.Name == name).Exclude(b => b.Files).ToPagedResultAsync(0, 10, Ct);
+            var listed = Assert.Single(page);
+            Assert.Equal(1, page.TotalCount);
+            Assert.False(listed.Files.IsLoaded);
+
+            await data.LoadChildCollectionAsync(listed.Files, Ct);
+            Assert.Equal(2, listed.Files.Count);
+
+            var found = await data.Get<IntBundle>().FindAsync(listed.ID, Ct);
+            Assert.Equal(2, found!.Files.Count);
         }
 
         [Fact]

@@ -101,7 +101,12 @@ keys are all non-null like a column's `Unique`, and a duplicate key while buildi
 fails initialisation without touching the rows.
 
 `ObjectDataManager` implements both `IObjectDataManager` and
-`INucleusRuntime`, so the static and instance surfaces share one code path. `ObjectDataAdaptor<T>`
+`INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
+`IObjectDataManager`, so it carries every operation a store needs (writes with tokens, deletes,
+`CreateContextAsync<T>` and `SubscribeToChangesAsync<T>` routed by type) and reads go through
+`Get<T>()` and `Rows<T>()`. A member added to it gets a default body that throws
+`NotSupportedException`, so another implementation still compiles. `DataProvider` on it is
+obsolete: it is the unrooted default provider and misroutes a rooted type. `ObjectDataAdaptor<T>`
 is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
 comparison still reads as a column;
@@ -284,6 +289,10 @@ warning in new code fails CI.
   children `Include`s them. Never read a lazy collection per parent in a loop.
 - Listings that do not need children use `Exclude(...)`; do not split a parent and its children
   into two queries and join them in memory.
+- Take `IObjectDataManager`, never the concrete `ObjectDataManager`, and never reach through its
+  `DataProvider`. A transaction across several types is `CreateContextAsync<T>`, wrapped in a
+  try/catch that rolls back, because disposing the context commits. If a store needs something the
+  interface lacks, that is a Nucleus defect: add it to the interface rather than casting.
 - When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
   record it in `docs/code-review-findings.md` and in the README's known limits) rather than
   working around it in the consumer.

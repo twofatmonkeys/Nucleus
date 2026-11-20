@@ -231,11 +231,14 @@ namespace TFM.Nucleus.Data
             return result;
         }
 
-        public async Task<IEnumerable<T>?> SaveAsync()
+        public Task<IEnumerable<T>?> SaveAsync() => SaveAsync(CancellationToken.None);
+
+        /// <inheritdoc cref="IObjectDataAdaptor{TICoreObject}.SaveAsync(CancellationToken)"/>
+        public async Task<IEnumerable<T>?> SaveAsync(CancellationToken token)
         {
             if (ChangeCollection.Count == 0)
                 return [];
-            var result = await _odm.SaveAsync(ChangeCollection);
+            var result = await _odm.SaveAsync(ChangeCollection, token);
             ChangeCollection.Clear();
             return result;
         }
@@ -248,6 +251,8 @@ namespace TFM.Nucleus.Data
 
         // It used to wrap the synchronous LoadByID in Task.FromResult, so the caller's thread waited on the database.
         Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id) => _odm.LoadByIDAsync<T>(id, _excluded, _included);
+
+        Task<T?> IObjectDataAdaptor<T>.FindAsync(Guid id, CancellationToken token) => _odm.LoadByIDAsync<T>(id, _excluded, _included, token);
 
         /// <summary>One page plus the unpaged total, in a single round trip.</summary>
         public Task<PagedResult<T>> ToPagedResultAsync(int skip, int take, CancellationToken cancellationToken = default) =>

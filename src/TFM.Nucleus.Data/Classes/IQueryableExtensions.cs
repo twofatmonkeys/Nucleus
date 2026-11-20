@@ -34,6 +34,19 @@ namespace TFM.Nucleus.Data
                 : throw new InvalidOperationException(
                     $"Include applies to Nucleus queries only; this source is a {source.GetType().Name}.");
 
+        /// <summary>
+        /// One page of a Nucleus query's rows plus the unpaged total count, in a single round trip,
+        /// so <c>.Where(..).ToPagedResultAsync(0, 20)</c> works as well as on the adaptor itself.
+        /// Only queries from IObjectDataAdaptor support it.
+        /// </summary>
+        public static Task<PagedResult<TSource>> ToPagedResultAsync<TSource>(this IQueryable<TSource> source,
+            int skip, int take, CancellationToken cancellationToken = default)
+            where TSource : ICoreObject<TSource>, new() =>
+            source is ObjectDataAdaptor<TSource> adaptor
+                ? adaptor.ToPagedResultAsync(skip, take, cancellationToken)
+                : throw new InvalidOperationException(
+                    $"ToPagedResultAsync applies to Nucleus queries only; this source is a {source.GetType().Name}.");
+
         public static async Task<List<TSource>> ToListAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
             var list = new List<TSource>();

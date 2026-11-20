@@ -17,16 +17,102 @@ using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.Data
 {
+    /// <summary>
+    /// The data surface an application or a store codes against, and the one DI registers. Every
+    /// operation routes each entity type to the provider of its nearest registered root, runs in a
+    /// transaction of its own, evicts the <c>[Cacheable]</c> cache on commit and marks the objects
+    /// saved. Reads go through <see cref="Get{T}"/> (entities, by LINQ) and <see cref="Rows{T}"/>
+    /// (rows of values).
+    /// </summary>
     public interface IObjectDataManager
     {
+        /// <summary>
+        /// The unrooted default provider. It is not the provider of a type registered under a
+        /// rooted provider, so reaching through it misroutes that type, and anything written
+        /// through it skips the manager's cache eviction.
+        /// </summary>
+        [Obsolete("DataProvider is the unrooted default provider and misroutes types registered under a rooted provider. " +
+            "Use the routed members instead: CreateContextAsync<T>, SubscribeToChangesAsync<T>, Rows<T>, SaveAsync and DeleteAsync.")]
         IDataProvider DataProvider { get; }
         IObjectSchemaProvider ObjectSchema { get; }
         DataProviderStatus DataProviderStatus { get; }
-        //Task<DataSchemaStatus> CheckSchemaAsync();
         Task<DataProviderStatus> InitializeDataProviderAsync();
         IObjectDataAdaptor<T> Get<T>() where T : ICoreObject<T>, new();
 
         Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new();
+
+        /// <summary>
+        /// Saves the object with its child collections (deleting the stored children removed from
+        /// them) and the forceSave links it reaches, in one transaction. A failure rolls back. A
+        /// <see cref="UniqueViolationException"/>, an <see cref="OperationCanceledException"/>, a
+        /// <see cref="DataProviderException"/> and a <see cref="DataContextException"/> are thrown
+        /// as they are; any other failure is wrapped.
+        /// </summary>
+        Task SaveAsync<T>(T obj, CancellationToken token) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support a cancellable save.");
+
+        /// <summary>
+        /// Saves the objects, as <see cref="SaveAsync{T}(T, CancellationToken)"/> does, all in one
+        /// transaction. Returns null when there was nothing to write.
+        /// </summary>
+        Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support saving a batch.");
+
+        /// <summary>
+        /// Deletes the object and its child collection rows at every depth, loaded or not, in one
+        /// transaction. The type must be <c>[Deletable]</c>; a new object is skipped.
+        /// </summary>
+        Task DeleteAsync<T>(T obj, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support deleting.");
+
+        /// <summary>
+        /// Deletes the objects as <see cref="DeleteAsync{T}(T, CancellationToken)"/> does, in one
+        /// transaction per provider: a batch spanning providers is not atomic.
+        /// </summary>
+        Task DeleteAsync<T>(IEnumerable<T> objs, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support deleting a batch.");
+
+        /// <summary>
+        /// Deletes every row of <typeparamref name="T"/> matching <paramref name="predicate"/>
+        /// without loading any, with their child collection rows, in one transaction. Returns
+        /// the rows of <typeparamref name="T"/> affected. A predicate matching every row throws
+        /// <see cref="ArgumentException"/>; one matching none returns 0 without a round trip.
+        /// </summary>
+        Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support deleting by predicate.");
+
+        /// <summary>
+        /// Loads a child collection that was left out when its parent was loaded (excluded, or
+        /// lazy): the rows whose parent is the collection's owner, with their own children,
+        /// merged by ID with any children added since. A loaded collection is left as it is.
+        /// </summary>
+        Task LoadChildCollectionAsync(INucleusChildCollection collection, CancellationToken token = default) =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading a child collection on demand.");
+
+        /// <summary>
+        /// Subscribes to external-change notifications for <typeparamref name="T"/> on the provider
+        /// that owns it. Throws <see cref="NotSupportedException"/> when that provider has none.
+        /// </summary>
+        Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support change notifications.");
+
+        /// <summary>
+        /// Opens a caller-owned context on the provider that owns <typeparamref name="T"/>, for
+        /// work that must share one transaction across several types on that provider. The
+        /// caller owns the outcome, and the manager's guarantees do not apply inside it:
+        /// <list type="bullet">
+        /// <item>Disposing a transactional context commits it unless <see cref="IDataContext.Rollback"/>
+        /// or <see cref="IDataContext.TryRollback"/> was called. A failed statement does not roll
+        /// it back by itself, so catch, roll back and rethrow.</item>
+        /// <item>An object saved through it is marked saved as soon as its writes run, before the
+        /// commit; after a rollback, reload it.</item>
+        /// <item>No <c>[Cacheable]</c> cache is evicted.</item>
+        /// </list>
+        /// Prefer <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/> when the objects
+        /// are of one type.
+        /// </summary>
+        Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support caller-owned contexts.");
 
         /// <summary>
         /// A read of rows rather than entities over the rows <paramref name="predicate"/> matches
@@ -34,7 +120,9 @@ namespace TFM.Nucleus.Data
         /// counts, minimums, maximums and totals worked out there. See <see cref="RowQuery{T}"/>.
         /// </summary>
         RowQuery<T> Rows<T>(Expression<Func<T, bool>>? predicate = null) where T : ICoreObject<T>, new() =>
+#pragma warning disable CS0618 // Kept for implementers that predate the routed members; ObjectDataManager overrides it.
             new(DataProvider, predicate);
+#pragma warning restore CS0618
     }
 
 
@@ -112,6 +200,14 @@ namespace TFM.Nucleus.Data
 
         /// <summary>The provider owning <typeparamref name="T"/> (nearest registered root).</summary>
         private IDataProvider ProviderFor<T>() => _registry.GetProvider(typeof(T));
+
+        /// <inheritdoc cref="IObjectDataManager.CreateContextAsync{T}(ContextOptions?, CancellationToken)"/>
+        public Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            ProviderFor<T>().CreateContextAsync(options, token);
+
+        /// <inheritdoc cref="IObjectDataManager.SubscribeToChangesAsync{T}(CancellationToken)"/>
+        public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>
+            ProviderFor<T>().SubscribeToChangesAsync<T>(token);
 
         public IDataProviderRegistry Providers => _registry;
         public DataProviderStatus DataProviderStatus => DataProvider.Status;
