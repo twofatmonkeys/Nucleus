@@ -53,7 +53,7 @@ namespace TFM.Nucleus.Data.Schema
 
         public readonly bool Unique;
 
-        /// <summary>The column gets an index of its own.</summary>
+        /// <summary>The column gets an index of its own: declared, or a child's parent column.</summary>
         public readonly bool Indexed;
 
         public readonly bool IndexSortDescending;
@@ -93,7 +93,9 @@ namespace TFM.Nucleus.Data.Schema
             PrimaryKey = attr.PrimaryKey;
             Unique = attr.Unique;
             FullTextSearch = attr.FullTextSearch;
-            Indexed = attr.Indexed;
+            // A child's parent column is always indexed: every child load and every cascaded
+            // delete filters on it, and without an index each one scans the child table.
+            Indexed = attr.Indexed || propertySchema.IsParentObject;
             ClrType = GetClrType(propertySchema);
             RequiresCast = WillRequireCast(propertySchema);
             IndexSortDescending = attr.IndexDescending;

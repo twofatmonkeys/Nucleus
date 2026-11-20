@@ -370,6 +370,7 @@
                 "  TFM.Nucleus.ICoreObject::public abstract System.Void BindValue(System.String, System.Object)",
                 "  TFM.Nucleus.ICoreObject::public abstract System.Void ChildPropertyChanged(System.Object, System.ComponentModel.PropertyChangedEventArgs)",
                 "  TFM.Nucleus.ICoreObject::public abstract System.Void CommitChanges(Microsoft.Extensions.Logging.ILogger = ...)",
+                "  TFM.Nucleus.ICoreObject::public abstract System.Void PrepareForSave()",
                 "  TFM.Nucleus.ICoreObject::public abstract T GetPropertyValue<T>(System.String)",
                 "  TFM.Nucleus.ICoreObject::public virtual System.Guid[] GetLinkedIDsForLogging()",
                 "  TFM.Nucleus.ICoreObject::public virtual System.Void AcceptServerValue(System.String, System.Object)",

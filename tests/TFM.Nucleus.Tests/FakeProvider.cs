@@ -20,6 +20,12 @@ namespace TFM.Nucleus.Tests
         /// <summary>When set, every query execution on this provider's contexts throws it, as a database failure would.</summary>
         public Exception? ExecuteFailure { get; set; }
 
+        /// <summary>
+        /// When set, disposing a context throws it, as a transactional context does when its
+        /// commit fails: the statements ran, the commit did not.
+        /// </summary>
+        public Exception? DisposeFailure { get; set; }
+
         public Guid ConnectionIdentifier { get; } = Guid.NewGuid();
         public DataProviderStatus Status => DataProviderStatus.Ok;
         public Type? RootType { get; set; }
@@ -267,8 +273,23 @@ namespace TFM.Nucleus.Tests
         public Task TryRollbackAsync() { RolledBack = true; return Task.CompletedTask; }
         public Task TryRollbackAsync(CancellationToken token) { RolledBack = true; return Task.CompletedTask; }
 
-        public void Dispose() { }
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        /// <summary>How the context was disposed: null while open, else true for DisposeAsync.</summary>
+        public bool? DisposedAsync { get; private set; }
+
+        public void Dispose()
+        {
+            DisposedAsync ??= false;
+            if (provider.DisposeFailure is { } failure)
+                throw failure;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposedAsync ??= true;
+            if (provider.DisposeFailure is { } failure)
+                throw failure;
+            return ValueTask.CompletedTask;
+        }
     }
 
     public sealed class FakeTableSchema(IObjectSchema objectSchema) : IDataTableSchema

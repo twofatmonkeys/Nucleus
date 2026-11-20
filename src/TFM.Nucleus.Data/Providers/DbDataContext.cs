@@ -299,11 +299,24 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>
         /// What saving the object runs, from the provider's one save builder: deletes of removed
         /// children, forceSave link writes, then the object's insert or update with its children.
+        /// The object is validated first.
         /// </summary>
         private List<Query> BuildSaveQueries(ICoreObject obj)
         {
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
+            obj.PrepareForSave();
             return _provider.CreateSaveQueries([obj]);
+        }
+
+        /// <summary>
+        /// What a bulk save of the objects runs, each type's inserts and updates as separate
+        /// chains. Every object is validated first.
+        /// </summary>
+        private List<Query> BuildBulkSaveQueries(IEnumerable<ICoreObject?>? objects)
+        {
+            var list = objects as IList<ICoreObject?> ?? objects?.ToList();
+            SaveChecks.Run(list);
+            return _provider.CreateSaveQueries(list, separateOperations: true);
         }
 
         /// <summary>The object's row and every row of its child collections, loaded or not.</summary>
@@ -339,7 +352,7 @@ namespace TFM.Nucleus.Data.Providers
 
         void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects)
         {
-            foreach (var query in _provider.CreateSaveQueries(objects, separateOperations: true))
+            foreach (var query in BuildBulkSaveQueries(objects))
                 ExecuteSQL(query);
         }
         Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => BulkSaveAsync(objects, CancellationToken.None);
@@ -349,7 +362,7 @@ namespace TFM.Nucleus.Data.Providers
         {
             // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine. Each
             // type's inserts and updates are separate chains, which is the shape it batches by.
-            foreach (var query in _provider.CreateSaveQueries(objects, separateOperations: true))
+            foreach (var query in BuildBulkSaveQueries(objects))
                 await ExecuteSQLAsync(query, token);
         }
 
@@ -412,71 +425,99 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (_useDependency && _connection != null)
                 OnDisposing();
-            if (HasTransaction)
+            // Disposed even when the commit throws: FinallyDispose has released everything by
+            // then, and a second dispose must not try again.
+            try
             {
-                if (HasChildren)
-                    foreach (var db in _childContexts.Values)
-                        if (db._needsRollback)
-                            _needsRollback = true;
-                if (_parent == null)
+                if (HasTransaction)
+                {
+                    if (HasChildren)
+                        foreach (var db in _childContexts.Values)
+                            if (db._needsRollback)
+                                _needsRollback = true;
+                    if (_parent == null)
+                        await FinallyDispose(async).ConfigureAwait(false);
+                }
+                else
                     await FinallyDispose(async).ConfigureAwait(false);
             }
-            else
-                await FinallyDispose(async).ConfigureAwait(false);
-            _disposed = true;
+            finally
+            {
+                _disposed = true;
+            }
             Debug.WriteLine($"Diposed of database object {ContextId} at {DateTime.Now:H:mm:ss.ff}", "Database");
         }
 
+        /// <summary>
+        /// Commits or rolls back the transaction tree, then closes the connection and leaves the
+        /// pool. A commit or rollback that throws still releases the transaction, the connection
+        /// and the pool slot before its failure propagates, so a failed commit cannot leak them.
+        /// </summary>
         private async ValueTask FinallyDispose(bool async)
         {
-            if (HasTransaction)
+            var finished = false;
+            try
             {
-                foreach (var db in _childContexts.Values)
+                if (HasTransaction)
                 {
-                    db._needsRollback = _needsRollback;
-                    await db.FinallyDispose(async).ConfigureAwait(false);
-                }
-                _childContexts.Clear();
-
-                if (_transaction != null)
-                {
-                    if (_needsRollback)
+                    foreach (var db in _childContexts.Values)
                     {
-                        if (async)
-                            await _transaction.RollbackAsync().ConfigureAwait(false);
-                        else
-                            _transaction.Rollback();
-                        Debug.WriteLine($"Database object {ContextId} rolled back at {DateTime.Now:H:mm:ss.ff}", "Database");
+                        db._needsRollback = _needsRollback;
+                        await db.FinallyDispose(async).ConfigureAwait(false);
                     }
-                    else if (async)
-                        await _transaction.CommitAsync().ConfigureAwait(false);
-                    else
-                        _transaction.Commit();
-                    if (async)
-                        await _transaction.DisposeAsync().ConfigureAwait(false);
-                    else
-                        _transaction.Dispose();
-                    _transaction = null;
-                }
-            }
+                    _childContexts.Clear();
 
-            if (_connection != null)
-            {
-                Debug.WriteLine($"Disposing of database connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff}", "Database");
-                if (async)
-                {
-                    await _connection.CloseAsync().ConfigureAwait(false);
-                    await _connection.DisposeAsync().ConfigureAwait(false);
+                    if (_transaction != null)
+                    {
+                        try
+                        {
+                            if (_needsRollback)
+                            {
+                                if (async)
+                                    await _transaction.RollbackAsync().ConfigureAwait(false);
+                                else
+                                    _transaction.Rollback();
+                                Debug.WriteLine($"Database object {ContextId} rolled back at {DateTime.Now:H:mm:ss.ff}", "Database");
+                            }
+                            else if (async)
+                                await _transaction.CommitAsync().ConfigureAwait(false);
+                            else
+                                _transaction.Commit();
+                        }
+                        finally
+                        {
+                            if (async)
+                                await _transaction.DisposeAsync().ConfigureAwait(false);
+                            else
+                                _transaction.Dispose();
+                            _transaction = null;
+                        }
+                    }
                 }
-                else
-                {
-                    _connection.Close();
-                    _connection.Dispose();
-                }
-                _connection = null;
+                finished = true;
             }
-            if (!_contextCache.TryRemove(ContextId, out _))
-                throw new Exception("Error removing Context from collection");
+            finally
+            {
+                if (_connection != null)
+                {
+                    Debug.WriteLine($"Disposing of database connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff}", "Database");
+                    if (async)
+                    {
+                        await _connection.CloseAsync().ConfigureAwait(false);
+                        await _connection.DisposeAsync().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _connection.Close();
+                        _connection.Dispose();
+                    }
+                    _connection = null;
+                }
+                // After a failed commit or rollback that failure is the one to report, so a
+                // missing pool entry only throws when everything above finished.
+                if (!_contextCache.TryRemove(ContextId, out _) && finished)
+                    throw new Exception("Error removing Context from collection");
+            }
         }
 
         public void TryRollback() => Rollback();
