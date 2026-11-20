@@ -112,6 +112,29 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   `NucleusLinkedCollection<T>` loaded by a foreign key property, lazy by default, never saved or
   deleted with the parent, with deleting the parent refused or allowed by declaration.
 
+### Found with the linked object read, fixed (November 2026)
+
+Found while designing linked collections for the Wellspring marketing run, by an integration test
+that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
+
+- **A loaded `[LinkedObject]` could not be read.** A load stored the referenced entity's ID, and
+  `CoreObject.GetValue<T>` cast it to the entity type: `InvalidCastException: Unable to cast object of
+  type 'System.Guid'`. No test read a reference after a reload; the existing ones only saved new
+  objects and filtered by the reference. The first read now loads the entity through the loader of
+  the stack that loaded the object (`ILinkedObjectLoader`), and `Include` loads references with the
+  rows in the same round trip. Cover: `LinkedObjectReadTests`, and the `ALinkedObject_*` and
+  `Include_*` tests of `ChildModelIntegrationTests` on every provider.
+- **A loaded object with a `forceSave` link could not be saved.** `SaveGraph.VisitLinks` read each
+  link through its property, so the same cast threw on every save of a loaded object of such a
+  type, on every save path. It now reads the link as held, and a link never read since the load is
+  skipped without being loaded. `ObjectSchema.GetLinkedObjects` had the same read and now returns
+  held links only. Cover: `LinkedObjectReadTests.ASaveWalk_*` and
+  `ALoadedObject_WithAForceSaveLinkNobodyRead_SavesItsOwnChange`, confirmed failing on the commit
+  before the fix.
+
+Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
+same reference without `Include` each load their own instance. Listed in the README's known limits.
+
 ### Timestamp in memory is the client clock (decided October 2026)
 
 The server stamps `Timestamp` on every write, and output parameters can now read a stored value

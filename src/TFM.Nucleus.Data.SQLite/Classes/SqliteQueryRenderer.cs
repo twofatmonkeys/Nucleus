@@ -118,12 +118,13 @@ namespace TFM.Nucleus.Data.SQLite
         }
 
         /// <summary>
-        /// The IDs of exactly the rows a parent query returns, for a child query to select its
-        /// rows by: its page or its limit applies here too.
+        /// One column (the ID, or for an included reference the reference column) of exactly the
+        /// rows a parent query returns, for a linked query to select its rows by: its page or its
+        /// limit applies here too.
         /// </summary>
-        private static string ParentIdSelect(SelectQuery q)
+        private static string ParentKeySelect(SelectQuery q, string column)
         {
-            var sb = new StringBuilder($"SELECT \"ID\" FROM {TableOf(q)}");
+            var sb = new StringBuilder($"SELECT {Quote(column)} FROM {TableOf(q)}");
             if (SelectWhere(q) is { } where)
                 sb.Append(' ').Append(where);
             if (q.IsRoot)
@@ -148,7 +149,7 @@ namespace TFM.Nucleus.Data.SQLite
             {
                 var parent = q.ParentSelect
                     ?? throw new InvalidQueryException("A child collection query must hang off a select.");
-                conditions.Add($"{Quote(q.LinkedColumn!)} IN ({ParentIdSelect(parent)})");
+                conditions.Add($"{Quote(q.LinkedColumn!)} IN ({ParentKeySelect(parent, q.ParentKeyColumn ?? "ID")})");
             }
             if (q.AppliesLiveRowFilter)
                 conditions.Add(LiveRowFilter);

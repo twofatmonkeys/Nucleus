@@ -13,7 +13,17 @@ namespace TFM.Nucleus
     public static class ChildCollectionSelector
     {
         /// <summary>The name of the collection property a selector reads.</summary>
-        public static string PropertyName<T>(Expression<Func<T, INucleusChildCollection>> selector)
+        public static string PropertyName<T>(Expression<Func<T, INucleusChildCollection>> selector) =>
+            MemberName(selector, $"A child collection selector must read one collection property of {typeof(T).Name}, as in x => x.Items");
+
+        /// <summary>
+        /// The name of the <c>[LinkedObject]</c> property a selector reads, as in
+        /// <c>v =&gt; v.Recipient</c>, for including the referenced entities in a load.
+        /// </summary>
+        public static string PropertyName<T>(Expression<Func<T, ICoreObject?>> selector) =>
+            MemberName(selector, $"A linked object selector must read one [LinkedObject] property of {typeof(T).Name}, as in x => x.Recipient");
+
+        private static string MemberName(LambdaExpression selector, string requirement)
         {
             ArgumentNullException.ThrowIfNull(selector);
             var body = selector.Body;
@@ -21,9 +31,7 @@ namespace TFM.Nucleus
                 body = convert.Operand;
             if (body is MemberExpression { Expression: ParameterExpression } member)
                 return member.Member.Name;
-            throw new ArgumentException(
-                $"A child collection selector must read one collection property of {typeof(T).Name}, as in x => x.Items; got {selector}.",
-                nameof(selector));
+            throw new ArgumentException($"{requirement}; got {selector}.", nameof(selector));
         }
 
         /// <summary>The distinct property names of several selectors.</summary>

@@ -129,6 +129,19 @@ stack that loaded the parent (`ChildCollectionLoader` over that manager's or con
 never the ambient runtime, so a process with several managers reads each from its own database. The
 collection loads itself on first read, under a lock, on the synchronous path.
 
+A `[LinkedObject]` is stored, and loaded, as the referenced entity's ID. `ChildGraphBinder.Complete`
+binds every loaded object of a type with linked objects to an `ILinkedObjectLoader` (Abstractions)
+for the stack that loaded it: the manager itself (`LoadByID` for the type, routed and cached), or a
+data context's `ProviderLinkedObjectLoader` (Data, its own provider on a context of its own). The
+first read of the property (`CoreObject.GetValue`, off the common path) loads the entity through it
+under a lock and keeps it as the stored value, so the object is not dirty. Nothing else may read a
+link through its property: `SaveGraph` and `GetLinkedObjects` read it as held
+(`GetPropertyValue`), because a link never read has no changes and reading it would load it. An
+included reference (`IncludeLinkedObject`) is a linked query like a child query, marked
+`LinkedObjectProperty`, whose `ParentKeyColumn` is the reference column: the renderers' parent
+subquery selects that column of exactly the parent rows returned instead of their `ID`, and the
+binder files the entities by ID and binds them into every row that holds that ID.
+
 `SaveGraph` (Abstractions) is the one walk of what a save reaches: the held children at every
 depth, the `forceSave` links it must write, and the stored children removed from collections.
 Validation (`CoreObject.Validate`), the writes and the commit all read it, so they cannot disagree.
@@ -301,6 +314,9 @@ warning in new code fails CI.
   root; children cascade. Do not delete children by predicate before deleting a parent.
 - A child collection that can grow large is `[RetrieveOnDemand]`, and a listing that needs its
   children `Include`s them. Never read a lazy collection per parent in a loop.
+- A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(v => v.Recipient)`).
+  Never load the referenced entities by their IDs by hand, and never keep a raw `Guid` column
+  beside a reference to avoid the read.
 - Listings that do not need children use `Exclude(...)`; do not split a parent and its children
   into two queries and join them in memory.
 - Take `IObjectDataManager`, never the concrete `ObjectDataManager`, and never reach through its

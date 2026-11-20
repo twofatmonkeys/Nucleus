@@ -129,6 +129,11 @@ namespace TFM.Nucleus.Tests
                 ["select.soft.paged.count"] = () => Select<TestSoftWidget>(q => { q.Skip = 2; q.Take = 2; q.WithTotalCount = true; }),
                 ["select.soft.children"] = () => ParentWithChild<TestSoftWidget, TestSoftChild>(p => p.Where.And("Name", "a")).BuildQuery(),
                 ["select.soft.children.includedeleted"] = () => ParentWithChild<TestSoftWidget, TestSoftChild>(p => p.IncludeDeleted = true).BuildQuery(),
+                ["select.reference"] = () => Select<TestLinkingWidget>(q => q.IncludeLinkedObject("Widget")),
+                ["select.reference.where"] = () => Select<TestLinkingWidget>(q => { q.Where.And("Name", "a"); q.IncludeLinkedObject("Widget"); }),
+                ["select.reference.top"] = () => Select<TestLinkingWidget>(q => { q.Take = 5; q.AddOrderBy("Name"); q.IncludeLinkedObject("Widget"); }),
+                ["select.reference.paged"] = () => Select<TestLinkingWidget>(q => { q.Skip = 10; q.Take = 5; q.WithTotalCount = true; q.IncludeLinkedObject("Widget"); }),
+                ["select.reference.withchildren"] = () => Select<TestLinkingWidget>(q => q.IncludeLinkedObject("Owner")),
                 ["select.alltypes"] = () => Select<TestAllTypesWidget>(),
 
                 // ---- Row reads: chosen columns, ordered and paged; groups with measures

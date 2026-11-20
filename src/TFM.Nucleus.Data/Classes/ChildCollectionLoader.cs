@@ -22,19 +22,33 @@ namespace TFM.Nucleus.Data
         private static readonly ConcurrentDictionary<Type, MethodInfo> _sync = [];
         private static readonly ConcurrentDictionary<Type, MethodInfo> _async = [];
 
-        /// <summary>Loads the collection on the synchronous path; does nothing when it is loaded.</summary>
-        public static void Load(IDataProvider provider, INucleusChildCollection collection)
+        /// <summary>
+        /// Loads the collection on the synchronous path; does nothing when it is loaded. The
+        /// children's <c>[LinkedObject]</c> properties are read through the same provider.
+        /// </summary>
+        public static void Load(IDataProvider provider, INucleusChildCollection collection) =>
+            Load(provider, collection, null);
+
+        /// <inheritdoc cref="Load(IDataProvider, INucleusChildCollection)"/>
+        /// <param name="provider">The provider that stores the child type.</param>
+        /// <param name="collection">The collection to load.</param>
+        /// <param name="linkLoader">
+        /// What the children's <c>[LinkedObject]</c> properties are read through: the stack that
+        /// loaded the parent. The same provider when null.
+        /// </param>
+        public static void Load(IDataProvider provider, INucleusChildCollection collection, ILinkedObjectLoader? linkLoader)
         {
             ArgumentNullException.ThrowIfNull(provider);
             ArgumentNullException.ThrowIfNull(collection);
             if (collection.IsLoaded)
                 return;
+            linkLoader ??= new ProviderLinkedObjectLoader(provider);
             var loader = _sync.GetOrAdd(collection.ChildType, static t =>
                 typeof(ChildCollectionLoader).GetMethod(nameof(ChildrenOf), BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(t));
             List<ICoreObject> children;
             try
             {
-                children = (List<ICoreObject>)loader.Invoke(null, [provider, collection.ParentObject])!;
+                children = (List<ICoreObject>)loader.Invoke(null, [provider, collection.ParentObject, linkLoader])!;
             }
             catch (TargetInvocationException ex) when (ex.InnerException is not null)
             {
@@ -42,21 +56,27 @@ namespace TFM.Nucleus.Data
                 throw;
             }
             collection.AttachLoaded(children);
-            CompleteAttached(collection, children);
+            CompleteAttached(collection, children, linkLoader);
         }
 
         /// <inheritdoc cref="Load(IDataProvider, INucleusChildCollection)"/>
-        public static async Task LoadAsync(IDataProvider provider, INucleusChildCollection collection, CancellationToken token = default)
+        public static Task LoadAsync(IDataProvider provider, INucleusChildCollection collection, CancellationToken token = default) =>
+            LoadAsync(provider, collection, null, token);
+
+        /// <inheritdoc cref="Load(IDataProvider, INucleusChildCollection, ILinkedObjectLoader?)"/>
+        public static async Task LoadAsync(IDataProvider provider, INucleusChildCollection collection, ILinkedObjectLoader? linkLoader,
+            CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(provider);
             ArgumentNullException.ThrowIfNull(collection);
             if (collection.IsLoaded)
                 return;
+            linkLoader ??= new ProviderLinkedObjectLoader(provider);
             var loader = _async.GetOrAdd(collection.ChildType, static t =>
                 typeof(ChildCollectionLoader).GetMethod(nameof(ChildrenOfAsync), BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(t));
-            var children = await ((Task<List<ICoreObject>>)loader.Invoke(null, [provider, collection.ParentObject, token])!).ConfigureAwait(false);
+            var children = await ((Task<List<ICoreObject>>)loader.Invoke(null, [provider, collection.ParentObject, linkLoader, token])!).ConfigureAwait(false);
             collection.AttachLoaded(children);
-            CompleteAttached(collection, children);
+            CompleteAttached(collection, children, linkLoader);
         }
 
         /// <summary>
@@ -64,29 +84,31 @@ namespace TFM.Nucleus.Data
         /// is bound. A row whose ID the collection already held (a child added since) was not
         /// taken, and is not a loaded object of the collection, so its hook does not run.
         /// </summary>
-        private static void CompleteAttached(INucleusChildCollection collection, List<ICoreObject> loaded)
+        private static void CompleteAttached(INucleusChildCollection collection, List<ICoreObject> loaded, ILinkedObjectLoader linkLoader)
         {
             if (loaded.Count == 0)
                 return;
             var held = new HashSet<ICoreObject>(collection.ChildObjects, ReferenceEqualityComparer.Instance);
             foreach (var child in loaded)
                 if (held.Contains(child))
-                    ChildGraphBinder.Complete(child, []);
+                    ChildGraphBinder.Complete(child, [], linkLoader);
         }
 
-        private static List<ICoreObject> ChildrenOf<TChild>(IDataProvider provider, ICoreObject parent) where TChild : ICoreObject<TChild>, new()
+        private static List<ICoreObject> ChildrenOf<TChild>(IDataProvider provider, ICoreObject parent, ILinkedObjectLoader linkLoader) where TChild : ICoreObject<TChild>, new()
         {
             var query = ChildrenOfQuery<TChild>(provider, parent);
             using var context = provider.CreateContext();
-            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, context.GetDataSet(query), c => Load(provider, c));
+            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, context.GetDataSet(query), c => Load(provider, c, linkLoader), linkLoader);
             return [.. loaded.Cast<ICoreObject>()];
         }
 
-        private static async Task<List<ICoreObject>> ChildrenOfAsync<TChild>(IDataProvider provider, ICoreObject parent, CancellationToken token) where TChild : ICoreObject<TChild>, new()
+        private static async Task<List<ICoreObject>> ChildrenOfAsync<TChild>(IDataProvider provider, ICoreObject parent, ILinkedObjectLoader linkLoader,
+            CancellationToken token) where TChild : ICoreObject<TChild>, new()
         {
             var query = ChildrenOfQuery<TChild>(provider, parent);
             using var context = await provider.CreateContextAsync(token: token).ConfigureAwait(false);
-            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false), c => Load(provider, c));
+            var loaded = ChildGraphBinder.BuildAttached<TChild>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false),
+                c => Load(provider, c, linkLoader), linkLoader);
             return [.. loaded.Cast<ICoreObject>()];
         }
 

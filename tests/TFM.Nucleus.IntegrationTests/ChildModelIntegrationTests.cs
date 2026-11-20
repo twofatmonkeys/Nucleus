@@ -412,5 +412,244 @@ namespace TFM.Nucleus.IntegrationTests
                 await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
             }
         }
+
+        [Fact]
+        public async Task ALinkedObject_ReadsBackAsItsEntity_AfterAReload()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lr");
+            var target = new IntLinkTarget { Name = $"{name}-t" };
+            var source = new IntLinkSource { Name = name, Target = target };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                var linked = loaded.Target;
+                Assert.NotNull(linked);
+                Assert.Equal(target.ID, linked.ID);
+                Assert.Equal($"{name}-t", linked.Name);
+                Assert.Empty(((ICoreObject)loaded).ChangedProperties);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        [Fact]
+        public async Task ALinkedObjectWhoseRowIsGone_ReadsAsNull()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lg");
+            var source = new IntLinkSource { Name = name, Target = new IntLinkTarget { Name = $"{name}-t" } };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+
+                Assert.Null(loaded.Target);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        [Fact]
+        public async Task ALoadedObject_WithAForceSaveLinkNobodyRead_SavesItsOwnChange()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("ls");
+            var target = new IntLinkTarget { Name = $"{name}-t" };
+            var source = new IntLinkSource { Name = name, Target = target };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                loaded.Name = $"{name}-renamed";
+                await manager.SaveAsync(loaded, Ct);
+
+                var reloaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                Assert.Equal($"{name}-renamed", reloaded.Name);
+                Assert.Equal(target.ID, reloaded.Target!.ID);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        [Fact]
+        public async Task ALinkedObjectReadAndChanged_IsWrittenByItsSourcesSave()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lw");
+            var target = new IntLinkTarget { Name = $"{name}-t" };
+            var source = new IntLinkSource { Name = name, Target = target };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                loaded.Target!.Name = $"{name}-t2";
+                await manager.SaveAsync(loaded, Ct);
+
+                var stored = Assert.Single(await manager.Get<IntLinkTarget>().Where(t => t.ID == target.ID).ToListAsync(Ct));
+                Assert.Equal($"{name}-t2", stored.Name);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        [Fact]
+        public async Task ALinkedObjectOfAnObjectAContextLoaded_IsReadThroughThatProvider()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lc");
+            var target = new IntLinkTarget { Name = $"{name}-t" };
+            var source = new IntLinkSource { Name = name, Target = target };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> mine = s => s.ID == source.ID;
+                IntLinkSource loaded;
+                using (var context = await manager.CreateContextAsync<IntLinkSource>(token: Ct))
+                    loaded = Assert.Single(await context.LoadAsync<IntLinkSource>(mine.Body));
+
+                // The context is gone; the read runs on a context of its own.
+                Assert.Equal(target.ID, loaded.Target!.ID);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        /// <summary>
+        /// Saves three sources over two targets and runs <paramref name="check"/> with the
+        /// targets' rows deleted, so a reference reads back only if the load included it.
+        /// </summary>
+        private async Task WithIncludedTargetsAsync(Func<ObjectDataManager, string, Task> check)
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("li");
+            var first = new IntLinkTarget { Name = $"{name}-t1" };
+            var second = new IntLinkTarget { Name = $"{name}-t2" };
+            await manager.SaveAsync<IntLinkTarget>([first, second], Ct);
+            try
+            {
+                await manager.SaveAsync<IntLinkSource>(
+                [
+                    new IntLinkSource { Name = $"{name}-1", Target = first },
+                    new IntLinkSource { Name = $"{name}-2", Target = first },
+                    new IntLinkSource { Name = $"{name}-3", Target = second },
+                ], Ct);
+                await check(manager, name);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        /// <summary>Every source holds its target already: the rows are deleted, so nothing could load them now.</summary>
+        private async Task AssertTargetsWereIncludedAsync(ObjectDataManager manager, string name, IReadOnlyList<IntLinkSource> sources)
+        {
+            await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            Assert.All(sources, s => Assert.NotNull(s.Target));
+            Assert.All(sources, s => Assert.Empty(((ICoreObject)s).ChangedProperties));
+        }
+
+        [Fact]
+        public async Task Include_LoadsTheLinkedObjectOfEveryRow_InTheSameRead()
+        {
+            await WithIncludedTargetsAsync(async (manager, name) =>
+            {
+                var loaded = (await manager.Get<IntLinkSource>().Include(s => s.Target).Where(s => s.Name!.StartsWith(name)).ToListAsync(Ct))
+                    .OrderBy(s => s.Name).ToList();
+
+                Assert.Equal(3, loaded.Count);
+                await AssertTargetsWereIncludedAsync(manager, name, loaded);
+                Assert.Same(loaded[0].Target, loaded[1].Target);
+                Assert.Equal($"{name}-t2", loaded[2].Target!.Name);
+            });
+        }
+
+        [Fact]
+        public async Task Include_OnAPage_LoadsTheLinkedObjectsOfThatPage()
+        {
+            await WithIncludedTargetsAsync(async (manager, name) =>
+            {
+                System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> mine = s => s.Name!.StartsWith(name);
+                var page = await manager.LoadPagedAsync<IntLinkSource>(1, 2, mine.Body, [], [nameof(IntLinkSource.Target)], Ct);
+
+                Assert.Equal(2, page.Count);
+                Assert.Equal(3, page.TotalCount);
+                await AssertTargetsWereIncludedAsync(manager, name, page);
+            });
+        }
+
+        [Fact]
+        public async Task Include_OnAStreamedRead_LoadsTheLinkedObjectOfEveryRow()
+        {
+            await WithIncludedTargetsAsync(async (manager, name) =>
+            {
+                System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> mine = s => s.Name!.StartsWith(name);
+                var streamed = new List<IntLinkSource>();
+                await foreach (var source in manager.LoadStreamAsync<IntLinkSource>(mine.Body, [], [nameof(IntLinkSource.Target)], Ct))
+                    streamed.Add(source);
+
+                Assert.Equal(3, streamed.Count);
+                await AssertTargetsWereIncludedAsync(manager, name, streamed);
+            });
+        }
+
+        [Fact]
+        public async Task Include_LoadsAReferencedEntityWithItsOwnChildren()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lk");
+            var roster = new IntRoster { Name = name };
+            roster.Lines.Add(new IntRosterLine { Code = $"{name}-a", Hours = 4 });
+            roster.Lines.Add(new IntRosterLine { Code = $"{name}-b", Hours = 6 });
+            await manager.SaveAsync(roster, Ct);
+            var note = new IntRosterNote { Text = name, Roster = roster };
+            await manager.SaveAsync(note, Ct);
+            try
+            {
+                var loaded = Assert.Single(await manager.Get<IntRosterNote>().Include(n => n.Roster).Where(n => n.Text == name).ToListAsync(Ct));
+                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+
+                var included = loaded.Roster;
+                Assert.NotNull(included);
+                Assert.True(included.Lines.IsLoaded);
+                Assert.Equal([4, 6], included.Lines.Select(l => l.Hours).Order());
+                Assert.All(included.Lines, line => Assert.Same(included, line.Parent));
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntRosterNote>(n => n.Text == name, Ct);
+                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+            }
+        }
+
+        [Fact]
+        public async Task Include_OfANameThatIsNeitherACollectionNorALinkedObject_Throws()
+        {
+            var manager = fixture.RequireManager();
+            System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> none = s => s.Name == "none";
+
+            var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+                manager.LoadAsync<IntLinkSource>(none.Body, [], [nameof(IntLinkSource.Name)], Ct));
+            Assert.Contains("[LinkedObject]", ex.Message);
+        }
     }
 }

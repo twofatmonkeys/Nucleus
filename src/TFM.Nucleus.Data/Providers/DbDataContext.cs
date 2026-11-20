@@ -372,7 +372,15 @@ namespace TFM.Nucleus.Data.Providers
         /// context may be gone or mid-transaction.
         /// </summary>
         private void LoadLazyCollection(TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection collection) =>
-            ChildCollectionLoader.Load(_provider, collection);
+            ChildCollectionLoader.Load(_provider, collection, LinkLoader);
+
+        private TFM.Nucleus.Abstractions.Interfaces.ILinkedObjectLoader? _linkLoader;
+
+        /// <summary>
+        /// What the [LinkedObject] properties of the objects this context loads are read through:
+        /// this context's provider, on a context of its own, for the same reason as a lazy collection.
+        /// </summary>
+        private TFM.Nucleus.Abstractions.Interfaces.ILinkedObjectLoader LinkLoader => _linkLoader ??= new ProviderLinkedObjectLoader(_provider);
 
         IEnumerable<T> IDataContext.Load<T>(Expression expression) => Load<T>(expression);
         public INucleusCollection<T> Load<T>(Expression expression) where T : ICoreObject<T>, new()
@@ -380,7 +388,7 @@ namespace TFM.Nucleus.Data.Providers
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
             var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query), LoadLazyCollection);
+            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query), LoadLazyCollection, LinkLoader, []);
         }
 
         async Task<IEnumerable<T>> IDataContext.LoadAsync<T>(Expression expression) => await LoadAsync<T>(expression);
@@ -389,7 +397,7 @@ namespace TFM.Nucleus.Data.Providers
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new NucleusCollection<T>();
             var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None), LoadLazyCollection);
+            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None), LoadLazyCollection, LinkLoader, []);
         }
         #endregion
 

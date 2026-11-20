@@ -118,14 +118,19 @@ namespace TFM.Nucleus
             return dirty;
         }
 
-        /// <summary>Follows an object's forceSave links, recording each one the save must write.</summary>
+        /// <summary>
+        /// Follows an object's forceSave links, recording each one the save must write. A link is
+        /// read as it is held, never through the property: a loaded link nobody has read is still
+        /// only its stored ID, so it has no changes to write, and reading the property would load
+        /// it from the database just to find that out.
+        /// </summary>
         private void VisitLinks(ICoreObject obj)
         {
             if (!obj.ObjectSchema.HasLinkedObjects)
                 return;
             foreach (var property in obj.ObjectSchema.LinkedObjectProperties ?? [])
             {
-                if (!property.ForceLinkedSave || property.GetValue(obj) is not ICoreObject link || !_seen.Add(Key(link)))
+                if (!property.ForceLinkedSave || obj.GetPropertyValue(property.Name) is not ICoreObject link || !_seen.Add(Key(link)))
                     continue;
                 var dirtyBelow = VisitChildren(link);
                 if (IsChanged(link) || dirtyBelow)

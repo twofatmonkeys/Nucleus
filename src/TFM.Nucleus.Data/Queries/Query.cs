@@ -151,6 +151,20 @@ namespace TFM.Nucleus.Data.Queries
         /// <summary>For a child collection query, the parent's collection property it fills.</summary>
         public string? ChildCollectionProperty;
         string? IQuery.ChildCollectionProperty => ChildCollectionProperty;
+
+        /// <summary>
+        /// For an included reference, the parent's <c>[LinkedObject]</c> property whose entities
+        /// this query loads.
+        /// </summary>
+        public string? LinkedObjectProperty;
+        string? IQuery.LinkedObjectProperty => LinkedObjectProperty;
+
+        /// <summary>
+        /// The parent's column that <see cref="LinkedColumn"/> is matched against. Null for a
+        /// child collection, whose rows match the parent's ID; an included reference matches its
+        /// ID against the parent's reference column.
+        /// </summary>
+        public string? ParentKeyColumn;
         public bool UseConstraints => Constraints.Length > 0;
 
 

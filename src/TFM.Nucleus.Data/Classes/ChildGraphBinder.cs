@@ -9,16 +9,22 @@ using TFM.Nucleus.Abstractions.Interfaces;
 namespace TFM.Nucleus.Data
 {
     /// <summary>
-    /// Builds the child collections a select query fetched and attaches them to their parents.
-    /// The rows come either from the result sets a data set read with the parent rows, or from
-    /// the child queries streamed one by one; both feed the same materialisation. Children are
-    /// attached as loaded: no change is staged on them or on the parent.
+    /// Builds the child collections a select query fetched and attaches them to their parents,
+    /// and binds the entities of the <c>[LinkedObject]</c> properties it included. The rows come
+    /// either from the result sets a data set read with the parent rows, or from the linked
+    /// queries streamed one by one; both feed the same materialisation. Everything is attached as
+    /// loaded: no change is staged on a child, a referenced entity or the parent.
     /// </summary>
     public static class ChildGraphBinder
     {
-        /// <summary>The children of one level, per collection property, keyed by parent ID.</summary>
+        /// <summary>
+        /// The children of one level, per collection property, keyed by parent ID, and the
+        /// entities of the included references, per <c>[LinkedObject]</c> property, keyed by ID.
+        /// </summary>
         public sealed class Graph : List<(IPropertySchema Property, Dictionary<Guid, List<ICoreObject>> Children)>
         {
+            /// <summary>The entities of each included <c>[LinkedObject]</c> property, by ID.</summary>
+            public List<(IPropertySchema Property, Dictionary<Guid, ICoreObject> Entities)> References { get; } = [];
         }
 
         /// <summary>
@@ -39,19 +45,32 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// Materialises a data set's rows as <typeparamref name="T"/> with the child collections
         /// the query fetched attached, marks the <paramref name="excluded"/> collections unloaded,
-        /// and runs every object's load hook (<see cref="Complete"/>).
+        /// and runs every object's load hook (<see cref="Complete(ICoreObject, IReadOnlyList{IPropertySchema})"/>).
         /// </summary>
         /// <param name="query">The select whose child queries the data set mirrors.</param>
         /// <param name="dataSet">The rows read for the query.</param>
         /// <param name="lazyLoader">Loads a lazy collection on first read; the ambient runtime when null.</param>
         /// <param name="excluded">The collections the load left out, which read as unloaded.</param>
         public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader,
-            IReadOnlyList<IPropertySchema> excluded) where T : ICoreObject<T>, new()
+            IReadOnlyList<IPropertySchema> excluded) where T : ICoreObject<T>, new() =>
+            BuildCollection<T>(query, dataSet, lazyLoader, null, excluded);
+
+        /// <inheritdoc cref="BuildCollection{T}(IQuery, DataSet, Action{INucleusChildCollection}?, IReadOnlyList{IPropertySchema})"/>
+        /// <param name="query">The select whose linked queries the data set mirrors.</param>
+        /// <param name="dataSet">The rows read for the query.</param>
+        /// <param name="lazyLoader">Loads a lazy collection on first read; the ambient runtime when null.</param>
+        /// <param name="linkLoader">
+        /// Loads a <c>[LinkedObject]</c> the load did not include, on first read; the ambient
+        /// runtime when null.
+        /// </param>
+        /// <param name="excluded">The collections the load left out, which read as unloaded.</param>
+        public static NucleusCollection<T> BuildCollection<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader,
+            ILinkedObjectLoader? linkLoader, IReadOnlyList<IPropertySchema> excluded) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(excluded);
-            var collection = BuildAttached<T>(query, dataSet, lazyLoader);
+            var collection = BuildAttached<T>(query, dataSet, lazyLoader, linkLoader);
             foreach (var obj in collection)
-                Complete(obj, excluded);
+                Complete(obj, excluded, linkLoader);
             return collection;
         }
 
@@ -60,10 +79,11 @@ namespace TFM.Nucleus.Data
         /// the objects into a parent first and completes them once they are, as a lazy collection
         /// does when it loads.
         /// </summary>
-        internal static NucleusCollection<T> BuildAttached<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) where T : ICoreObject<T>, new()
+        internal static NucleusCollection<T> BuildAttached<T>(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader,
+            ILinkedObjectLoader? linkLoader) where T : ICoreObject<T>, new()
         {
             var collection = dataSet.BuildCollection<T>();
-            var children = FromDataSet(query, dataSet, lazyLoader);
+            var children = FromDataSet(query, dataSet, lazyLoader, linkLoader);
             foreach (var obj in collection)
                 Attach(obj, children, lazyLoader);
             return collection;
@@ -76,29 +96,41 @@ namespace TFM.Nucleus.Data
         /// load path ends here, once per object; a lazy collection's children are completed when
         /// it loads.
         /// </summary>
-        public static void Complete(ICoreObject obj, IReadOnlyList<IPropertySchema> excluded)
+        public static void Complete(ICoreObject obj, IReadOnlyList<IPropertySchema> excluded) => Complete(obj, excluded, null);
+
+        /// <inheritdoc cref="Complete(ICoreObject, IReadOnlyList{IPropertySchema})"/>
+        /// <param name="obj">The loaded object.</param>
+        /// <param name="excluded">The collections the load left out.</param>
+        /// <param name="linkLoader">
+        /// Bound to the object and its loaded children at every depth, for the
+        /// <c>[LinkedObject]</c> properties the load did not include; none is bound when null.
+        /// </param>
+        public static void Complete(ICoreObject obj, IReadOnlyList<IPropertySchema> excluded, ILinkedObjectLoader? linkLoader)
         {
             ArgumentNullException.ThrowIfNull(obj);
             ArgumentNullException.ThrowIfNull(excluded);
             for (var i = 0; i < excluded.Count; i++)
                 if (excluded[i].GetValue(obj) is INucleusChildCollection collection)
                     collection.MarkUnloaded();
-            RunLoadHooks(obj);
+            RunLoadHooks(obj, linkLoader);
         }
 
-        private static void RunLoadHooks(ICoreObject obj)
+        private static void RunLoadHooks(ICoreObject obj, ILinkedObjectLoader? linkLoader)
         {
-            if (obj.ObjectSchema.HasNucleusChildCollections)
+            var schema = obj.ObjectSchema;
+            if (schema.HasNucleusChildCollections)
                 foreach (var collection in obj.NucleusChildCollections)
                     if (collection.IsLoaded)
                         foreach (var child in collection.ChildObjects)
-                            RunLoadHooks(child);
+                            RunLoadHooks(child, linkLoader);
+            if (linkLoader is not null && schema.HasLinkedObjects)
+                obj.BindLinkedObjectLoader(linkLoader);
             obj.OnAfterLoadFromDB();
         }
 
         /// <summary>
         /// The child graph held in a data set's linked result sets, which must mirror the query's
-        /// LinkedQueries. Null when the query has no child queries.
+        /// LinkedQueries. Null when the query has no linked queries.
         /// </summary>
         public static Graph? FromDataSet(IQuery query, DataSet dataSet) => FromDataSet(query, dataSet, null);
 
@@ -106,37 +138,55 @@ namespace TFM.Nucleus.Data
         /// <param name="query">The select whose child queries the data set mirrors.</param>
         /// <param name="dataSet">The rows read for the query.</param>
         /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
-        public static Graph? FromDataSet(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader)
+        public static Graph? FromDataSet(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader) =>
+            FromDataSet(query, dataSet, lazyLoader, null);
+
+        /// <inheritdoc cref="FromDataSet(IQuery, DataSet)"/>
+        /// <param name="query">The select whose linked queries the data set mirrors.</param>
+        /// <param name="dataSet">The rows read for the query.</param>
+        /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
+        /// <param name="linkLoader">Bound to the included referenced entities, for their own references.</param>
+        public static Graph? FromDataSet(IQuery query, DataSet dataSet, Action<INucleusChildCollection>? lazyLoader, ILinkedObjectLoader? linkLoader)
         {
             ArgumentNullException.ThrowIfNull(query);
             ArgumentNullException.ThrowIfNull(dataSet);
-            var childQueries = query.LinkedQueries.ToList();
-            if (childQueries.Count == 0)
+            var linkedQueries = query.LinkedQueries.ToList();
+            if (linkedQueries.Count == 0)
                 return null;
-            if (dataSet.LinkedDataSets.Count != childQueries.Count)
+            if (dataSet.LinkedDataSets.Count != linkedQueries.Count)
                 throw new InvalidOperationException(
-                    $"The query has {childQueries.Count} child queries but the provider returned {dataSet.LinkedDataSets.Count} child result sets.");
+                    $"The query has {linkedQueries.Count} linked queries but the provider returned {dataSet.LinkedDataSets.Count} linked result sets.");
             var schema = SchemaOf(query);
             var graph = new Graph();
-            for (int i = 0; i < childQueries.Count; i++)
+            for (int i = 0; i < linkedQueries.Count; i++)
             {
-                var childQuery = childQueries[i];
-                var childRows = dataSet.LinkedDataSets[i];
-                if (CollectionPropertyFor(schema, childQuery) is not { } property)
+                var linkedQuery = linkedQueries[i];
+                var reference = ReferencePropertyFor(schema, linkedQuery);
+                var property = reference is null ? CollectionPropertyFor(schema, linkedQuery) : null;
+                if (reference is null && property is null)
                     continue;
-                var childSchema = SchemaOf(childQuery);
-                var grandchildren = FromDataSet(childQuery, childRows, lazyLoader);
+                var rows = dataSet.LinkedDataSets[i];
+                var linkedSchema = SchemaOf(linkedQuery);
+                var below = FromDataSet(linkedQuery, rows, lazyLoader, linkLoader);
+                if (reference is not null)
+                {
+                    var entities = new Dictionary<Guid, ICoreObject>();
+                    for (int row = 0; row < rows.RowCount; row++)
+                        AddReferenced(entities, linkedSchema, rows.ColumnNames, rows[row], below, lazyLoader, linkLoader);
+                    graph.References.Add((reference, entities));
+                    continue;
+                }
                 var map = new Dictionary<Guid, List<ICoreObject>>();
-                for (int row = 0; row < childRows.RowCount; row++)
-                    AddChild(map, childSchema, childRows.ColumnNames, childRows[row], grandchildren, lazyLoader);
-                graph.Add((property, map));
+                for (int row = 0; row < rows.RowCount; row++)
+                    AddChild(map, linkedSchema, rows.ColumnNames, rows[row], below, lazyLoader);
+                graph.Add((property!, map));
             }
             return graph;
         }
 
         /// <summary>
-        /// The child graph of a query, fetched by streaming each child query on
-        /// <paramref name="context"/>. Null when the query has no child queries.
+        /// The child graph of a query, fetched by streaming each linked query on
+        /// <paramref name="context"/>. Null when the query has no linked queries.
         /// </summary>
         public static Task<Graph?> LoadAsync(IQuery query, IDataContext context, CancellationToken cancellationToken) =>
             LoadAsync(query, context, null, cancellationToken);
@@ -146,34 +196,54 @@ namespace TFM.Nucleus.Data
         /// <param name="context">The context they are streamed on.</param>
         /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
         /// <param name="cancellationToken">Cancels the reads.</param>
-        public static async Task<Graph?> LoadAsync(IQuery query, IDataContext context, Action<INucleusChildCollection>? lazyLoader, CancellationToken cancellationToken)
+        public static Task<Graph?> LoadAsync(IQuery query, IDataContext context, Action<INucleusChildCollection>? lazyLoader, CancellationToken cancellationToken) =>
+            LoadAsync(query, context, lazyLoader, null, cancellationToken);
+
+        /// <inheritdoc cref="LoadAsync(IQuery, IDataContext, CancellationToken)"/>
+        /// <param name="query">The select whose linked queries are streamed.</param>
+        /// <param name="context">The context they are streamed on.</param>
+        /// <param name="lazyLoader">Loads a child's lazy collections on first read.</param>
+        /// <param name="linkLoader">Bound to the included referenced entities, for their own references.</param>
+        /// <param name="cancellationToken">Cancels the reads.</param>
+        public static async Task<Graph?> LoadAsync(IQuery query, IDataContext context, Action<INucleusChildCollection>? lazyLoader,
+            ILinkedObjectLoader? linkLoader, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(query);
             ArgumentNullException.ThrowIfNull(context);
-            var childQueries = query.LinkedQueries.ToList();
-            if (childQueries.Count == 0)
+            var linkedQueries = query.LinkedQueries.ToList();
+            if (linkedQueries.Count == 0)
                 return null;
             var schema = SchemaOf(query);
             var graph = new Graph();
-            foreach (var childQuery in childQueries)
+            foreach (var linkedQuery in linkedQueries)
             {
-                if (CollectionPropertyFor(schema, childQuery) is not { } property)
+                var reference = ReferencePropertyFor(schema, linkedQuery);
+                var property = reference is null ? CollectionPropertyFor(schema, linkedQuery) : null;
+                if (reference is null && property is null)
                     continue;
-                var childSchema = SchemaOf(childQuery);
-                var grandchildren = await LoadAsync(childQuery, context, lazyLoader, cancellationToken).ConfigureAwait(false);
+                var linkedSchema = SchemaOf(linkedQuery);
+                var below = await LoadAsync(linkedQuery, context, lazyLoader, linkLoader, cancellationToken).ConfigureAwait(false);
+                if (reference is not null)
+                {
+                    var entities = new Dictionary<Guid, ICoreObject>();
+                    await foreach (var row in context.StreamAsync(linkedQuery, cancellationToken).ConfigureAwait(false))
+                        AddReferenced(entities, linkedSchema, row.ColumnNames, row.Values, below, lazyLoader, linkLoader);
+                    graph.References.Add((reference, entities));
+                    continue;
+                }
                 var map = new Dictionary<Guid, List<ICoreObject>>();
-                await foreach (var row in context.StreamAsync(childQuery, cancellationToken).ConfigureAwait(false))
-                    AddChild(map, childSchema, row.ColumnNames, row.Values, grandchildren, lazyLoader);
-                graph.Add((property, map));
+                await foreach (var row in context.StreamAsync(linkedQuery, cancellationToken).ConfigureAwait(false))
+                    AddChild(map, linkedSchema, row.ColumnNames, row.Values, below, lazyLoader);
+                graph.Add((property!, map));
             }
             return graph;
         }
 
         /// <summary>
-        /// Attaches a parent's children from the graph. Every collection the graph covers is
-        /// attached, empty or not, since the graph is the whole of that collection. A lazy
-        /// ([RetrieveOnDemand]) collection the graph does not cover is marked to load itself
-        /// when it is first read.
+        /// Attaches a parent's children from the graph, and binds the entities its included
+        /// references hold the IDs of. Every collection the graph covers is attached, empty or
+        /// not, since the graph is the whole of that collection. A lazy ([RetrieveOnDemand])
+        /// collection the graph does not cover is marked to load itself when it is first read.
         /// </summary>
         public static void Attach(ICoreObject parent, Graph? graph) => Attach(parent, graph, null);
 
@@ -187,9 +257,24 @@ namespace TFM.Nucleus.Data
         {
             ArgumentNullException.ThrowIfNull(parent);
             if (graph is not null)
+            {
                 foreach (var (property, map) in graph)
                     CollectionOf(parent, property).AttachLoaded(map.TryGetValue(parent.ID, out var children) ? children : []);
+                BindReferences(parent, graph);
+            }
             MarkLazy(parent, graph, lazyLoader);
+        }
+
+        /// <summary>
+        /// Replaces each included reference's stored ID with the entity read for it, as a stored
+        /// value, so reading the property runs no query and the parent is not made dirty. An ID
+        /// with no entity (a row since deleted) stays an ID and is looked for when it is read.
+        /// </summary>
+        private static void BindReferences(ICoreObject parent, Graph graph)
+        {
+            foreach (var (property, entities) in graph.References)
+                if (parent.GetPropertyValue(property.Name) is Guid id && entities.TryGetValue(id, out var entity))
+                    parent.BindValue(property.Name, entity);
         }
 
         private static void MarkLazy(ICoreObject parent, Graph? graph, Action<INucleusChildCollection>? lazyLoader)
@@ -243,9 +328,34 @@ namespace TFM.Nucleus.Data
             list.Add(child);
         }
 
+        /// <summary>
+        /// Materialises one row of an included reference as a loaded entity of its own, with its
+        /// children attached and its load hook run, filed by its ID. Several parents referring to
+        /// it share the one instance.
+        /// </summary>
+        private static void AddReferenced(Dictionary<Guid, ICoreObject> entities, IObjectSchema schema,
+            string[] columns, object?[] values, Graph? below, Action<INucleusChildCollection>? lazyLoader, ILinkedObjectLoader? linkLoader)
+        {
+            var entity = (ICoreObject)Activator.CreateInstance(schema.Type)!;
+            for (int i = 0; i < columns.Length; i++)
+                entity.BindValue(columns[i], values[i]);
+            if (entity.ID == Guid.Empty || entities.ContainsKey(entity.ID))
+                return;
+            Attach(entity, below, lazyLoader);
+            Complete(entity, [], linkLoader);
+            entities[entity.ID] = entity;
+        }
+
         private static IObjectSchema SchemaOf(IQuery query) =>
             query.DataTableSchema?.ObjectSchema
-            ?? throw new InvalidOperationException("A child collection query has no table schema.");
+            ?? throw new InvalidOperationException("A linked query has no table schema.");
+
+        /// <summary>The <c>[LinkedObject]</c> property an included reference query fills; null for any other query.</summary>
+        private static IPropertySchema? ReferencePropertyFor(IObjectSchema parentSchema, IQuery linkedQuery) =>
+            linkedQuery.LinkedObjectProperty is { } name
+                ? (parentSchema.LinkedObjectProperties ?? []).FirstOrDefault(p => p.Name == name)
+                    ?? throw new InvalidOperationException($"{parentSchema.Name} has no [LinkedObject] property {name}.")
+                : null;
 
         /// <summary>
         /// The collection property a child query fills: by name when the query records it, else
