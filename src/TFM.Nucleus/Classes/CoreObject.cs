@@ -82,7 +82,9 @@ namespace TFM.Nucleus
         /// </summary>
         private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger = null)
         {
-            var links = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]).Links : [];
+            var graph = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]) : null;
+            var links = graph?.Links ?? [];
+            var members = graph?.Members ?? [];
             LogChanges(logger);
             if (makeReadOnly)
                 _isReadOnly = true;
@@ -110,12 +112,24 @@ namespace TFM.Nucleus
                             child.CommitChanges();
                     }
                 }
+            if (ObjectSchema.HasLinkedCollections)
+                foreach (var collection in NucleusLinkedCollections)
+                    collection.AcknowledgeRemovals();
             foreach (var link in links)
             {
                 if (link is CoreObject coreLink)
                     coreLink.CommitChanges(makeReadOnly, false);
                 else
                     link.CommitChanges();
+            }
+            // Members are roots of their own, committed as links are: the root's graph holds
+            // everything below them.
+            foreach (var member in members)
+            {
+                if (member is CoreObject coreMember)
+                    coreMember.CommitChanges(makeReadOnly, false);
+                else
+                    member.CommitChanges();
             }
         }
 
@@ -184,6 +198,45 @@ namespace TFM.Nucleus
             }
             return collection;
         }
+
+        /// <summary>
+        /// The linked collection behind a <c>NucleusLinkedCollection</c> property, created on first
+        /// read. Reading it loads nothing: the collection loads its members the first time one is
+        /// read.
+        /// </summary>
+        protected internal NucleusLinkedCollection<TMany, TOne> GetLinkedCollection<TMany, TOne>([CallerMemberName] string? property = null)
+            where TOne : CoreObject, ICoreObject<TOne>, new()
+            where TMany : ICoreObject<TMany>, new()
+        {
+            ArgumentNullException.ThrowIfNull(property);
+            if (_properties.TryGetValue(property, out var value) && value is NucleusLinkedCollection<TMany, TOne> existing)
+                return existing;
+            lock (_properties)
+            {
+                if (_properties.TryGetValue(property, out value) && value is NucleusLinkedCollection<TMany, TOne> raced)
+                    return raced;
+                var collection = new NucleusLinkedCollection<TMany, TOne>((TOne)this, property);
+                _properties[property] = collection;
+                return collection;
+            }
+        }
+
+        /// <summary>
+        /// The object's linked collections that exist: one never read since the object was created
+        /// or loaded holds nothing to save, so it is not created here.
+        /// </summary>
+        public IEnumerable<INucleusLinkedCollection> NucleusLinkedCollections
+        {
+            get
+            {
+                if (ObjectSchema.HasLinkedCollections)
+                    foreach (var p in ObjectSchema.LinkedCollectionProperties)
+                        if (_properties.TryGetValue(p.Name, out var value) && value is INucleusLinkedCollection collection)
+                            yield return collection;
+            }
+        }
+
+        ILinkedObjectLoader? ICoreObject.LinkedObjectLoader => _linkedObjectLoader;
 
         
 

@@ -106,11 +106,17 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` and
   `CoreObject.AllowDeletions` remain as obsolete aliases or no-ops. Remove them at the next major
   version.
-- **A linked, not owned, collection is not built.** `[LinkedChildCollection]` was taken to mean one,
-  but in v1 it marked owned rows and in v2 it did nothing. A collection of rows that reference a
-  parent without being owned by it is a separate design, for when a consumer needs one:
-  `NucleusLinkedCollection<T>` loaded by a foreign key property, lazy by default, never saved or
-  deleted with the parent, with deleting the parent refused or allowed by declaration.
+- **A linked, not owned, collection was not built; it now is** (November 2026, for the Wellspring
+  marketing run's vouchers): `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
+  declares and `[LinkedBy]` names, loaded on the first read of a member or included, its new and
+  changed members saved with the one, a removed stored member deleted when its type is
+  `[Deletable]`, and a delete of a one with members refused. What changed from the note that stood
+  here: the members are saved with the one, because the run records a campaign and its vouchers in
+  one transaction; and a delete is always refused, with no cascade, since vouchers are never
+  deleted. Open, and in the README's known limits: the refusal is a check in the delete's
+  transaction, not a foreign key, so a member inserted concurrently is not seen; and the one must be
+  a root, because a parent's cascade deletes children without loading them. Cover:
+  `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
 
 ### Found with the linked object read, fixed (November 2026)
 

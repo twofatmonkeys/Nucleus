@@ -8,7 +8,8 @@ namespace TFM.Nucleus
     /// <summary>
     /// What a save of some root objects reaches, walked once: the children held in their child
     /// collections at every depth, the linked objects their <c>[LinkedObject(forceSave: true)]</c>
-    /// properties cascade the save into, and the stored children removed from those collections.
+    /// properties cascade the save into, the members held in their linked collections, and the
+    /// stored children and members removed from those collections.
     /// Validation, the save's writes and the commit after it all read the graph from here, so
     /// they cannot disagree about what was saved.
     /// </summary>
@@ -27,6 +28,8 @@ namespace TFM.Nucleus
         private readonly List<ICoreObject> _children = [];
         private readonly List<ICoreObject> _links = [];
         private readonly List<ICoreObject> _removed = [];
+        private readonly List<ICoreObject> _members = [];
+        private readonly List<ICoreObject> _removedMembers = [];
 
         private SaveGraph(int roots)
         {
@@ -36,14 +39,15 @@ namespace TFM.Nucleus
 
         /// <summary>
         /// True when a save of <paramref name="obj"/> can reach anything besides the object itself:
-        /// its type has child collections, or forceSave links. Decided once per type, so a save of
-        /// a type that reaches nothing skips the walk, and its cost, altogether.
+        /// its type has child collections, forceSave links or linked collections. Decided once per
+        /// type, so a save of a type that reaches nothing skips the walk, and its cost, altogether.
         /// </summary>
         public static bool CanReachDependents(ICoreObject obj)
         {
             ArgumentNullException.ThrowIfNull(obj);
             return _reachesDependents.GetOrAdd(obj.GetType(), static (_, schema) =>
                 schema.HasNucleusChildCollections
+                || schema.HasLinkedCollections
                 || (schema.HasLinkedObjects && (schema.LinkedObjectProperties ?? []).Any(p => p.ForceLinkedSave)),
                 obj.ObjectSchema);
         }
@@ -63,8 +67,24 @@ namespace TFM.Nucleus
         /// <summary>The stored children removed from collections in the graph, whose rows the save deletes.</summary>
         public IReadOnlyList<ICoreObject> Removed => _removed;
 
-        /// <summary>The objects besides the roots whose rules a save runs: new or changed children, and the links it writes.</summary>
-        public IEnumerable<ICoreObject> ChangedDependents => _children.Where(IsChanged).Concat(_links);
+        /// <summary>
+        /// The members of linked collections the save writes, neither roots, children nor links:
+        /// each one new, changed, or holding changed or removed children. Their own children are
+        /// written with them, after the roots.
+        /// </summary>
+        public IReadOnlyList<ICoreObject> Members => _members;
+
+        /// <summary>
+        /// The stored members removed from linked collections in the graph, whose rows the save
+        /// deletes. Each is a root of its own, deleted as its type allows a direct delete.
+        /// </summary>
+        public IReadOnlyList<ICoreObject> RemovedMembers => _removedMembers;
+
+        /// <summary>
+        /// The objects besides the roots whose rules a save runs: new or changed children, and the
+        /// links and members it writes.
+        /// </summary>
+        public IEnumerable<ICoreObject> ChangedDependents => _children.Where(IsChanged).Concat(_links).Concat(_members);
 
         /// <summary>True when the object has something to write: it is new, or has changes of its own.</summary>
         public static bool IsChanged(ICoreObject obj) =>
@@ -84,6 +104,7 @@ namespace TFM.Nucleus
                     continue;
                 graph.VisitChildren(root);
                 graph.VisitLinks(root);
+                graph.VisitLinkedCollections(root);
             }
             return graph;
         }
@@ -113,6 +134,7 @@ namespace TFM.Nucleus
                     if (VisitChildren(child))
                         dirty = true;
                     VisitLinks(child);
+                    VisitLinkedCollections(child);
                 }
             }
             return dirty;
@@ -136,6 +158,35 @@ namespace TFM.Nucleus
                 if (IsChanged(link) || dirtyBelow)
                     _links.Add(link);
                 VisitLinks(link);
+                VisitLinkedCollections(link);
+            }
+        }
+
+        /// <summary>
+        /// Walks an object's linked collections, recording each held member the save must write
+        /// and each stored member removed. Only collections that exist are walked, and only the
+        /// members they hold: reading them never loads a collection, and the members added to an
+        /// unloaded one are held.
+        /// </summary>
+        private void VisitLinkedCollections(ICoreObject obj)
+        {
+            if (!obj.ObjectSchema.HasLinkedCollections)
+                return;
+            foreach (var collection in obj.NucleusLinkedCollections)
+            {
+                foreach (var removed in collection.RemovedMembers)
+                    if (_removedSeen.Add(Key(removed)))
+                        _removedMembers.Add(removed);
+                foreach (var member in collection.Members)
+                {
+                    if (!_seen.Add(Key(member)))
+                        continue;
+                    var dirtyBelow = VisitChildren(member);
+                    if (IsChanged(member) || dirtyBelow)
+                        _members.Add(member);
+                    VisitLinks(member);
+                    VisitLinkedCollections(member);
+                }
             }
         }
 

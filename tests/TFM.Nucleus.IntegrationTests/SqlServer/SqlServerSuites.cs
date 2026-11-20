@@ -81,6 +81,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerLinkedCollectionIntegrationTests(SqlServerFixture fixture) : LinkedCollectionIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerLoadHookIntegrationTests(SqlServerFixture fixture) : LoadHookIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

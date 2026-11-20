@@ -129,6 +129,15 @@ namespace TFM.Nucleus
         /// <summary>A NucleusChildCollection property marked [RetrieveOnDemand].</summary>
         public bool IsLazyChildCollection { get; }
 
+        /// <summary>A NucleusLinkedCollection property.</summary>
+        public bool IsLinkedCollection { get; }
+
+        /// <summary>The many type of a NucleusLinkedCollection property.</summary>
+        public Type? LinkedType { get; }
+
+        /// <summary>The many type's key property, as the property's [LinkedBy] names it.</summary>
+        public string? LinkedByPropertyName { get; }
+
         /// <summary>
         /// For a child collection, true when removing a stored child and saving the parent
         /// deletes its row: the child type is deletable through its owner. Read on first use,
@@ -243,6 +252,9 @@ namespace TFM.Nucleus
         DeletableAttribute? IPropertySchema.DeleteDeclaration => DeleteDeclaration;
         bool IPropertySchema.DeletesRemovedChildren => DeletesRemovedChildren;
         bool IPropertySchema.IsLazyChildCollection => IsLazyChildCollection;
+        bool IPropertySchema.IsLinkedCollection => IsLinkedCollection;
+        Type? IPropertySchema.LinkedType => LinkedType;
+        string? IPropertySchema.LinkedByPropertyName => LinkedByPropertyName;
         Type? IPropertySchema.ChildType => ChildType;
         bool IPropertySchema.IsParentObject => IsParentObject;
         string? IPropertySchema.ParentIDPropertyName => ParentIDPropertyName;
@@ -366,6 +378,26 @@ namespace TFM.Nucleus
                 throw new PropertySchemaException(
                     "[Deletable] on a property applies to a NucleusChildCollection only; declare it on the entity type to make its rows deletable.", Name, Type);
             IsLazyChildCollection = RetrieveOnDemand && _isChildCollection;
+            var linkedInterface = Type.GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INucleusLinkedCollection<,>));
+            IsLinkedCollection = linkedInterface is not null;
+            LinkedType = linkedInterface?.GetGenericArguments()[0];
+            LinkedByPropertyName = ((LinkedByAttribute?)Attribute.GetCustomAttribute(PropertyInfo, typeof(LinkedByAttribute)))?.PropertyName;
+            if (LinkedByPropertyName is not null && !IsLinkedCollection)
+                throw new PropertySchemaException("[LinkedBy] applies to a NucleusLinkedCollection property only.", Name, Type);
+            if (IsLinkedCollection)
+            {
+                if (LinkedByPropertyName is null)
+                    throw new PropertySchemaException(
+                        $"A NucleusLinkedCollection property needs [LinkedBy(nameof({LinkedType!.Name}.Key))] naming the {LinkedType.Name} property that holds the owner's ID.",
+                        Name, Type);
+                if (RetrieveOnDemand)
+                    throw new PropertySchemaException(
+                        "[RetrieveOnDemand] does not apply to a NucleusLinkedCollection, which is always loaded on first read; include it to load it with the rows.",
+                        Name, Type);
+                if (DBColumnAttribute is not null)
+                    throw new PropertySchemaException("A NucleusLinkedCollection property is not a column; remove [DatabaseColumn].", Name, Type);
+            }
             IsParentObject = Attribute.IsDefined(PropertyInfo, typeof(ParentObject));
             if (IsParentObject)
             {

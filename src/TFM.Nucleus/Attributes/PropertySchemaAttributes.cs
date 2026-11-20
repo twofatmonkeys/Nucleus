@@ -93,6 +93,26 @@ namespace TFM.Nucleus
     }
 
     /// <summary>
+    /// Names the key a <c>NucleusLinkedCollection&lt;TMany, TOne&gt;</c> property is kept by: the
+    /// property of the many type that holds the one's ID, as in
+    /// <c>[LinkedBy(nameof(Voucher.CampaignId))]</c>. The key is a stored, indexed <c>Guid</c>,
+    /// <c>Guid?</c>, or a <c>[LinkedObject]</c> typed as the one; the many type declares it, so its
+    /// table and its queries do not depend on the one.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property, Inherited = false)]
+    public sealed class LinkedByAttribute : Attribute
+    {
+        /// <summary>The many type's key property.</summary>
+        public string PropertyName { get; }
+
+        public LinkedByAttribute(string propertyName)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(propertyName);
+            PropertyName = propertyName;
+        }
+    }
+
+    /// <summary>
     /// The v1 child collection marker. It has no effect on load, save or delete: a child
     /// collection is a <c>NucleusChildCollection&lt;TChild, TParent&gt;</c> property, found by its type.
     /// </summary>

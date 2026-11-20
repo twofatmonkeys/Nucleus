@@ -202,6 +202,32 @@ namespace TFM.Nucleus.Data.Providers
             return (DeleteWhereQuery)ExpressionParser.ParseExpressionToQuery(query, predicate);
         }
 
+        /// <summary>
+        /// For each linked collection of the type a delete removes rows of, a select of the members
+        /// of exactly the rows it matches: the many type's IDs whose key is in the IDs the delete's
+        /// own condition selects. A delete is refused while any comes back. Empty for a type with
+        /// no linked collections.
+        /// </summary>
+        internal IEnumerable<(IPropertySchema Collection, SelectQuery Members)> LinkedMembersOf(DeleteWhereQuery delete)
+        {
+            if (delete.TableSchema?.ObjectSchema is not { HasLinkedCollections: true } schema)
+                yield break;
+            foreach (var collection in schema.LinkedCollectionProperties)
+            {
+                var key = schema.GetLinkedCollectionKey(collection);
+                var membersTable = Schema.GetTableSchema(collection.LinkedType!)
+                    ?? throw new NotSupportedException(
+                        $"{schema.Name}.{collection.Name} holds {collection.LinkedType!.Name}, which this provider does not store, so a delete of {schema.Name} cannot check for its members.");
+                var ones = new SelectQuery(Renderer, delete.TableSchema, Schema.GetTableSchema) { Where = delete.Where };
+                ones.LinkedQueries.Clear();
+                var members = new SelectQuery(Renderer, membersTable, Schema.GetTableSchema);
+                members.LinkedQueries.Clear();
+                members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
+                ones.AddChildQuery(members, membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name);
+                yield return (collection, members);
+            }
+        }
+
         public Query? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
         {
             var list = Bind(objs);
@@ -229,8 +255,12 @@ namespace TFM.Nucleus.Data.Providers
         /// by ID, cascading to their own children and keeping each type's hard or soft rule. They
         /// run first, so a replacement with the same unique key does not collide with the row it
         /// replaces;</item>
+        /// <item>a delete per member type of the stored members removed from linked collections,
+        /// by ID, as each type allows a direct delete;</item>
         /// <item>the inserts and updates of the forceSave links the save writes, with their children;</item>
-        /// <item>the objects' own inserts and updates, with their child collections.</item>
+        /// <item>the objects' own inserts and updates, with their child collections;</item>
+        /// <item>the inserts and updates of the linked collection members the save writes, with
+        /// their children.</item>
         /// </list>
         /// A removed child or a link whose type this provider does not store throws before
         /// anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>, so the context
@@ -253,6 +283,14 @@ namespace TFM.Nucleus.Data.Providers
                 if (DeleteWhereQuery.ForRemovedChildren(Renderer, table, Schema.GetTableSchema, removed.Select(o => o.ID)) is { } delete)
                     queries.Add(delete);
             }
+            foreach (var removed in graph.RemovedMembers.GroupBy(o => o.GetType()))
+            {
+                var table = Schema.GetTableSchema(removed.Key)
+                    ?? throw new NotSupportedException(
+                        $"{removed.Key.Name} members were removed from a linked collection, but this provider does not store {removed.Key.Name}, so the save cannot delete them.");
+                if (DeleteWhereQuery.ForIds(Renderer, table, Schema.GetTableSchema, removed.Select(o => o.ID)) is { } delete)
+                    queries.Add(delete);
+            }
             foreach (var links in graph.Links.GroupBy(o => o.GetType()))
             {
                 var table = Schema.GetTableSchema(links.Key)
@@ -263,6 +301,15 @@ namespace TFM.Nucleus.Data.Providers
             }
             foreach (var group in roots.GroupBy(rootTable))
                 queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations));
+            // After the roots, so a member is never written before the one its key points at.
+            foreach (var members in graph.Members.GroupBy(o => o.GetType()))
+            {
+                var table = Schema.GetTableSchema(members.Key)
+                    ?? throw new NotSupportedException(
+                        $"A linked collection holds new or changed {members.Key.Name} members, which this provider does not store, so the save cannot write them " +
+                        "in the same transaction. Save them through their own provider.");
+                queries.AddRange(WriteQueries(table, [.. members], separateOperations));
+            }
             return queries;
         }
 

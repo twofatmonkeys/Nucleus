@@ -90,6 +90,20 @@ namespace TFM.Nucleus
         /// <summary>The child collection property holding <paramref name="type"/>; null when there is none.</summary>
         public IPropertySchema? TryGetChildCollectionProperty(Type type);
 
+        /// <summary>True when the type has <c>NucleusLinkedCollection</c> properties.</summary>
+        public bool HasLinkedCollections => false;
+
+        /// <summary>The type's <c>NucleusLinkedCollection</c> properties; empty when it has none.</summary>
+        public IPropertySchema[] LinkedCollectionProperties => [];
+
+        /// <summary>
+        /// The many type's key property a linked collection is loaded and kept by: the property its
+        /// <c>[LinkedBy]</c> names, checked once (a stored, indexed <c>Guid</c>, <c>Guid?</c> or
+        /// <c>[LinkedObject]</c> of this type). Throws for a declaration that breaks those rules.
+        /// </summary>
+        public IPropertySchema GetLinkedCollectionKey(IPropertySchema collection) =>
+            throw new NotSupportedException($"{GetType().Name} has no linked collections.");
+
         public Task<IDictionary> Extract(DbDataReader reader, CancellationToken token);
 
         public IObjectSchema GetObjectSchema(Type type);

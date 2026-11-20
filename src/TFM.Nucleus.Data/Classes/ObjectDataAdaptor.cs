@@ -88,6 +88,14 @@ namespace TFM.Nucleus.Data
         public IQueryable<T> Include(Expression<Func<T, ICoreObject?>> reference) =>
             Including(ChildCollectionSelector.PropertyName(reference));
 
+        /// <summary>
+        /// The same query with a linked collection's members loaded with the rows, as in
+        /// <c>.Include(c =&gt; c.Vouchers)</c>: one query for the members of every returned row, so
+        /// a listing that reads the collection on every row does not load each one on its own.
+        /// </summary>
+        public IQueryable<T> Include(Expression<Func<T, INucleusLinkedCollection>> collection) =>
+            Including(ChildCollectionSelector.PropertyName(collection));
+
         private ObjectDataAdaptor<T> Including(string name) =>
             new(_odm, QueryExpression, _excluded, [.. _included.Append(name).Distinct(StringComparer.Ordinal)]);
 

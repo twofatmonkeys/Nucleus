@@ -304,13 +304,17 @@ namespace TFM.Nucleus.Data
             ex is UniqueViolationException or OperationCanceledException or DataProviderException or DataContextException;
 
         /// <summary>
-        /// The types of the forceSave links a save writes, read before the save commits them, so
-        /// their cached collections are evicted with the saved type's.
+        /// The types of the forceSave links and linked collection members a save writes or deletes,
+        /// read before the save commits them, so their cached collections are evicted with the
+        /// saved type's.
         /// </summary>
         private static Type[] LinkTypes<T>(IEnumerable<T> objs) where T : ICoreObject
         {
             List<ICoreObject> reaching = [.. objs.Cast<ICoreObject>().Where(o => o != null && SaveGraph.CanReachDependents(o))];
-            return reaching.Count == 0 ? [] : [.. SaveGraph.Walk(reaching).Links.Select(link => link.GetType()).Distinct()];
+            if (reaching.Count == 0)
+                return [];
+            var graph = SaveGraph.Walk(reaching);
+            return [.. graph.Links.Concat(graph.Members).Concat(graph.RemovedMembers).Select(o => o.GetType()).Distinct()];
         }
 
         public Task SaveAsync<T>(T obj) where T : ICoreObject<T>, new() => SaveAsync<T>(obj, CancellationToken.None);
@@ -669,9 +673,11 @@ namespace TFM.Nucleus.Data
             var schema = _objectSchema.Get<T>();
             var properties = schema?.NucleusChildCollectionProperties ?? [];
             var references = schema?.LinkedObjectProperties ?? [];
+            var linked = schema?.LinkedCollectionProperties ?? [];
             var included = includedCollections.Select(name => properties.FirstOrDefault(p => p.Name == name)
                 ?? references.FirstOrDefault(p => p.Name == name)
-                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection or a [LinkedObject] property.", nameof(includedCollections))).ToArray();
+                ?? linked.FirstOrDefault(p => p.Name == name)
+                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection, a linked collection or a [LinkedObject] property.", nameof(includedCollections))).ToArray();
             if (included.FirstOrDefault(p => excluded.Any(e => e.Name == p.Name)) is { } both)
                 throw new ArgumentException($"{typeof(T).Name}.{both.Name} is both excluded and included.", nameof(includedCollections));
             return included;
@@ -692,6 +698,8 @@ namespace TFM.Nucleus.Data
             {
                 if (property.IsLinkedObject)
                     query.IncludeLinkedObject(property.Name);
+                else if (property.IsLinkedCollection)
+                    query.IncludeLinkedCollection(property.Name);
                 else
                     query.IncludeChildCollection(property.Name);
             }
@@ -807,6 +815,23 @@ namespace TFM.Nucleus.Data
                         m.GetParameters() is [{ ParameterType: var p }] && p == typeof(Guid))
                     .MakeGenericMethod(t));
             return (ICoreObject?)load.Invoke(this, BindingFlags.DoNotWrapExceptions, binder: null, [id], culture: null);
+        }
+
+        /// <summary>
+        /// Loads the members of a linked collection of an object this manager loaded, the first time
+        /// one is read, from the provider that stores the many type.
+        /// </summary>
+        void ILinkedObjectLoader.LoadLinkedCollection(INucleusLinkedCollection collection)
+        {
+            ArgumentNullException.ThrowIfNull(collection);
+            LinkedCollectionLoader.Load(_registry.GetProvider(collection.MemberType), collection, this);
+        }
+
+        /// <inheritdoc cref="ILinkedObjectLoader.LoadLinkedCollection"/>
+        Task ILinkedObjectLoader.LoadLinkedCollectionAsync(INucleusLinkedCollection collection, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(collection);
+            return LinkedCollectionLoader.LoadAsync(_registry.GetProvider(collection.MemberType), collection, this, cancellationToken);
         }
 
         private Action<INucleusChildCollection>? _lazyLoader;
