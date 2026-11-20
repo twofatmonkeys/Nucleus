@@ -20,6 +20,7 @@ namespace TFM.Nucleus.IntegrationTests
             ManagerSaveAsync,
             ContextSaveAsync,
             ContextBulkSaveAsync,
+            ManagerBulkSave,
         }
 
         private async Task SaveAsync(ObjectDataManager manager, IntRoster roster, SavePath path)
@@ -27,12 +28,13 @@ namespace TFM.Nucleus.IntegrationTests
             switch (path)
             {
                 case SavePath.ManagerSave:
-                    roster.Validate();
                     manager.Save(roster);
                     return;
                 case SavePath.ManagerSaveAsync:
-                    roster.Validate();
                     await manager.SaveAsync(roster, Ct);
+                    return;
+                case SavePath.ManagerBulkSave:
+                    manager.BulkSave([roster]);
                     return;
             }
             await using var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct);
@@ -54,7 +56,6 @@ namespace TFM.Nucleus.IntegrationTests
                 roster.Lines.Add(line);
                 line.Breaks.Add(new IntRosterBreak { Minutes = 30 });
             }
-            roster.Validate();
             await manager.SaveAsync(roster, Ct);
             return Assert.Single(await manager.Get<IntRoster>().Where(r => r.Name == name).ToListAsync(Ct));
         }
@@ -116,7 +117,6 @@ namespace TFM.Nucleus.IntegrationTests
                 roster.Lines.Remove(roster.Lines.Single());
                 roster.Lines.Add(new IntRosterLine { Code = $"{name}-a", Hours = 4 });
 
-                roster.Validate();
                 await manager.SaveAsync(roster, Ct);
 
                 var line = Assert.Single(await LinesAsync(manager, roster));
@@ -142,7 +142,6 @@ namespace TFM.Nucleus.IntegrationTests
                 var clash = new IntRosterLine { Code = $"{name}-taken", Hours = 1 };
                 roster.Lines.Add(clash);
 
-                roster.Validate();
                 await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(roster, Ct));
 
                 // Rolled back: the removed row is still there, and still pending.
@@ -150,7 +149,6 @@ namespace TFM.Nucleus.IntegrationTests
                 Assert.Same(removed, Assert.Single(((TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection)roster.Lines).RemovedObjects));
 
                 clash.Code = $"{name}-b";
-                roster.Validate();
                 await manager.SaveAsync(roster, Ct);
 
                 Assert.Equal(0, await manager.Rows<IntRosterLine>(l => l.Code == $"{name}-a").CountAsync(Ct));
@@ -200,12 +198,10 @@ namespace TFM.Nucleus.IntegrationTests
             var roster = new IntSoftRoster { Name = name };
             roster.Lines.Add(new IntSoftRosterLine { Code = $"{name}-a" });
             roster.Lines.Add(new IntSoftRosterLine { Code = $"{name}-b" });
-            roster.Validate();
             await manager.SaveAsync(roster, Ct);
 
             var loaded = Assert.Single(await manager.Get<IntSoftRoster>().Where(r => r.Name == name).ToListAsync(Ct));
             loaded.Lines.Remove(loaded.Lines.Single(l => l.Code == $"{name}-a"));
-            loaded.Validate();
             await manager.SaveAsync(loaded, Ct);
 
             Assert.Equal(1, await manager.Rows<IntSoftRosterLine>(l => l.Code == $"{name}-a" || l.Code == $"{name}-b").CountAsync(Ct));
@@ -216,16 +212,20 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Equal(1, CountIncludingDeleted<IntSoftRosterLine>(l => l.Code == $"{name}-b"));
         }
 
-        [Fact]
-        public async Task SavingTheOwner_RunsTheChildrensRules()
+        [Theory]
+        [InlineData(SavePath.ManagerSave)]
+        [InlineData(SavePath.ManagerSaveAsync)]
+        [InlineData(SavePath.ContextSaveAsync)]
+        [InlineData(SavePath.ContextBulkSaveAsync)]
+        [InlineData(SavePath.ManagerBulkSave)]
+        public async Task EverySavePath_RunsTheChildrensRules_AndWritesNothing(SavePath path)
         {
             var manager = fixture.RequireManager();
             var roster = new IntRoster { Name = Tag("va") };
             roster.Lines.Add(new IntRosterLine { Code = Tag("va"), Hours = -1 });
 
-            // The instance save validates; through a context so no ambient runtime is involved.
-            await using var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct);
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => roster.SaveAsync(context, Ct));
+            // Each path validates itself; none relies on the caller having called Validate().
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => SaveAsync(manager, roster, path));
             Assert.Contains("negative hours", ex.Message);
             Assert.True(roster.IsNew);
             Assert.Equal(0, await manager.Rows<IntRoster>(r => r.Name == roster.Name).CountAsync(Ct));

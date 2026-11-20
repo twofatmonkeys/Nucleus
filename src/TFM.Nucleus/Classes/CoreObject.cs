@@ -544,12 +544,26 @@ namespace TFM.Nucleus
             {
                 if (ObjectSchema.HasParentObject)
                     throw new CoreObjectException(CoreObjectExceptionType.UnableToSaveFromChildObject);
-                if (HasChangedLinkedObjects(out var objs))
-                    foreach (CoreObject obj in objs!.Where(x => !x._isValidated).ToList())
-                        obj.LinkedObjectValidate();
+                // A save validates the dependents itself, from the one walk it also runs their
+                // save hooks from; a direct call to Validate() walks here.
+                if (!_dependentsValidatedBySave && HasChangedLinkedObjects(out var objs))
+                    ValidateDependents(objs!);
             }
-
         }
+
+        /// <summary>Validates each dependent not yet validated, as a dependent.</summary>
+        private static void ValidateDependents(CoreObject[] dependents)
+        {
+            foreach (var dependent in dependents)
+                if (!dependent._isValidated)
+                    dependent.LinkedObjectValidate();
+        }
+
+        /// <summary>
+        /// True while a save runs this object's <see cref="Validate"/>: the save then validates the
+        /// dependents itself, so the graph is walked once for their rules and their save hooks.
+        /// </summary>
+        private bool _dependentsValidatedBySave;
 
         /// <summary>
         /// True while this object validates as a dependent of the object being saved (a child or a
@@ -573,32 +587,56 @@ namespace TFM.Nucleus
                 _validatingAsDependent = false;
             }
         }
+        /// <summary>
+        /// Runs on every save, after <see cref="Validate"/>, on the object being saved and on each
+        /// new or changed child and forceSave link the save writes, before anything is written. A
+        /// value set here is written but not validated. Override to fill in values a write needs.
+        /// </summary>
         public virtual void PreSave()
         {
-            //perform validation logic here override in child classes
+        }
 
-        }
-        public virtual void Save()
+        /// <summary>
+        /// Every save path calls this once for each object it saves: the object's rules (with its
+        /// dependents'), the saveable checks, then the save hooks of the object and its dependents.
+        /// </summary>
+        void ICoreObject.PrepareForSave()
         {
-            Validate();
+            _dependentsValidatedBySave = true;
+            try
+            {
+                Validate();
+            }
+            finally
+            {
+                _dependentsValidatedBySave = false;
+            }
+            // The one walk of the dependents, after the object's own rules as Validate() orders it.
+            HasChangedLinkedObjects(out var dependents);
+            if (dependents != null)
+                ValidateDependents(dependents);
             EnsureSaveable();
-            NucleusRuntime.Current.Save(this);
+            PreSave();
+            if (dependents != null)
+                foreach (var dependent in dependents)
+                    dependent.PreSave();
         }
+
+        /// <summary>Saves the object through the ambient runtime, which validates it first.</summary>
+        public virtual void Save() => NucleusRuntime.Current.Save(this);
 
         public virtual Task SaveAsync() => SaveAsync(CancellationToken.None);
-        public virtual Task SaveAsync(CancellationToken token)
-        {
-            Validate();
-            EnsureSaveable();
-            return NucleusRuntime.Current.SaveAsync(this, token);
-        }
 
-        /// <summary>Saves within a caller-owned context (and transaction); the caller commits or rolls back.</summary>
+        /// <inheritdoc cref="Save"/>
+        public virtual Task SaveAsync(CancellationToken token) => NucleusRuntime.Current.SaveAsync(this, token);
+
+        /// <summary>
+        /// Saves within a caller-owned context (and transaction); the context validates the object
+        /// first, and the caller commits or rolls back.
+        /// </summary>
         public virtual async Task SaveAsync(IDataContext dataContext, CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(dataContext);
-            Validate();
-            EnsureSaveable();
             await dataContext.SaveAsync(this, token);
             CommitChanges(false);
         }

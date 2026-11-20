@@ -58,6 +58,30 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void ParentColumn_OfAChild_IsAlwaysIndexed()
+        {
+            var schema = new TableSchema(ObjectSchema.Get<CmPlainLine>());
+            var parent = schema["Parent"];
+
+            // Every child load and cascaded delete filters on it, and the property carries no
+            // Indexed flag of its own, so the schema adds a plain ascending index.
+            Assert.True(parent.Indexed);
+            Assert.False(parent.Unique);
+            Assert.False(parent.IndexSortDescending);
+            Assert.Contains(parent, schema.IndexedColumns);
+            Assert.Equal($"NCI_{schema.TableName}_Parent", IndexNaming.ColumnIndexName(schema, parent));
+        }
+
+        [Fact]
+        public void NoColumn_OfARoot_IsIndexedForBeingAParent()
+        {
+            var schema = new TableSchema(ObjectSchema.Get<CmPlainOwner>());
+
+            // A root has no parent column: only the inherited Timestamp is indexed.
+            Assert.Equal(["Timestamp"], schema.IndexedColumns.Select(c => c.ColumnName));
+        }
+
+        [Fact]
         public void Scale_SetsTheDecimalScale_AndUnsetKeepsTheDefault()
         {
             var schema = UniqueSchema();

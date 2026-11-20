@@ -248,6 +248,66 @@ doubling in the option tables and the known limits.
 
 ## Fixed
 
+### Save validation, PreSave, the parent index and the commit order (November 2026)
+
+Reported by a store, which had worked around the first two. Each is covered by tests that fail
+with the fix reverted (24 of the 29 new unit tests; the other five check behaviour that already held).
+
+- **Only an entity's own save validated.** `CoreObject.Save`/`SaveAsync` ran `Validate()`, then
+  went through the manager, and no other path validated: `IObjectDataManager.SaveAsync`, the
+  manager's `Save` and `BulkSave`, the adaptor's saves, and a context's `Save`, `SaveAsync` and
+  `BulkSave` wrote invalid objects without a word. The integration tests called `Validate()` by
+  hand before a manager save, which hid it.
+  - Every path now validates once per object through `ICoreObject.PrepareForSave` (new, and
+    `[EditorBrowsable(Never)]`): `Validate()`, the saveable checks, then `PreSave()`.
+  - The manager calls it through `SaveChecks` before its failure wrapping, so a rule's exception
+    arrives as thrown. `DbDataContext` calls it in its save and bulk save builders.
+  - `CoreObject`'s saves stopped validating themselves, since they route through those paths.
+  - Cover: `SaveValidationTests`, `InstanceSaveValidationTests`, and
+    `ChildModelIntegrationTests.EverySavePath_RunsTheChildrensRules_AndWritesNothing` on all five
+    paths and every provider.
+- **`PreSave()` ran on no path**, though the README listed it as a hook. It now runs after
+  validation on the object and each new or changed child and forceSave link. `PrepareForSave`
+  walks the dependents once and uses that walk for both their rules and their `PreSave()`; a flag
+  tells `base.Validate()` to leave the cascade to it. A direct `Validate()` still walks for itself,
+  and it no longer copies the dependents before validating them. Cover:
+  `SaveValidationTests.ManagerSave_RunsPreSaveOnTheOwnerAndEachNewChild_Once`.
+- **Cost, measured against `master` on net10.0.** Flat saves (single, batch, sync split, bulk,
+  delete, build) are within 1%. Graph saves through the manager allocate 2-4% more on PostgreSQL
+  and 4-8% more on SQL Server, which is the validation walk the manager's save never ran before.
+  A direct `Validate()` allocates 4.8% less, and `materialise 1000` is unchanged, so the new flag
+  did not make objects bigger. A first version that walked a second time for `PreSave()` cost
+  about twice as much. The baselines were not re-accepted: the save suites are 10-22% under
+  them on PostgreSQL and SQL Server, on `master` without this change too, from commits made
+  after the baselines were written.
+- **A child's `Parent` column had no index.** Every collection load and cascaded delete filters on
+  it, so each scanned the child table.
+  - `ColumnSchema` now sets `Indexed` for the `[ParentObject]` property, making it an ordinary
+    `NCI_` column index that is created, compared and synced like a declared one. An existing
+    table gains it in place at its next start.
+  - Cover: `SchemaIndexTests.ParentColumn_OfAChild_IsAlwaysIndexed`, the `ddl.create` goldens for
+    the two child types on every engine, and
+    `TableIndexIntegrationTests.ChildTable_HasAPlainIndexOnItsParentColumn` and
+    `MissingParentIndex_MakesTheSchemaNotCurrent_AndIsCreatedAgainOnStart` on every provider.
+- **The manager marked objects saved before its transaction committed.** `Save`, `SaveAsync` and
+  `BulkSave` ran `CommitChanges` and evicted the cache inside the context's scope, and the commit
+  happens when the context is disposed. So a failed commit left objects marked saved with nothing
+  stored. `SaveAsync` also disposed synchronously, committing on a blocking call.
+  - All three now mark saved after the dispose, and `SaveAsync` uses `await using`.
+  - Cover: `SaveCommitOrderTests`, through the fake's `DisposeFailure`. A commit that fails after
+    its statements succeeded cannot be provoked reliably on the three engines, so no integration
+    test covers it.
+- **A failed commit leaked the context.** `DbDataContext.FinallyDispose` disposed the transaction,
+  closed the connection and left the pool only after a successful commit or rollback, so one that
+  threw held a pool slot for the life of the process. It now releases all three in `finally`, and
+  the context counts as disposed. Verified by reading the code; no test reaches it without an
+  engine whose commit fails.
+- **The static API wrapped failures.** `INucleusRuntime.Save` and `Delete` reach the manager by
+  `MethodInfo.Invoke`, which wrapped whatever it threw in `TargetInvocationException`. A sync
+  `Delete()` of a type that is not `[Deletable]` threw that, not `NotSupportedException`. The
+  dispatch now passes `BindingFlags.DoNotWrapExceptions`. Cover:
+  `InstanceSaveValidationTests.Delete_OfATypeThatIsNotDeletable_ThrowsTheRefusalItself`.
+
 ### The manager interface did not carry what a store needs (November 2026)
 
 DI registers only `IObjectDataManager`, and it had seven members: `DataProvider`, `ObjectSchema`,

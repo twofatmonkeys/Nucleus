@@ -242,41 +242,57 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Saves the objects in one transaction, as <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
-        /// does. A failure rolls back; the failures <see cref="PassesThrough"/> names are thrown as
-        /// they are, any other is wrapped.
+        /// does. Each object is validated first, and a rule that fails is thrown as it is. A
+        /// failure after that rolls back; the failures <see cref="PassesThrough"/> names are thrown
+        /// as they are, any other is wrapped. The objects are marked saved once the transaction
+        /// has committed.
         /// </summary>
         public INucleusCollection<T>? Save<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
+            ArgumentNullException.ThrowIfNull(objs);
+            var list = objs as IList<T> ?? objs.ToList();
+            SaveChecks.Run(list);
             try
             {
                 var provider = ProviderFor<T>();
-                var list = objs as IList<T> ?? objs.ToList();
                 var linkTypes = LinkTypes(list);
                 var queries = provider.CreateSaveQueries(list);
                 if (queries.Count == 0)
                     return null;
-                using var context = provider.CreateContext(ContextOptions.Transactional);
-                try
+                // Disposing the context commits it, so the objects are marked saved only after.
+                using (var context = provider.CreateContext(ContextOptions.Transactional))
                 {
-                    foreach (var query in queries)
-                        context.ExecuteQuery(query);
-                    foreach (var obj in list)
-                        obj.CommitChanges(AuditLoggerFor(obj.GetType()));
-                    EvictCache(typeof(T));
-                    foreach (var type in linkTypes)
-                        EvictCache(type);
-                    return new NucleusCollection<T>(list);
+                    try
+                    {
+                        foreach (var query in queries)
+                            context.ExecuteQuery(query);
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
                 }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                MarkSaved(list, [typeof(T), .. linkTypes]);
+                return new NucleusCollection<T>(list);
             }
             catch (Exception ex) when (!PassesThrough(ex))
             {
                 throw new Exception("Error saving objects", ex);
             }
+        }
+
+        /// <summary>
+        /// Marks the objects saved, auditing each, and evicts the cached collections of the
+        /// types the save wrote. Runs only once the save's transaction has committed, so a commit
+        /// that fails leaves the objects with their pending changes and removals for a retry.
+        /// </summary>
+        private void MarkSaved<T>(IEnumerable<T> objs, IEnumerable<Type> writtenTypes) where T : ICoreObject
+        {
+            foreach (var obj in objs)
+                obj.CommitChanges(AuditLoggerFor(obj.GetType()));
+            foreach (var type in writtenTypes)
+                EvictCache(type);
         }
 
         /// <summary>
@@ -306,42 +322,43 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Saves the objects in one transaction, with their child collections (deleting the
-        /// stored children removed from them) and the forceSave links they reach. A failure rolls
-        /// back, keeping the pending removals for a retry. A <see cref="UniqueViolationException"/>,
-        /// an <see cref="OperationCanceledException"/>, a <see cref="DataProviderException"/> and a
+        /// stored children removed from them) and the forceSave links they reach. Each object is
+        /// validated first (<c>Validate()</c>, then <c>PreSave()</c>), and a rule that fails is
+        /// thrown as it is. A failure after that rolls back, keeping the pending changes and
+        /// removals for a retry. A <see cref="UniqueViolationException"/>, an
+        /// <see cref="OperationCanceledException"/>, a <see cref="DataProviderException"/> and a
         /// <see cref="DataContextException"/> are thrown as they are; any other failure is wrapped.
+        /// The objects are marked saved once the transaction has committed.
         /// </summary>
         public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
+            ArgumentNullException.ThrowIfNull(objs);
+            var list = objs as IList<T> ?? objs.ToList();
+            SaveChecks.Run(list);
             try
             {
                 var provider = ProviderFor<T>();
-                var list = objs as IList<T> ?? objs.ToList();
                 var linkTypes = LinkTypes(list);
                 var queries = provider.CreateSaveQueries(list);
                 if (queries.Count == 0)
                     return null;
 
-                using var context = await provider.CreateContextAsync(ContextOptions.Transactional, token);
-                try
+                // Disposing the context commits it, so the objects are marked saved only after.
+                await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
                 {
-                    foreach (var query in queries)
-                        await context.ExecuteQueryAsync(query, token);
-                    foreach (var obj in list)
+                    try
                     {
-                        obj.CommitChanges(AuditLoggerFor(obj.GetType()));
+                        foreach (var query in queries)
+                            await context.ExecuteQueryAsync(query, token);
                     }
-
-                    EvictCache(typeof(T));
-                    foreach (var type in linkTypes)
-                        EvictCache(type);
-                    return new NucleusCollection<T>(list);
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
                 }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                MarkSaved(list, [typeof(T), .. linkTypes]);
+                return new NucleusCollection<T>(list);
             }
             catch (Exception ex) when (!PassesThrough(ex))
             {
@@ -695,17 +712,25 @@ namespace TFM.Nucleus.Data
                         m.GetParameters().Length == key.Parameters && m.GetParameters()[0].ParameterType.IsGenericParameter)
                     .MakeGenericMethod(key.Type));
 
-        void INucleusRuntime.Save(ICoreObject obj) =>
-            SingleObjectMethod(nameof(Save), obj.GetType(), 1).Invoke(this, [obj]);
+        /// <summary>
+        /// Calls the single-object overload of <paramref name="methodName"/> for the object's
+        /// runtime type. What it throws reaches the caller as it was thrown, not wrapped in a
+        /// <see cref="TargetInvocationException"/>, so a failed rule or a refused delete reads
+        /// the same through the static API as through the manager.
+        /// </summary>
+        private object? InvokeForType(string methodName, ICoreObject obj, object?[] args) =>
+            SingleObjectMethod(methodName, obj.GetType(), args.Length)
+                .Invoke(this, BindingFlags.DoNotWrapExceptions, binder: null, args, culture: null);
+
+        void INucleusRuntime.Save(ICoreObject obj) => InvokeForType(nameof(Save), obj, [obj]);
 
         Task INucleusRuntime.SaveAsync(ICoreObject obj, CancellationToken token) =>
-            (Task)SingleObjectMethod(nameof(SaveAsync), obj.GetType(), 2).Invoke(this, [obj, token])!;
+            (Task)InvokeForType(nameof(SaveAsync), obj, [obj, token])!;
 
-        void INucleusRuntime.Delete(ICoreObject obj) =>
-            SingleObjectMethod(nameof(Delete), obj.GetType(), 1).Invoke(this, [obj]);
+        void INucleusRuntime.Delete(ICoreObject obj) => InvokeForType(nameof(Delete), obj, [obj]);
 
         Task INucleusRuntime.DeleteAsync(ICoreObject obj, CancellationToken token) =>
-            (Task)SingleObjectMethod(nameof(DeleteAsync), obj.GetType(), 2).Invoke(this, [obj, token])!;
+            (Task)InvokeForType(nameof(DeleteAsync), obj, [obj, token])!;
 
         /// <summary>
         /// Routes each object to its owning provider and bulk-saves per provider in one
@@ -716,20 +741,21 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                using var context = providerGroup.Key.CreateContext(ContextOptions.Transactional);
-                try
+                // The context validates the objects before it writes, and disposing it commits,
+                // so the objects are marked saved only after.
+                using (var context = providerGroup.Key.CreateContext(ContextOptions.Transactional))
                 {
-                    context.BulkSave(list);
-                    foreach (var obj in list)
-                        obj.CommitChanges(AuditLoggerFor(obj.GetType()));
-                    foreach (var type in list.Select(o => o.GetType()).Distinct())
-                        EvictCache(type);
+                    try
+                    {
+                        context.BulkSave(list);
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
                 }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
         }
 

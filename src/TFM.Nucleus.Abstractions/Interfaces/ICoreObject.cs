@@ -21,6 +21,16 @@ namespace TFM.Nucleus
         //static abstract IEnumerable<T> BindDataSet<T>(IDataSet dataSet) where T : ICoreObject, new();
         public Dictionary<string, object?> ChangedProperties { get; }
         public void CommitChanges(ILogger? logger = null);
+
+        /// <summary>
+        /// Checks the object before a save and gets it ready to write: its rules, and those of the
+        /// new and changed children and forceSave links the save reaches, then its save hooks.
+        /// Throws to reject the save. Nucleus calls this once per object being saved, on every save
+        /// path, before anything is built or written; application code overrides
+        /// <c>CoreObject.Validate</c> and <c>CoreObject.PreSave</c> rather than calling this.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void PrepareForSave();
         public T? GetPropertyValue<T>(string propertyName);
         public object? GetPropertyValue(string propertyName);
         public void BindValue(string property, object? value);

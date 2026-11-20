@@ -7,6 +7,8 @@
     /// <see cref="IntRowItem"/>'s, changed under the schema lock. A unique index is covered on
     /// <see cref="IntPathItem"/>'s table: every fact on it holds the schema lock too, because the
     /// net8.0 and net10.0 runs share the table and some facts take its index away for a while.
+    /// The index Nucleus gives every child's parent column is covered here too, on
+    /// <see cref="IntRosterLine"/>'s table, since it is checked and recreated the same way.
     /// </summary>
     public abstract class TableIndexIntegrationTests(DatabaseFixture fixture)
     {
@@ -14,6 +16,8 @@
         private const string Index = $"NIX_{Table}_BatchAt";
         private const string PathTable = "tbl_TFM_Nucleus_IntegrationTests_IntPathItem";
         private const string PathIndex = $"NIX_{PathTable}_KeyPath";
+        private const string ChildTable = "tbl_TFM_Nucleus_IntegrationTests_IntRosterLine";
+        private const string ParentIndex = $"NCI_{ChildTable}_Parent";
 
         protected static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -70,6 +74,40 @@
             {
                 // Leave the index in place for every other suite, whatever happened above.
                 if (await ScalarAsync(IndexColumnsSql(Table, Index)) is null or DBNull)
+                    using (await Fixture.StartStackAsync(_ => { })) { }
+            }
+        }
+
+        [Fact]
+        public async Task ChildTable_HasAPlainIndexOnItsParentColumn()
+        {
+            Fixture.RequireSettings();
+            using var schema = await Fixture.SchemaLockAsync();
+
+            Assert.Equal("Parent", await ScalarAsync(IndexColumnsSql(ChildTable, ParentIndex)));
+            Assert.Equal(0, Convert.ToInt32(await ScalarAsync(IsUniqueSql(ChildTable, ParentIndex))));
+        }
+
+        [Fact]
+        public async Task MissingParentIndex_MakesTheSchemaNotCurrent_AndIsCreatedAgainOnStart()
+        {
+            Fixture.RequireSettings();
+            using var schema = await Fixture.SchemaLockAsync();
+            await ExecuteAsync(DropIndexSql(ChildTable, ParentIndex));
+            try
+            {
+                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
+
+                // An existing database gains the index in place at its next start, with no rebuild.
+                using var stack = await Fixture.StartStackAsync(_ => { });
+
+                Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
+                Assert.Equal("Parent", await ScalarAsync(IndexColumnsSql(ChildTable, ParentIndex)));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+            }
+            finally
+            {
+                if (await ScalarAsync(IndexColumnsSql(ChildTable, ParentIndex)) is null or DBNull)
                     using (await Fixture.StartStackAsync(_ => { })) { }
             }
         }

@@ -495,8 +495,8 @@ Instance members on every entity:
 
 | Member | Notes |
 |---|---|
-| `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Runs `Validate()`, which also validates the new and changed children and the forceSave links, then writes only the changed columns, the child collections (deleting removed children) and the forceSave links, in one transaction. |
-| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction; the caller commits or rolls back. |
+| `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Validates as every save does (`Validate()`, which also validates the new and changed children and the forceSave links, then `PreSave()`), then writes only the changed columns, the child collections (deleting removed children) and the forceSave links, in one transaction. |
+| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction, validating first; the caller commits or rolls back. |
 | `Delete()`, `DeleteAsync(CancellationToken)` | Types with their own `[Deletable]` only. Removes the object's child collection rows at every depth in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is stored by another provider. |
 | `IsNew`, `IsReadOnly`, `HasChanges`, `DataChanged` | Change-tracking state. |
 | `ToJson()`, `DisplayName` | Serialisation and display helpers. |
@@ -549,7 +549,14 @@ Nucleus then does the bookkeeping:
   save that fails rolls back and keeps the removals, so saving again deletes them.
 - **Validating.** The parent's `Validate()` runs `Validate()` on every new or changed child, at
   every depth, before anything is written, so a child's rules hold without the parent restating
-  them. Unchanged loaded children are not checked again.
+  them. Unchanged loaded children are not checked again. Every save path validates: an entity's
+  own `Save`, the manager's `Save`, `SaveAsync` and `BulkSave`, and a context's `Save`,
+  `SaveAsync` and `BulkSave`. Do not call `Validate()` before saving; the save does.
+- **Indexing.** A child's `Parent` column always has an index (`NCI_<table>_Parent`), since every
+  load of a collection and every cascaded delete filters on it. Declare no `[TableIndex]` on
+  `Parent` alone, which would duplicate it; one that leads with `Parent` and adds a column the
+  child is read by, such as `[TableIndex("ByParent", nameof(Parent), nameof(Sequence))]`, still
+  helps an ordered read.
 - **Deleting.** Declared, and cascaded at every depth (below).
 - **Ownership.** A child belongs to one parent: adding it to a second throws
   `ParentObjectAlreadyBound`. A child removed and added back to the same collection before the
@@ -653,8 +660,8 @@ Override these on an entity to run logic at defined points:
 
 | Hook | When it runs |
 |---|---|
-| `Validate()` | At the start of every instance save. Throw to reject the save. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
-| `PreSave()` | Before the write is issued. |
+| `Validate()` | At the start of every save, on every path (entity, manager, context, bulk), once per object saved. Throw to reject the save: nothing is written and the exception reaches the caller as thrown. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
+| `PreSave()` | After validation and before anything is written, on the object saved and on each new or changed child and forceSave link the save writes. A value set here is written but not validated. |
 | `OnAfterLoadFromDB()` | Once per loaded object, at the end of every load: after its columns and parent are bound, its loaded children are attached and have run theirs, and an excluded collection reads as unloaded. A lazy collection's rows run theirs when it loads. |
 | `OnAfterInitializeDB()` | After schema initialisation for the type. |
 
@@ -825,6 +832,34 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
 
 ## Behaviour changes
+
+These came in with save validation and the parent index.
+
+- **Every save validates.** Only an entity's own `Save` and `SaveAsync` ran `Validate()`, so a save
+  through `IObjectDataManager.SaveAsync`, the manager's `Save` or `BulkSave`, or a context's `Save`,
+  `SaveAsync` or `BulkSave` wrote an invalid object without a word. Every path now validates each
+  object once, before anything is written, and throws as an entity save does:
+  - a rule's own exception, as thrown, not wrapped in "Error saving objects";
+  - `CoreObjectException` (`UnableToSaveFromChildObject`) for a child saved on its own;
+  - `ReadOnlyException` for a read-only object.
+
+  An application that called `Validate()` before a manager save, to get its rules run, can stop:
+  the save runs them, and calling it first runs the object's own rules twice.
+- **`PreSave()` runs.** It was documented as running before the write but ran on no path. It now
+  runs on every save, after validation, on the object and on each new or changed child and
+  forceSave link the save writes.
+- **A child's `Parent` column is indexed** (`NCI_<table>_Parent`), on every engine. An existing
+  database gains the index at its next start, in place, with no rebuild; on SQL Server the build
+  blocks writes to that table while it runs, so a large child table is best started out of hours.
+  A `[TableIndex]` declared on `Parent` alone is now a duplicate: remove it.
+- **A failed commit leaves the objects unsaved.** The manager's `Save`, `SaveAsync` and `BulkSave`
+  marked their objects saved and evicted the `[Cacheable]` cache before the transaction committed,
+  so a commit that failed left them marked saved with nothing stored. They are now marked saved
+  only after the commit, and a failed commit keeps their changes and removals for a retry.
+  `SaveAsync` now commits on the asynchronous path.
+- **The static API throws what the manager throws.** `CoreObject.Save()` and `Delete()` reach the
+  manager by reflection, which wrapped any failure in a `TargetInvocationException`: a sync
+  `Delete()` of a type that is not `[Deletable]`, for one. Failures now arrive as thrown.
 
 This came in with the PostgreSQL test pool cap.
 

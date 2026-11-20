@@ -98,7 +98,10 @@ violation into `UniqueViolationException` (Abstractions) naming the entity and t
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
 the rule once, on the failure path only. A `[TableIndex]` can be `Unique`, filtered to rows whose
 keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
-fails initialisation without touching the rows.
+fails initialisation without touching the rows. A child's parent column is always indexed:
+`ColumnSchema` sets `Indexed` for the `[ParentObject]` property, so it is an ordinary column index
+(`NCI_<table>_Parent`) on every path that reads `IndexedColumns`, and an existing table gains it in
+place at its next start.
 
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
@@ -132,7 +135,16 @@ Validation (`CoreObject.Validate`), the writes and the commit all read it, so th
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
 manager, `IDataContext.Save`/`SaveAsync` and `BulkSave`): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
-roots. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+roots. Every save path validates before it builds anything, once per object: the manager's `Save`
+and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
+reaches the caller as thrown, and `DbDataContext` in its save and bulk save builders, which also
+covers the manager's `BulkSave`. Each calls `ICoreObject.PrepareForSave`, which `CoreObject` runs as
+`Validate()`, the saveable checks, then `PreSave()` on the object and its changed dependents, from
+one walk of the dependents (a flag keeps `base.Validate()` from walking them a second time).
+`CoreObject`'s own saves do not validate, because they route through the manager or a context;
+validating there too would run the rules twice. The manager marks objects saved and evicts the
+cache only after disposing the context, which is what commits it, so a failed commit leaves them
+unsaved. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
 the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour.
 
