@@ -316,9 +316,13 @@ namespace TFM.Nucleus
 
         public string FullName => Type.FullName ?? throw new NullReferenceException();
         public string Name => Type.Name;
+        /// <summary>
+        /// The linked objects the object holds. A loaded link nobody has read is still only its
+        /// stored ID and is left out: reading it through the property would load it.
+        /// </summary>
         public IEnumerable<CoreObject> GetLinkedObjects(T thisT) =>
-            thisT is ICoreObject coreObj
-                ? _linkedObjectProperties.Select(p => p.GetValue(coreObj)).OfType<CoreObject>()
+            thisT is CoreObject coreObj
+                ? _linkedObjectProperties.Select(p => coreObj.GetRawCurrentValue(p.Name)).OfType<CoreObject>()
                 : throw new InvalidCastException($"{thisT?.GetType()} is not a CoreObject, cannot get linked objects.");
         public IPropertySchema[] AllProperties => _propertyCache.Values.ToArray();
         public IPropertySchema[] AllDBColumns => _propertyCache.Values.Where(x => x.IsDBColumn).ToArray();
@@ -393,8 +397,9 @@ namespace TFM.Nucleus
         DeleteBehavior IObjectSchema.DeleteBehavior => DeleteBehavior;
         bool IObjectSchema.IsDeletableThroughParent => IsDeletableThroughParent;
         DeleteBehavior IObjectSchema.EffectiveDeleteBehavior => EffectiveDeleteBehavior;
+        // Held links only: a loaded link nobody has read is its stored ID, and is not loaded here.
         IEnumerable<ICoreObject> IObjectSchema.GetLinkedObjects(ICoreObject obj) =>
-            _linkedObjectProperties.Select(p => p.GetValue(obj)).OfType<ICoreObject>();
+            _linkedObjectProperties.Select(p => obj.GetPropertyValue(p.Name)).OfType<ICoreObject>();
         // Held children only: reading a collection's ChildObjects never loads it.
         IEnumerable<ICoreObject> IObjectSchema.GetLinkedChildObjects(ICoreObject obj) =>
             obj.NucleusChildCollections.SelectMany(collection => collection.ChildObjects);

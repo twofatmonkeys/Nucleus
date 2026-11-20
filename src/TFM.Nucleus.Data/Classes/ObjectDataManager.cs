@@ -127,7 +127,7 @@ namespace TFM.Nucleus.Data
 
 
 
-    public class ObjectDataManager : IObjectDataManager, INucleusRuntime
+    public class ObjectDataManager : IObjectDataManager, INucleusRuntime, ILinkedObjectLoader
     {
         private readonly IDataProviderRegistry _registry;
         private readonly IObjectSchemaProvider _objectSchema;
@@ -567,7 +567,7 @@ namespace TFM.Nucleus.Data
             query.WithTotalCount = true;
             using var context = await provider.CreateContextAsync(token: cancellationToken);
             var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader, this, excluded);
             var result = new PagedResult<T>(rows)
             {
                 Skip = skip,
@@ -657,17 +657,21 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>
-        /// The schemas of the lazy child collections a load brings in with its rows. Throws for a
-        /// name that is not a child collection of <typeparamref name="T"/>, or one also excluded.
+        /// The schemas of what a load brings in with its rows: lazy child collections, and the
+        /// entities of <c>[LinkedObject]</c> properties. Throws for a name that is neither on
+        /// <typeparamref name="T"/>, or a collection also excluded.
         /// </summary>
         private IPropertySchema[] IncludedCollections<T>(IReadOnlyCollection<string> includedCollections, IPropertySchema[] excluded)
         {
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (includedCollections.Count == 0)
                 return [];
-            var properties = _objectSchema.Get<T>()?.NucleusChildCollectionProperties ?? [];
+            var schema = _objectSchema.Get<T>();
+            var properties = schema?.NucleusChildCollectionProperties ?? [];
+            var references = schema?.LinkedObjectProperties ?? [];
             var included = includedCollections.Select(name => properties.FirstOrDefault(p => p.Name == name)
-                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection.", nameof(includedCollections))).ToArray();
+                ?? references.FirstOrDefault(p => p.Name == name)
+                ?? throw new ArgumentException($"{typeof(T).Name}.{name} is not a child collection or a [LinkedObject] property.", nameof(includedCollections))).ToArray();
             if (included.FirstOrDefault(p => excluded.Any(e => e.Name == p.Name)) is { } both)
                 throw new ArgumentException($"{typeof(T).Name}.{both.Name} is both excluded and included.", nameof(includedCollections));
             return included;
@@ -685,7 +689,12 @@ namespace TFM.Nucleus.Data
         {
             var query = ParseSelectCore<T>(provider, expression, excluded);
             foreach (var property in included)
-                query.IncludeChildCollection(property.Name);
+            {
+                if (property.IsLinkedObject)
+                    query.IncludeLinkedObject(property.Name);
+                else
+                    query.IncludeChildCollection(property.Name);
+            }
             return query;
         }
 
@@ -768,7 +777,7 @@ namespace TFM.Nucleus.Data
         public Task LoadChildCollectionAsync(INucleusChildCollection collection, CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(collection);
-            return ChildCollectionLoader.LoadAsync(_registry.GetProvider(collection.ChildType), collection, token);
+            return ChildCollectionLoader.LoadAsync(_registry.GetProvider(collection.ChildType), collection, this, token);
         }
 
         /// <summary>
@@ -779,7 +788,25 @@ namespace TFM.Nucleus.Data
         public void LoadChildCollection(INucleusChildCollection collection)
         {
             ArgumentNullException.ThrowIfNull(collection);
-            ChildCollectionLoader.Load(_registry.GetProvider(collection.ChildType), collection);
+            ChildCollectionLoader.Load(_registry.GetProvider(collection.ChildType), collection, this);
+        }
+
+        private static readonly ConcurrentDictionary<Type, MethodInfo> _linkedObjectLoads = [];
+
+        /// <summary>
+        /// Loads the entity a <c>[LinkedObject]</c> of an object this manager loaded refers to, the
+        /// first time the property is read: <see cref="LoadByID{T}(Guid)"/> for its type, routed to
+        /// the provider that stores it, and answered from the cache for a [Cacheable] type.
+        /// </summary>
+        ICoreObject? ILinkedObjectLoader.LoadLinkedObject(Type type, Guid id)
+        {
+            ArgumentNullException.ThrowIfNull(type);
+            var load = _linkedObjectLoads.GetOrAdd(type, static t =>
+                typeof(ObjectDataManager).GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                    .First(m => m.Name == nameof(LoadByID) && m.IsGenericMethodDefinition &&
+                        m.GetParameters() is [{ ParameterType: var p }] && p == typeof(Guid))
+                    .MakeGenericMethod(t));
+            return (ICoreObject?)load.Invoke(this, BindingFlags.DoNotWrapExceptions, binder: null, [id], culture: null);
         }
 
         private Action<INucleusChildCollection>? _lazyLoader;
@@ -834,7 +861,7 @@ namespace TFM.Nucleus.Data
                 return new NucleusCollection<T>();
             var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = ProviderFor<T>().CreateContext();
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, this, excluded);
             return rows;
         }
 
@@ -861,7 +888,7 @@ namespace TFM.Nucleus.Data
                 return new NucleusCollection<T>();
             var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, excluded);
+            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, this, excluded);
             return rows;
         }
 
@@ -894,7 +921,7 @@ namespace TFM.Nucleus.Data
                 yield break;
             var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, cancellationToken);
+            var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, this, cancellationToken);
 
             await foreach (var row in context.StreamAsync(qry, cancellationToken))
             {
@@ -904,7 +931,7 @@ namespace TFM.Nucleus.Data
                     obj.BindValue(row.ColumnNames[i], row.Values[i]);
                 }
                 ChildGraphBinder.Attach(obj, children, LazyLoader);
-                ChildGraphBinder.Complete(obj, excluded);
+                ChildGraphBinder.Complete(obj, excluded, this);
                 yield return obj;
             }
         }

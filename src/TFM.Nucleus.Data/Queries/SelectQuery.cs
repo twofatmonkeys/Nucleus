@@ -202,5 +202,29 @@ namespace TFM.Nucleus.Data.Queries
                 return false;
             return AddChildCollectionQuery(property);
         }
+
+        /// <inheritdoc cref="ISelectQuery.IncludeLinkedObject"/>
+        public bool IncludeLinkedObject(string propertyName)
+        {
+            if (LinkedQueries.Any(q => q.LinkedObjectProperty == propertyName))
+                return true;
+            if (TableSchema is not { } table || table.ObjectSchema.LinkedObjectProperties?.FirstOrDefault(p => p.Name == propertyName) is not { } property)
+                return false;
+            var owner = table.ObjectSchema.Name;
+            var column = table.FindByPropertyName(property.Name)?.ColumnName
+                ?? throw new InvalidQueryException(
+                    $"{owner}.{property.Name} has no column in {TableName}, so the entities it refers to cannot be loaded with it. Mark it [DatabaseColumn].");
+            var targetTable = _resolveTable?.Invoke(property.Type)
+                ?? throw new InvalidQueryException(
+                    $"{owner}.{property.Name} refers to {property.Type.Name}, which this provider does not store, so it cannot be loaded in the same read. " +
+                    "Read the property on its own, which loads it from its own provider.");
+            var reference = new SelectQuery(Renderer, targetTable, _resolveTable)
+            {
+                LinkedObjectProperty = property.Name,
+                ParentKeyColumn = column,
+            };
+            AddChildQuery(reference, targetTable.FindByPropertyName(nameof(ICoreObject.ID))?.ColumnName ?? nameof(ICoreObject.ID));
+            return true;
+        }
     }
 }

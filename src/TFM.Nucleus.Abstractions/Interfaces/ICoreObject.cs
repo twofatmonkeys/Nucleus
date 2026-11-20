@@ -44,6 +44,14 @@ namespace TFM.Nucleus
         public void OnAfterLoadFromDB() { }
 
         /// <summary>
+        /// Binds the loader a loaded object reads its <c>[LinkedObject]</c> properties through
+        /// the first time each is read: the stack that loaded it. Nucleus calls this once per
+        /// loaded object of a type with linked objects; application code does not call it.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void BindLinkedObjectLoader(ILinkedObjectLoader loader) { }
+
+        /// <summary>
         /// Takes the value the server stored for a property during a write, such as a value it
         /// computed. It replaces any value the entity holds or has pending for the property.
         /// </summary>

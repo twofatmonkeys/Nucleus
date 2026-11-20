@@ -459,7 +459,7 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 
 | Attribute | Applies to | Effect |
 |---|---|---|
-| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. The referenced type must be stored by the same provider, or the save throws before anything runs. |
+| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](#linked-objects). Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
 | `[Deletable]` | a `NucleusChildCollection` property | Removing a stored child from the collection and saving the parent deletes the child. See [Deleting](#deleting). |
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](#lazy-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
@@ -654,6 +654,36 @@ var total = await manager.Rows<Recipient>(r => r.Parent == campaign).CountAsync(
 Serialising a parent reads its lazy collections. A `[Cacheable]` type cannot have one, because its cached instances are shared and
 loading the collection would change it for every caller; the schema fails to build.
 
+## Linked objects
+
+A `[LinkedObject]` property stores the referenced entity's `ID`, and a load reads only that ID.
+The first read of the property loads the entity, once, however many threads read it together, and
+keeps it, so the next read runs no query and the object is not made dirty. The read goes through
+the manager or data context that loaded the object, as a lazy collection's does: a manager loads it
+by ID from the provider that stores its type (from the cache for a `[Cacheable]` type), and a data
+context from its own provider, on a connection of its own. A row that no longer exists reads as
+`null`.
+
+```csharp
+var voucher = await manager.Get<Voucher>().FirstAsync(v => v.Code == code);
+var recipient = voucher.Recipient;   // one query, the first time
+```
+
+Like a lazy collection, that read is a round trip the call site does not show, so a listing that
+reads the reference on every row includes it. The referenced entities come in the same round trip,
+selected by the reference column of exactly the rows returned (page and `TOP` included), and rows
+that refer to the same entity share one instance:
+
+```csharp
+var vouchers = await manager.Get<Voucher>().Include(v => v.Recipient).Where(v => v.Status == Status.Issued).ToListAsync();
+```
+
+`Include` of a reference works on every read the adaptor runs, on `LoadPagedAsync`, `LoadByID` and
+`LoadStreamAsync` by property name, and with child collection includes in the same read. The
+referenced type must be stored by the same provider as the rows; including one stored elsewhere
+throws rather than leaving every row to load its own. A referenced entity included this way is
+loaded with its own child collections and runs its load hook.
+
 ## Lifecycle hooks
 
 Override these on an entity to run logic at defined points:
@@ -822,6 +852,9 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   the writes run. A caller who then rolls back must reload the objects.
 - **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
   `Include` or `LoadAsync()` where that matters.
+- **A `[LinkedObject]`'s first read is a synchronous round trip** too, with no asynchronous form.
+  Use `Include` where that matters. Rows that read the same reference this way each load their own
+  instance; included references share one.
 - **A provider can hold twice `MaxConnectionPoolSize` connections** on SQL Server and PostgreSQL.
   Transactional and other connections differ by `Enlist`, so the driver keeps a pool of that size
   for each. Size the server's connection limit for twice the setting per process, or lower the
@@ -832,6 +865,19 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
 
 ## Behaviour changes
+
+These came in with the linked object read.
+
+- **A loaded `[LinkedObject]` reads as its entity.** A load stored the referenced entity's ID and
+  the property cast it to the entity type, so every read of a loaded reference threw
+  `InvalidCastException`. The first read now loads the entity through the stack that loaded the
+  object, and `Include(x => x.Reference)` loads it with the rows.
+- **Saving a loaded object with a `forceSave` link works.** The save walked the link through the
+  property, so every save of such an object after a load threw the same `InvalidCastException`.
+  The walk now reads the link as it is held: one never read since the load is skipped without being
+  loaded, and one that was read and changed is written as before.
+- **`IObjectSchema.GetLinkedObjects` returns the links an object holds.** A link never read since
+  the load is left out instead of being loaded (it used to throw).
 
 These came in with save validation and the parent index.
 

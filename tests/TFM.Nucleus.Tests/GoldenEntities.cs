@@ -125,4 +125,22 @@
         [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
     }
+
+    /// <summary>
+    /// Two [LinkedObject] references for the included reference goldens: one stored under a
+    /// renamed column, and one to a type that has a child collection of its own.
+    /// </summary>
+    public class TestLinkingWidget : CoreObject<TestLinkingWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn("widget_ref")]
+        public TestWidget? Widget { get => GetValue<TestWidget>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public TestDeletableParent? Owner { get => GetValue<TestDeletableParent>(); set => SetValue(value); }
+    }
 }

@@ -147,16 +147,17 @@ namespace TFM.Nucleus.Data.SQL
         }
 
         /// <summary>
-        /// Selects the IDs of exactly the rows a parent query returns, for a child query to select
-        /// its rows by. A page or a TOP applies here too, or the children of every matching
-        /// parent would be fetched rather than those of the parents returned.
+        /// Selects one column (the ID, or for an included reference the reference column) of
+        /// exactly the rows a parent query returns, for a linked query to select its rows by. A
+        /// page or a TOP applies here too, or the rows of every matching parent would be fetched
+        /// rather than those of the parents returned.
         /// </summary>
-        private string ParentIdSelect(SelectQuery q)
+        private string ParentKeySelect(SelectQuery q, string column)
         {
             if (q.IsRoot && q.IsPaged)
-                return $"SELECT [ID] FROM {PagedWindow(q, "[ID]")}";
+                return $"SELECT [{column}] FROM {PagedWindow(q, $"[{column}]")}";
             var top = q.IsRoot && q.Take > 0;
-            var sb = new StringBuilder(top ? $"SELECT TOP {q.Take} [ID] FROM {q.TableName}" : $"SELECT [ID] FROM {q.TableName}");
+            var sb = new StringBuilder(top ? $"SELECT TOP {q.Take} [{column}] FROM {q.TableName}" : $"SELECT [{column}] FROM {q.TableName}");
             if (SelectWhere(q) is { } where)
                 sb.Append(' ').Append(where);
             if (top && RootOrderBy(q) is { } orderBy)
@@ -187,7 +188,7 @@ namespace TFM.Nucleus.Data.SQL
                 var parent = q.ParentSelect
                     ?? throw new InvalidQueryException("A child collection query must hang off a select.");
                 var sb = new StringBuilder($"WHERE [{q.LinkedColumn}] IN (")
-                    .Append(ParentIdSelect(parent)).Append(')');
+                    .Append(ParentKeySelect(parent, q.ParentKeyColumn ?? "ID")).Append(')');
                 if (softDeleteFilter != null)
                     sb.Append($" AND {softDeleteFilter}");
                 return sb;

@@ -193,7 +193,9 @@ namespace TFM.Nucleus
         /// same as <c>RowQuery.Get</c>. Every column is nullable and an unset property is written
         /// as NULL, so a plain cast would unbox null into an int property and throw
         /// NullReferenceException on reload. Declare the property nullable (int?) to tell NULL
-        /// from 0. The cast stays a cast, so a value of the wrong type still throws.
+        /// from 0. A value of the wrong type still throws. A loaded <c>[LinkedObject]</c> holds
+        /// only the referenced entity's ID until it is first read; that read loads the entity
+        /// (<see cref="ResolveLinkedObject"/>).
         /// </summary>
         protected internal T? GetValue<T>([CallerMemberName] string? property = null)
         {
@@ -201,8 +203,58 @@ namespace TFM.Nucleus
             if (!IsReadOnly && !IsNew && _newProperties.TryGetValue(property, out var newValue))
                 return newValue is null ? default : (T)newValue;
             if (_properties.TryGetValue(property, out var value) && value is not null)
-                return (T)value;
+                return value is T typed ? typed : StoredValueAs<T>(property, value);
             return default;
+        }
+
+        /// <summary>
+        /// A stored value that is not already a <typeparamref name="T"/>: the ID a load stored for
+        /// a <c>[LinkedObject]</c>, resolved to its entity, or else the plain cast, which throws
+        /// for a value of the wrong type as it always has. Kept out of line so the common read
+        /// stays one type test.
+        /// </summary>
+        private T? StoredValueAs<T>(string property, object value)
+        {
+            if (value is Guid id && ObjectSchema.TryGetProperty(property) is { IsLinkedObject: true } link)
+                return (T?)ResolveLinkedObject(link, id);
+            return (T)value;
+        }
+
+        /// <summary>
+        /// The stack that loaded this object, which its <c>[LinkedObject]</c> properties are read
+        /// through. Null for an object Nucleus did not load, or loaded through a path that bound
+        /// none; such a read goes through the ambient runtime.
+        /// </summary>
+        private ILinkedObjectLoader? _linkedObjectLoader;
+
+        void ICoreObject.BindLinkedObjectLoader(ILinkedObjectLoader loader)
+        {
+            ArgumentNullException.ThrowIfNull(loader);
+            _linkedObjectLoader = loader;
+        }
+
+        /// <summary>
+        /// Loads the entity a <c>[LinkedObject]</c> refers to, once, and keeps it as the stored
+        /// value, so the object is not made dirty and the next read runs no query. Several threads
+        /// reading it at once load it once. A row that no longer exists reads as null, and is
+        /// looked for again on the next read, since the ID is still what is stored.
+        /// </summary>
+        private ICoreObject? ResolveLinkedObject(IPropertySchema link, Guid id)
+        {
+            lock (_properties)
+            {
+                if (_properties.TryGetValue(link.Name, out var held) && held is ICoreObject resolved)
+                    return resolved;
+                var loader = _linkedObjectLoader
+                    ?? NucleusRuntime.Current as ILinkedObjectLoader
+                    ?? throw new InvalidOperationException(
+                        $"{GetType().Name}.{link.Name} holds the ID of a {link.Type.Name}, and nothing is available to load it: " +
+                        "the object was not loaded by Nucleus and the ambient runtime cannot load linked objects.");
+                var entity = loader.LoadLinkedObject(link.Type, id);
+                if (entity is not null)
+                    _properties[link.Name] = entity;
+                return entity;
+            }
         }
 
         internal object? GetRawCurrentValue(string property)

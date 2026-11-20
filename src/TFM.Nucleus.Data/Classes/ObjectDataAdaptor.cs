@@ -76,11 +76,20 @@ namespace TFM.Nucleus.Data
         /// come in the same round trip, so a listing that reads them does not load each parent's
         /// collection on its own.
         /// </summary>
-        public IQueryable<T> Include(Expression<Func<T, INucleusChildCollection>> collection)
-        {
-            var name = ChildCollectionSelector.PropertyName(collection);
-            return new ObjectDataAdaptor<T>(_odm, QueryExpression, _excluded, [.. _included.Append(name).Distinct(StringComparer.Ordinal)]);
-        }
+        public IQueryable<T> Include(Expression<Func<T, INucleusChildCollection>> collection) =>
+            Including(ChildCollectionSelector.PropertyName(collection));
+
+        /// <summary>
+        /// The same query with the entities a <c>[LinkedObject]</c> property refers to loaded with
+        /// the rows, as in <c>.Include(v =&gt; v.Recipient)</c>: one query for the whole read, so a
+        /// listing that reads the reference on every row does not load each one on its own. The
+        /// referenced type must be stored by the same provider.
+        /// </summary>
+        public IQueryable<T> Include(Expression<Func<T, ICoreObject?>> reference) =>
+            Including(ChildCollectionSelector.PropertyName(reference));
+
+        private ObjectDataAdaptor<T> Including(string name) =>
+            new(_odm, QueryExpression, _excluded, [.. _included.Append(name).Distinct(StringComparer.Ordinal)]);
 
         #region IAsyncQueryProvider
 

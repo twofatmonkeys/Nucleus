@@ -382,6 +382,18 @@ namespace TFM.Nucleus.IntegrationTests
         public IntLinkTarget? Target { get => GetValue<IntLinkTarget>(); set => SetValue(value); }
     }
 
+    /// <summary>Refers to a roster, a type with a child collection of its own, without owning it.</summary>
+    [Deletable]
+    public class IntRosterNote : CoreObject<IntRosterNote>
+    {
+        [DatabaseColumn]
+        public string? Text { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public IntRoster? Roster { get => GetValue<IntRoster>(); set => SetValue(value); }
+    }
+
     /// <summary>A lazy collection: left out of every load, read on first access or included.</summary>
     [Deletable]
     public class IntLazyOwner : CoreObject<IntLazyOwner>

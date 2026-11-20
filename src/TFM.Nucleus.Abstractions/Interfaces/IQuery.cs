@@ -43,6 +43,15 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public bool IncludeChildCollection(string propertyName) =>
             throw new NotSupportedException($"{GetType().Name} cannot include lazy child collections.");
+
+        /// <summary>
+        /// Loads the entities a <c>[LinkedObject]</c> property refers to with the rows, in the
+        /// same round trip, so reading the property on each row runs no query of its own. Returns
+        /// false when the query's type has no such property. Throws when the referenced type is
+        /// stored by another provider, since leaving it out would bring back a query per row.
+        /// </summary>
+        public bool IncludeLinkedObject(string propertyName) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include linked objects.");
     }
 
     public interface IInsertQuery : IQuery
@@ -92,6 +101,11 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public string? ChildCollectionProperty => null;
 
+        /// <summary>
+        /// For a query that loads the entities a parent query's <c>[LinkedObject]</c> property
+        /// refers to (an included reference), the name of that property; null for any other query.
+        /// </summary>
+        public string? LinkedObjectProperty => null;
 
     }
 }
