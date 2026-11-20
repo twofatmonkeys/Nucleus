@@ -734,7 +734,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchS
 
 ## Unique violations
 
-A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` names the entity, `IndexName` the Nucleus index name, and `PropertyNames` and `ColumnNames` the index's key properties and columns in key order. For a `[DatabaseColumn(Unique = true)]` index, `PropertyName` and `ColumnName` name its one property and column, and `Is<T>(name)` tests for it by either. For a unique `[TableIndex]`, `DeclaredIndexName` is the name it was declared with and `IsIndex<T>(name)` tests for it; `PropertyName` and `ColumnName` are then null, even for one key. For an index Nucleus does not manage, such as a primary key, the names are null and the lists empty. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does.
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` names the entity, `IndexName` the Nucleus index name, and `PropertyNames` and `ColumnNames` the index's key properties and columns in key order. For a `[DatabaseColumn(Unique = true)]` index, `PropertyName` and `ColumnName` name its one property and column, and `Is<T>(name)` tests for it by either. For a unique `[TableIndex]`, `DeclaredIndexName` is the name it was declared with and `IsIndex<T>(name)` tests for it; `PropertyName` and `ColumnName` are then null, even for one key. For an index Nucleus does not manage, such as a primary key, the names are null and the lists empty. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does. The manager's `Save` and `SaveAsync` throw it as it is, not wrapped, so the filters below work on them as they do on a context's save.
 
 ```csharp
 catch (UniqueViolationException ex) when (ex.Is<Customer>(nameof(Customer.Email)))
@@ -883,8 +883,16 @@ These came in with the fixes for the save path findings.
   `CoreObject.SaveAsync(CancellationToken)` routes through, dropped its token, so a save could not
   be cancelled. The token now reaches the context. A cancelled save rolls back and throws
   `OperationCanceledException` as it is, where the manager's `SaveAsync` wrapped every failure in
-  a plain `Exception`; other failures are still wrapped. `ObjectDataManager` gains
+  a plain `Exception`. See the next entry for the other failures that are no longer wrapped.
+  `ObjectDataManager` gains
   `SaveAsync(obj, CancellationToken)` and `SaveAsync(objs, CancellationToken)`.
+- **A manager save throws typed failures as they are.** `ObjectDataManager.Save` and `SaveAsync`
+  wrapped every failure in `Exception("Error saving objects")`, so `catch (UniqueViolationException)`
+  never matched them. A `UniqueViolationException`, an `OperationCanceledException` (the synchronous
+  `Save` wrapped it too), a `DataProviderException` (with each provider's subclass) and a
+  `DataContextException` now reach the caller unwrapped, as they do from a context. Any other
+  failure is still wrapped. Code that caught `Exception` still does; code that read
+  `InnerException` to find one of these four gets the exception itself instead.
 - **A loaded parent saves its child collections on every path.** Only the manager's `SaveAsync` set
   the object's `DataProvider`, which its child collections build their writes through, so a loaded
   parent with a child collection threw through `Save` and every `IDataContext` save. The provider

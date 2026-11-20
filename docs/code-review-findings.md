@@ -284,6 +284,23 @@ declaration to use. The test is `default(TPropertyType) is not null`, a constant
 generic, so reference and `Nullable<T>` properties pay nothing and a plain value type pays one
 null compare. Cover: the `SetValue_*` tests in `RegressionTests`.
 
+### A manager save wrapped a unique violation (November 2026)
+
+`ObjectDataManager.Save` and `SaveAsync` caught every failure and threw
+`new Exception("Error saving objects", ex)`, `UniqueViolationException` included, so the README's
+`catch (UniqueViolationException ex) when (ex.Is<T>(...))` never matched a manager save. The async
+path exempted `OperationCanceledException`; the sync path wrapped that too. The integration tests
+hid it by looking for the violation down the inner-exception chain. Both saves now share one filter,
+`PassesThrough`, which lets through what the context already throws unwrapped: a
+`UniqueViolationException`, an `OperationCanceledException`, a `DataProviderException` (each
+provider's subclass included) and a `DataContextException`. Cover: `SaveFailureTests` on both paths,
+and `UniqueIndexIntegrationTests.DuplicateValue_SecondSaveFails`, which now expects the violation
+itself, on every provider.
+
+Left as it is on purpose: any other failure is still wrapped. That includes the plain
+`Exception(message, inner)` the context throws for a database error it does not translate, which a
+manager save therefore wraps a second time.
+
 ### Found by the benchmarks, fixed (November 2026)
 
 Measured by running the new benchmarks on the commit before the child model and on the child
