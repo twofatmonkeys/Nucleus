@@ -30,6 +30,22 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         [Fact]
+        public async Task UnsetValueProperty_LoadsAsDefault()
+        {
+            // Quantity is an int left unset, so it is written as NULL. Reading it back threw
+            // NullReferenceException, because the getter unboxed null into int.
+            var manager = fixture.RequireManager();
+            var widget = new IntWidget { Name = $"null-{Guid.NewGuid():N}" };
+            var id = widget.ID;
+
+            await manager.SaveAsync(widget);
+            var found = Assert.Single(manager.Get<IntWidget>().Where(w => w.ID == id).ToList());
+
+            Assert.False(found.IsNew);
+            Assert.Equal(0, found.Quantity);
+        }
+
+        [Fact]
         public async Task Update_RoundTrip()
         {
             var manager = fixture.RequireManager();

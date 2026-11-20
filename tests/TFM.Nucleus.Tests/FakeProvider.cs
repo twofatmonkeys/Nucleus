@@ -17,6 +17,9 @@ namespace TFM.Nucleus.Tests
         /// <summary>The row count every delete by predicate on this provider's contexts reports.</summary>
         public int RowsAffectedByDeleteWhere { get; set; }
 
+        /// <summary>When set, every query execution on this provider's contexts throws it, as a database failure would.</summary>
+        public Exception? ExecuteFailure { get; set; }
+
         public Guid ConnectionIdentifier { get; } = Guid.NewGuid();
         public DataProviderStatus Status => DataProviderStatus.Ok;
         public Type? RootType { get; set; }
@@ -194,8 +197,17 @@ namespace TFM.Nucleus.Tests
         public Task<TFM.Nucleus.DataSet> GetDataSetAsync(IQuery query) => Task.FromResult(GetDataSet(query));
         public Task<TFM.Nucleus.DataSet> GetDataSetAsync(IQuery query, CancellationToken token) => Task.FromResult(GetDataSet(query));
 
-        public void ExecuteQuery(IQuery query) => ExecutedQueries.Add(query);
-        public Task ExecuteQueryAsync(IQuery query) { ExecutedQueries.Add(query); return Task.CompletedTask; }
+        public void ExecuteQuery(IQuery query)
+        {
+            if (provider.ExecuteFailure is { } failure)
+                throw failure;
+            ExecutedQueries.Add(query);
+        }
+        public Task ExecuteQueryAsync(IQuery query)
+        {
+            ExecuteQuery(query);
+            return Task.CompletedTask;
+        }
         public Task ExecuteQueryAsync(IQuery query, CancellationToken token)
         {
             ExecutionTokens.Add(token);

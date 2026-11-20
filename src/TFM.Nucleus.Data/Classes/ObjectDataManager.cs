@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TFM.Nucleus;
 using TFM.Nucleus.Abstractions.Interfaces;
+using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.Data
 {
@@ -143,6 +144,11 @@ namespace TFM.Nucleus.Data
 
         public INucleusCollection<T>? Save<T>(T obj) where T : ICoreObject<T>, new() => Save<T>([obj]);
 
+        /// <summary>
+        /// Saves the objects in one transaction, as <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
+        /// does. A failure rolls back; the failures <see cref="PassesThrough"/> names are thrown as
+        /// they are, any other is wrapped.
+        /// </summary>
         public INucleusCollection<T>? Save<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
             try
@@ -171,11 +177,19 @@ namespace TFM.Nucleus.Data
                     throw;
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!PassesThrough(ex))
             {
                 throw new Exception("Error saving objects", ex);
             }
         }
+
+        /// <summary>
+        /// The failures a save throws as they are, as its context does: a unique violation, a
+        /// cancellation, and the provider's and the context's own exceptions. A save wraps any other
+        /// in "Error saving objects".
+        /// </summary>
+        private static bool PassesThrough(Exception ex) =>
+            ex is UniqueViolationException or OperationCanceledException or DataProviderException or DataContextException;
 
         /// <summary>
         /// The types of the forceSave links a save writes, read before the save commits them, so
@@ -196,9 +210,10 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Saves the objects in one transaction, with their child collections (deleting the
-        /// stored children removed from them) and the forceSave links they reach. A failure is
-        /// wrapped and rolls back, keeping the pending removals for a retry; a cancelled save
-        /// rolls back and throws <see cref="OperationCanceledException"/> as it is.
+        /// stored children removed from them) and the forceSave links they reach. A failure rolls
+        /// back, keeping the pending removals for a retry. A <see cref="UniqueViolationException"/>,
+        /// an <see cref="OperationCanceledException"/>, a <see cref="DataProviderException"/> and a
+        /// <see cref="DataContextException"/> are thrown as they are; any other failure is wrapped.
         /// </summary>
         public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
@@ -232,7 +247,7 @@ namespace TFM.Nucleus.Data
                     throw;
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (!PassesThrough(ex))
             {
                 throw new Exception("Error saving objects", ex);
             }

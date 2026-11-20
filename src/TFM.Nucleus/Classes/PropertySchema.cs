@@ -261,7 +261,28 @@ namespace TFM.Nucleus
                 : throw new PropertySchemaException(
                     "Create is only supported for [LinkedChildCollection] properties.", Name, Type);
 
-        void IPropertySchema.SetValue(object? thisObj, object? value) => SetValue((T?)thisObj, (TPropertyType?)value);
+        /// <summary>
+        /// Writes an untyped value through the property's setter. A null for a non-nullable value
+        /// type is refused with an ArgumentException naming the property: the cast below would
+        /// unbox null and throw NullReferenceException, and writing the type's default instead
+        /// would save 0 over what the caller meant as NULL. Reads are lenient (a NULL column reads
+        /// as the default); writes come from caller code, so they are strict.
+        /// </summary>
+        void IPropertySchema.SetValue(object? thisObj, object? value)
+        {
+            // Constant per closed generic: the JIT removes the test for reference and Nullable<T>
+            // property types, and leaves a single null compare for a plain value type.
+            if (value is null && default(TPropertyType) is not null)
+                ThrowNullForValueType();
+            SetValue((T?)thisObj, (TPropertyType?)value);
+        }
+
+        // Kept out of line so the cold throw does not bloat the write path.
+        [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+        private void ThrowNullForValueType() =>
+            throw new ArgumentException(
+                $"{typeof(T).Name}.{Name} is {Type.Name} and cannot be set to null. Declare it {Type.Name}? to store NULL.",
+                "value");
         //public void SetValue(T thisObj, TPropertyType value) => thisObj.SetValue(value,Name);
         public void SetValue(T? obj, TPropertyType? value)
         {

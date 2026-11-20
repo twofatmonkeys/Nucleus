@@ -9,12 +9,10 @@ namespace TFM.Nucleus.IntegrationTests
             var code = $"uq-{Guid.NewGuid():N}";
             await manager.SaveAsync(new IntUniqueItem { Code = code });
 
-            var ex = await Assert.ThrowsAnyAsync<Exception>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
-
-            // Every provider reports the broken index as the neutral exception, naming its column.
-            var violation = ExceptionChain.Find<UniqueViolationException>(ex);
-            Assert.NotNull(violation);
-            Assert.True(violation!.Is<IntUniqueItem>(nameof(IntUniqueItem.Code)));
+            // Every provider reports the broken index as the neutral exception, naming its column,
+            // and the manager's save throws it as it is rather than wrapped.
+            var violation = await Assert.ThrowsAsync<UniqueViolationException>(() => manager.SaveAsync(new IntUniqueItem { Code = code }));
+            Assert.True(violation.Is<IntUniqueItem>(nameof(IntUniqueItem.Code)));
             Assert.Equal("UQ_tbl_TFM_Nucleus_IntegrationTests_IntUniqueItem_Code", violation.IndexName);
             Assert.NotNull(violation.InnerException);
         }
