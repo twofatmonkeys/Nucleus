@@ -137,6 +137,58 @@ var listing = await adaptor.Include(c => c.Notes).Where(c => c.CreditLimit > 0).
 var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
 ```
 
+### The manager interface
+
+DI registers `IObjectDataManager` and nothing else, and it is what an application service or a
+store takes. Every call routes the entity type to the provider of its nearest registered root,
+runs in a transaction of its own, evicts the `[Cacheable]` cache when it commits and marks the
+objects saved. Do not cast it to `ObjectDataManager`.
+
+| Member | Does |
+|---|---|
+| `Get<T>()` | The LINQ adaptor: `Where`, `Exclude`, `Include`, `FindAsync(id, token)`, `ToListAsync`, `ToPagedResultAsync(skip, take, token)` and the other async operators. |
+| `Rows<T>(predicate)` | Rows of values rather than entities. See [Row reads](#row-reads). |
+| `SaveAsync(obj, token)` | Saves the object with its child collections and forceSave links. |
+| `SaveAsync(objs, token)` | Saves a batch of one type in one transaction. |
+| `DeleteAsync(obj, token)`, `DeleteAsync(objs, token)` | Deletes, cascading to child rows. The type must be `[Deletable]`. |
+| `DeleteWhereAsync<T>(predicate, token)` | Deletes by predicate without loading. |
+| `LoadChildCollectionAsync(collection, token)` | Loads an excluded or lazy collection. |
+| `SubscribeToChangesAsync<T>(token)` | Change notifications from the provider that owns `T`. |
+| `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types. See the known limits: it commits on dispose unless rolled back, and the manager's eviction does not apply. |
+| `InitializeDataProviderAsync()` | Creates or migrates every registered provider's schema. |
+
+```csharp
+public sealed class RosterStore(IObjectDataManager data)
+{
+    public Task SaveAllAsync(IReadOnlyList<Roster> rosters, CancellationToken ct) =>
+        data.SaveAsync(rosters, ct);                                     // one transaction
+
+    public Task<Roster?> FindAsync(Guid id, CancellationToken ct) =>
+        data.Get<Roster>().FindAsync(id, ct);
+
+    // Two types in one transaction: roll back on failure, or disposing commits what ran.
+    public async Task MoveAsync(Roster from, Shift shift, CancellationToken ct)
+    {
+        await using var context = await data.CreateContextAsync<Roster>(ContextOptions.Transactional, ct);
+        try
+        {
+            await from.SaveAsync(context, ct);                           // validates, then writes
+            await shift.SaveAsync(context, ct);
+        }
+        catch
+        {
+            await context.TryRollbackAsync(ct);
+            throw;
+        }
+    }
+}
+```
+
+`DataProvider` is obsolete: it is the unrooted default provider, so a context opened or a
+subscription made through it goes to the wrong database for a type under a rooted provider. The
+synchronous writes, `BulkSave` and the `Load` overloads that take an `Expression` stay on the
+concrete class for the static `CoreObject` API.
+
 ## PostgreSQL
 
 `TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16
@@ -270,7 +322,7 @@ var store = new MyStore(stack.Manager);
 | `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server), `Nucleus:Postgres:*` and `Nucleus:Sqlite:Database` (a file path) user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*`, `NUCLEUS_PG_TEST_*` and `NUCLEUS_SQLITE_TEST_DATABASE` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
 | `NucleusTestDatabase` | `SqlServer`, `Postgres` and `Sqlite`: `IsConfigured`, `SkipReason`, `StartSharedStackAsync` (a fixture's shared stack, booted under the schema lock), `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
 | `NucleusEntityTable` | `NucleusEntityTable.For(typeof(MyEntity))`: the table an entity's rows live in and its `[LegacyTableNames]`, computed without a database, for a test that pins them. `NucleusTestDatabase.MoveToLegacyNamesAsync(entities)` puts live tables back under their old names, so a test can prove the next start adopts them with their rows. |
-| `NucleusTestStack` | A booted stack: `Provider`, `Manager` (what a store under test is given), `Log` (the warnings and errors it logged) and `Services`. Dispose it. |
+| `NucleusTestStack` | A booted stack: `Provider`, `Manager` (an `IObjectDataManager`, what a store under test is given), `Log` (the warnings and errors it logged) and `Services`. Dispose it. |
 | `NucleusTestLock` | A cross-process lock held as an exclusively opened temp file, so the two target framework runs of a suite never reset each other's rows. Waits up to five minutes. |
 
 Stacks find entities the way an application does, from every assembly beside the entry assembly, so a store's test project initialises the store's tables just by referencing the store. The schema lock is not reentrant: take it once per test, around the whole change.
@@ -578,14 +630,15 @@ them, and they come for every returned parent in the same round trip:
 var campaigns = await manager.Get<Campaign>().Include(c => c.Recipients).Where(c => c.Year == 2026).ToListAsync();
 ```
 
-The manager's `Load`, `LoadAsync`, `LoadStreamAsync`, `LoadPagedAsync` and `LoadByID` take the
-included collection names as well. `Exclude` wins over lazy: an excluded lazy collection throws
+`Include` and `Exclude` apply to every read through the adaptor, `FindAsync` and
+`ToPagedResultAsync` included. `Exclude` wins over lazy: an excluded lazy collection throws
 when read. A lazy collection always loads all of its rows; to read part of one, query the child
 type by its parent, which reads only the rows asked for and leaves the parent's collection unloaded:
 
 ```csharp
-Expression<Func<Recipient, bool>> bounced = r => r.Parent.ID == campaign.ID && r.Status == Status.Bounced;
-var page = await manager.LoadPagedAsync<Recipient>(0, 50, bounced.Body);
+var page = await manager.Get<Recipient>()
+    .Where(r => r.Parent.ID == campaign.ID && r.Status == Status.Bounced)
+    .ToPagedResultAsync(0, 50);
 var total = await manager.Rows<Recipient>(r => r.Parent == campaign).CountAsync();
 ```
 
@@ -760,8 +813,25 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   the writes run. A caller who then rolls back must reload the objects.
 - **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
   `Include` or `LoadAsync()` where that matters.
+- **A caller-owned context commits when it is disposed** unless `Rollback()` or `TryRollback()`
+  was called. A failed statement does not roll it back by itself, so wrap the work in a try/catch
+  that rolls back and rethrows. Work done through it evicts no `[Cacheable]` cache. A single type's
+  batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
 
 ## Behaviour changes
+
+These came in with the manager interface fix.
+
+- **`IObjectDataManager.DataProvider` is obsolete.** It is the unrooted default provider, so a
+  store that opened a context or subscribed through it wrote to the wrong database for a type under
+  a rooted provider. Use `CreateContextAsync<T>` and `SubscribeToChangesAsync<T>`. Code that reads
+  it gets a compiler warning, which fails a build that treats warnings as errors.
+- **`NucleusTestStack.Manager` is an `IObjectDataManager`**, the type a store receives in
+  production. A store test that called a member only the concrete class has no longer compiles;
+  move the store to the interface member. This is a breaking change to `TFM.Nucleus.Testing` only.
+- **`IObjectDataManager` and `IObjectDataAdaptor<T>` gained members** with default bodies that throw
+  `NotSupportedException`, so another implementation still compiles. `ObjectDataManager` implements
+  them all.
 
 These came in with the audit fixes.
 
@@ -961,7 +1031,7 @@ can change what existing code sees.
 - **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types automatically gain `IsDeleted` and `DeletedAt` columns.
 - **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
-- **Change notifications.** `IDataProvider.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates. SQLite has none.
+- **Change notifications.** `IObjectDataManager.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates. SQLite has none.
 - **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
 - **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
 - **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.

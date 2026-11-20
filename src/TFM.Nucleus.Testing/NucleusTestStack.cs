@@ -20,7 +20,7 @@ public sealed class NucleusTestStack : IDisposable
     public IDataProvider Provider { get; }
 
     /// <summary>A manager over <see cref="Provider"/>, the object a store under test is given.</summary>
-    public ObjectDataManager Manager { get; }
+    public IObjectDataManager Manager { get; }
 
     /// <summary>The warnings and errors the stack has logged, the schema update's among them.</summary>
     public CapturingLoggerProvider Log { get; }

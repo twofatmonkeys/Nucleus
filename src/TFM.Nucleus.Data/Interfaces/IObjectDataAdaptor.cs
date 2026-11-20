@@ -32,7 +32,21 @@ namespace TFM.Nucleus.Data
         public TICoreObject? Find(Guid id);
         public Task<TICoreObject?> FindAsync(Guid id);
 
+        /// <summary>
+        /// Loads by primary key on the asynchronous path, with this query's excluded and included
+        /// child collections. Null when no row has the ID.
+        /// </summary>
+        public Task<TICoreObject?> FindAsync(Guid id, CancellationToken token) =>
+            throw new NotSupportedException($"{GetType().Name} does not support a cancellable find.");
+
         public IEnumerable<TICoreObject>? Save();
         public Task<IEnumerable<TICoreObject>?> SaveAsync();
+
+        /// <summary>
+        /// Saves every object added with <see cref="Add"/> or <c>AddRange</c> in one transaction,
+        /// as the manager's batch save does, then clears them. A failure keeps them for a retry.
+        /// </summary>
+        public Task<IEnumerable<TICoreObject>?> SaveAsync(CancellationToken token) =>
+            throw new NotSupportedException($"{GetType().Name} does not support a cancellable save.");
     }
 }

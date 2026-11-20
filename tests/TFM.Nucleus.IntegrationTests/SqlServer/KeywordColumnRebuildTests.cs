@@ -34,7 +34,7 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.NotEqual(tableId, await TableIdAsync());
-                var row = stack.Manager.LoadByID<IntKeywordItem>(id);
+                var row = await stack.Manager.Get<IntKeywordItem>().FindAsync(id, Ct);
                 Assert.NotNull(row);
                 Assert.Equal("Sam", row!.By);
                 Assert.Equal(3, row.Order);

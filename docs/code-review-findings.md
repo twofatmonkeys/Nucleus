@@ -217,7 +217,45 @@ longer dirty themselves (see "Loaded children were dirty" below), so the only wr
 timestamp. `SaveGraph` now works out whether anything below an object is new, changed or removed
 (it decides whether a forceSave link is written), which is the recursive check this needs.
 
+### A caller-owned context commits on dispose and evicts no cache (November 2026)
+
+A transactional `IDataContext` that the caller opens (`IObjectDataManager.CreateContextAsync<T>`,
+or `IDataProvider.CreateContextAsync`) commits when it is disposed unless `Rollback()` or
+`TryRollback()` was called first (`DbDataContext.FinallyDispose`). A statement that fails does not
+mark the context for rollback, so `await using var context = ...` followed by an exception between
+two writes commits the first. The manager's own operations catch, roll back and rethrow, so they
+are not affected. A save or delete through such a context also evicts no `[Cacheable]` cache,
+because eviction is the manager's job, and it marks the objects saved before the commit (the
+README known limit). The fix is an explicit commit (a context that rolls back on dispose unless
+committed), which changes every caller-owned context and so needs a coordinated release. Until
+then, callers wrap the work in a try/catch that rolls back and rethrows. Verified by reading the
+code.
+
 ## Fixed
+
+### The manager interface did not carry what a store needs (November 2026)
+
+DI registers only `IObjectDataManager`, and it had seven members: `DataProvider`, `ObjectSchema`,
+`DataProviderStatus`, `InitializeDataProviderAsync`, `Get<T>`, `SaveAsync<T>(T)` without a token,
+and `Rows<T>`. Saving with a token, saving a batch, every delete, subscribing to changes and
+loading an excluded collection existed only on the concrete `ObjectDataManager`. A store author
+reported it and asked whether to cast to the concrete type or save through an `IDataContext`. All
+four store repos already opened their contexts with `_data.DataProvider.CreateContextAsync(...)`,
+and `DataProvider` is the unrooted default provider, so for a type under a rooted provider they
+wrote to the wrong database, and nothing they wrote that way evicted the cache. `NucleusTestStack.Manager`
+was the concrete type, so store tests compiled against members production DI could not give them.
+The README called `IObjectDataManager.LoadChildCollectionAsync`, `manager.LoadPagedAsync` and
+`adaptor.ToPagedResultAsync`, none of which compiled against the interfaces.
+
+The interface now carries `SaveAsync(obj, token)`, `SaveAsync(objs, token)`, `DeleteAsync` for one
+object and a batch, `DeleteWhereAsync`, `LoadChildCollectionAsync`, `SubscribeToChangesAsync<T>`
+and `CreateContextAsync<T>`. The last two are new and route by `T`. Each new member has a default
+body that throws `NotSupportedException`, so an older implementation still compiles. The adaptor
+gains `FindAsync(id, token)` and `SaveAsync(token)`, and `ToPagedResultAsync` is an `IQueryable<T>`
+extension, so it works after `Where` too. `DataProvider` is obsolete. `NucleusTestStack.Manager` is
+an `IObjectDataManager`. Reads stay on `Get<T>()` and `Rows<T>()`. The `Expression`-body loads,
+the sync writes and `BulkSave` stay on the concrete class only: no store calls them, and each one
+can be added to the interface later without breaking anything. Cover: `ManagerInterfaceTests`.
 
 ### Audit bugs (November 2026)
 

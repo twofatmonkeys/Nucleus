@@ -85,9 +85,15 @@ namespace TFM.Nucleus.Tests
             return Task.FromResult(CreateContext(options));
         }
 
-        /// <summary>Capabilities say unsupported, so the seam contract is to throw.</summary>
-        public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>
+        /// <summary>The entity type of every subscription asked of this provider, in order.</summary>
+        public List<Type> SubscriptionRequests { get; } = [];
+
+        /// <summary>Capabilities say unsupported, so the seam contract is to throw, after recording the request.</summary>
+        public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new()
+        {
+            SubscriptionRequests.Add(typeof(T));
             throw new NotSupportedException("FakeDataProvider does not support change notifications.");
+        }
 
         public Task<DataProviderStatus> CheckDataContextAsync() => Task.FromResult(DataProviderStatus.Ok);
         public DataProviderStatus CheckSchemaIsCurrent(IEnumerable<IObjectSchema>? objectSchemas) => DataProviderStatus.Ok;

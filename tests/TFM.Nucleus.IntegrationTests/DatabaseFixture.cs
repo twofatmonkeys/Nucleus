@@ -18,7 +18,12 @@ namespace TFM.Nucleus.IntegrationTests
 
         public NucleusTestDatabaseSettings? Settings => Database.Settings;
         public IDataProvider? Provider => _stack?.Provider;
-        public ObjectDataManager? Manager => _stack?.Manager;
+
+        /// <summary>
+        /// The stack's manager as the concrete class: this suite tests ObjectDataManager itself,
+        /// including members a consumer does not reach through IObjectDataManager.
+        /// </summary>
+        public ObjectDataManager? Manager => (ObjectDataManager?)_stack?.Manager;
 
         /// <summary>The provider, in skip messages and lock names.</summary>
         public string ProviderName => Database.ProviderName;
