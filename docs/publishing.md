@@ -57,6 +57,26 @@ this input.
 A package on nuget.org is public and effectively permanent. Unlisting hides a version; it does not
 remove it. Turn this on deliberately, not by default.
 
+### Prereleases on nuget.org
+
+`PublishToNuGetOrg` covers stable releases from `master` only. Alpha and beta packages need a
+second switch:
+
+```xml
+<PublishToNuGetOrg>true</PublishToNuGetOrg>
+<PublishPrereleaseToNuGetOrg>true</PublishPrereleaseToNuGetOrg>
+```
+
+Both must be `true`. `PublishPrereleaseToNuGetOrg` on its own does nothing, so a package that is
+internal can never reach the public feed through its beta branch. The "Read repo settings" step
+prints both values and the feeds the run will actually push to.
+
+Leave it `false` unless consumers outside GitHub Packages really need early builds. Every push to
+`alpha` or `beta` would add another public, permanent version.
+
+The existing trusted publishing policy already covers prereleases, because it names the workflow
+file and not a branch. No second policy is needed.
+
 ## Restoring our packages
 
 `nuget.config` declares both feeds and reads the GitHub Packages credential from environment
@@ -120,7 +140,10 @@ unzip -l .\artifacts\TFM.Widgets.1.26.241.1.nupkg
 
 ## Releases
 
-Each successful run creates a `v<version>` tag, a `release/v<version>` branch and a GitHub release.
-The release body lists the packages published and the short commit, followed by GitHub's generated
-change list, and the `.nupkg` files are attached as assets. Attaching them means a package can be
-retrieved from the release even if a feed is unavailable.
+Each successful run from `master` creates a `v<version>` tag, a `release/v<version>` branch and a
+GitHub release. The release body lists the packages published and the short commit, followed by
+GitHub's generated change list, and the `.nupkg` files are attached as assets. Attaching them means
+a package can be retrieved from the release even if a feed is unavailable.
+
+A run from `beta` or `alpha` creates the tag and a GitHub release marked as a prerelease, with the
+same body and assets, but no `release/` branch. See `docs/versioning.md`.
