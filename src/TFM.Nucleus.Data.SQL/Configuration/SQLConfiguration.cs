@@ -18,14 +18,22 @@ namespace TFM.Nucleus.Data.SQL
         /// <summary>Use Windows authentication instead of SQL authentication (Username/Password ignored).</summary>
         public bool UseIntegratedSecurity { get; set; }
 
-        public int SQLPacketSize { get; set; } = 1500;
+        public int PacketSize { get; set; } = 1500;
+
+        /// <summary>The old name of <see cref="PacketSize"/>.</summary>
+        [Obsolete("Use PacketSize.")]
+        public int SQLPacketSize
+        {
+            get => PacketSize;
+            set => PacketSize = value;
+        }
 
         /// <summary>
         /// The most staged rows one bulk INSERT or UPDATE statement writes. A larger batch runs as
         /// several statements in the same transaction, which keeps log growth and lock
         /// escalation in check.
         /// </summary>
-        public int BulkCopyBatchSize
+        public int BulkBatchSize
         {
             get => _bulkCopyBatchSize;
             set
@@ -35,6 +43,14 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
         private int _bulkCopyBatchSize = 50000;
+
+        /// <summary>The old name of <see cref="BulkBatchSize"/>.</summary>
+        [Obsolete("Use BulkBatchSize.")]
+        public int BulkCopyBatchSize
+        {
+            get => BulkBatchSize;
+            set => BulkBatchSize = value;
+        }
 
         /// <summary>
         /// Seconds to wait for a connection to open before failing, 3 by default. A busy server
@@ -59,7 +75,7 @@ namespace TFM.Nucleus.Data.SQL
             if (ConnectionString != null)
                 return BuildFromRawConnectionString(ConnectionString, useTransaction);
             var builder = BuildConnectionStringBuilder();
-            builder.InitialCatalog = Database ?? throw new SqlDataProviderException("SQL database name is missing", SqlDataProviderExceptionType.NotConfigured);
+            builder.InitialCatalog = Database ?? throw new SqlDataProviderException("SQL database name is missing", DataProviderErrorKind.NotConfigured);
             return useTransaction ? new SqlConnection($"{builder.ConnectionString}") :
                 new SqlConnection($"{builder.ConnectionString}; Enlist = false");
         }
@@ -81,7 +97,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             SqlConnectionStringBuilder builder = [];
             var server = Server;
-            if (server?.Contains(':') ?? throw new SqlDataProviderException("SQL server name is missing", SqlDataProviderExceptionType.NotConfigured))
+            if (server?.Contains(':') ?? throw new SqlDataProviderException("SQL server name is missing", DataProviderErrorKind.NotConfigured))
             {
                 var srv = server.Split(':')[0];
                 var port = server.Split(':')[1];
@@ -95,17 +111,17 @@ namespace TFM.Nucleus.Data.SQL
             else
             {
                 builder.IntegratedSecurity = false;
-                builder.UserID = Username ?? throw new SqlDataProviderException("SQL user name is missing", SqlDataProviderExceptionType.NotConfigured);
-                builder.Password = Password ?? throw new SqlDataProviderException("SQL password is missing", SqlDataProviderExceptionType.NotConfigured);
+                builder.UserID = Username ?? throw new SqlDataProviderException("SQL user name is missing", DataProviderErrorKind.NotConfigured);
+                builder.Password = Password ?? throw new SqlDataProviderException("SQL password is missing", DataProviderErrorKind.NotConfigured);
             }
-            builder.ApplicationName = AppName ?? throw new SqlDataProviderException("SQL application name is missing", SqlDataProviderExceptionType.NotConfigured);
+            builder.ApplicationName = AppName ?? throw new SqlDataProviderException("SQL application name is missing", DataProviderErrorKind.NotConfigured);
             builder.ConnectTimeout = ConnectTimeoutSeconds;
             builder.ConnectRetryCount = 4;
             builder.ConnectRetryInterval = 5;
             builder.TrustServerCertificate = true;
             builder.MultipleActiveResultSets = true;
             builder.IPAddressPreference = SqlConnectionIPAddressPreference.UsePlatformDefault;
-            builder.PacketSize = SQLPacketSize;
+            builder.PacketSize = PacketSize;
             builder.MaxPoolSize = MaxConnectionPoolSize;
             return builder;
         }

@@ -232,7 +232,7 @@ microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `json
 reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
 A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
 unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
-retries a transient failure (`ConnectRetryCount`). Its output is pinned by `PostgresGoldens.cs`,
+retries a transient failure (`ConnectAttempts`). Its output is pinned by `PostgresGoldens.cs`,
 built from the same query corpus as the SQL Server goldens.
 
 `TFM.Nucleus.Data.SQLite` is SQLite's dialect over the same SDK, for one database file on a local
@@ -254,7 +254,7 @@ to replace old-named indexes; the primary key is unnamed because a rename would 
 stale. A unique violation (extended code 2067, or 1555 for the key) names columns, not the index, so
 the provider maps them back to the index through its table schemas. Initialise refuses a SQLite
 older than 3.35 and puts the file in write-ahead log mode (`UseWriteAheadLog`); transactions begin
-IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerQuery` is 2000, far under
+IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerCommand` is 2000, far under
 SQLite's 32766, because the driver binds each statement of a command by searching all its
 parameters, so a large multi-statement command is quadratic and holds the write lock throughout
 (an oversized save measured 33 s at 30000 against 0.3 s at 2000). Its output is pinned by
@@ -413,6 +413,10 @@ warning or an analyzer warning in new code fails CI.
   from the SDK base classes; it never re-implements a query rule, a tree walk, the schema compare
   or the execution paths. If a second provider needs something the first one has privately, move
   it into `Data` behind a neutral name, not into the second provider as a copy.
+- **Spell identity `ID` and database `DB` in member names** (`LoadByID`, `IsDBColumn`). Existing
+  members that spell them otherwise stay as they are; do not add a second name to match.
+- **Every exception Nucleus defines derives from `NucleusException`** (Abstractions). A new one
+  does too, and reports what failed through a `Kind` where it has several causes.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
   SQL Server names stay, obsolete, because entities in production use them.

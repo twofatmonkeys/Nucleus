@@ -383,13 +383,13 @@ namespace TFM.Nucleus.Data.Providers
         IDataContext IDataProvider.CreateContext(ContextOptions? options)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContext(options.Parent, options.UseTransaction, options.UseDependency);
+            return CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges);
         }
 
         Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContextAsync(options.Parent, options.UseTransaction, options.UseDependency, token);
+            return CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token);
         }
 
         async Task<DataProviderStatus> IDataProvider.CheckDataContextAsync()
@@ -443,7 +443,7 @@ namespace TFM.Nucleus.Data.Providers
     }
 
     /// <summary>A provider could not be configured, initialised or reached.</summary>
-    public class DataProviderException : Exception
+    public class DataProviderException : TFM.Nucleus.NucleusException
     {
         public DataProviderErrorKind Kind { get; }
 

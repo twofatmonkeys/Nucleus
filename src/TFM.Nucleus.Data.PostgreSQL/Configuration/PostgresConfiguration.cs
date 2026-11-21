@@ -26,8 +26,36 @@ namespace TFM.Nucleus.Data.PostgreSQL
         /// </summary>
         public string? SslMode { get; set; }
 
-        /// <summary>How many times opening a connection is attempted when the failure is transient.</summary>
-        public int ConnectRetryCount { get; set; } = 3;
+        /// <summary>
+        /// How many times opening a connection is attempted when the failure is transient, the
+        /// first attempt included. 1 or less means one attempt and no retry.
+        /// </summary>
+        public int ConnectAttempts { get; set; } = 3;
+
+        /// <summary>The old name of <see cref="ConnectAttempts"/>. It always counted attempts, not retries.</summary>
+        [Obsolete("Use ConnectAttempts. The value counts attempts, the first included, not retries.")]
+        public int ConnectRetryCount
+        {
+            get => ConnectAttempts;
+            set => ConnectAttempts = value;
+        }
+
+        private int _connectTimeoutSeconds = 15;
+
+        /// <summary>
+        /// Seconds to wait for a connection to open before failing, 15 by default. 0 waits
+        /// indefinitely. Ignored when <see cref="RelationalProviderOptions.ConnectionString"/> is
+        /// set, which carries its own.
+        /// </summary>
+        public int ConnectTimeoutSeconds
+        {
+            get => _connectTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _connectTimeoutSeconds = value;
+            }
+        }
 
         /// <summary>The database every server has, used to find and create the configured one.</summary>
         internal const string MaintenanceDatabase = "postgres";
@@ -63,7 +91,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 Password = Password ?? throw new PostgresDataProviderException("PostgreSQL password is missing", DataProviderErrorKind.NotConfigured),
                 ApplicationName = AppName ?? throw new PostgresDataProviderException("PostgreSQL application name is missing", DataProviderErrorKind.NotConfigured),
                 MaxPoolSize = MaxConnectionPoolSize,
-                Timeout = 15,
+                Timeout = ConnectTimeoutSeconds,
                 KeepAlive = 30,
             };
             if (SslMode != null)

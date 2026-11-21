@@ -694,7 +694,7 @@ namespace TFM.Nucleus
         public override string ToString() => $"ObjectSchema({FullName ?? "null"})";
     }
 
-    public class ObjectSchemaException : Exception
+    public class ObjectSchemaException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
 
@@ -710,7 +710,7 @@ namespace TFM.Nucleus
                 : $"Object Schema error for Null Type, {message}";
     }
 
-    public class InvalidObjectTypeException : Exception
+    public class InvalidObjectTypeException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
 
@@ -725,7 +725,7 @@ namespace TFM.Nucleus
         }
     }
 
-    public class PropertyNotFoundException : Exception
+    public class PropertyNotFoundException : TFM.Nucleus.NucleusException
     {
         public string PropertyName { get; }
         public IObjectSchema ObjectSchema { get; }

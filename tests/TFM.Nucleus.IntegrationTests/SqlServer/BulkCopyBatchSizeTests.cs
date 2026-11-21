@@ -1,7 +1,7 @@
 ﻿namespace TFM.Nucleus.IntegrationTests.SqlServer
 {
     /// <summary>
-    /// SQLConfiguration.BulkCopyBatchSize splits the bulk engine's statements. With a batch far
+    /// SQLConfiguration.BulkBatchSize splits the bulk engine's statements. With a batch far
     /// smaller than the rows, the engine sends one statement per batch, and every row still
     /// lands, inserted and then updated.
     /// </summary>
@@ -16,7 +16,7 @@
             fixture.RequireSettings();
             const int batchSize = 97;
             using var schema = await fixture.SchemaLockAsync();
-            using var stack = await fixture.StartStackAsync(options => options.BulkCopyBatchSize = batchSize);
+            using var stack = await fixture.StartStackAsync(options => options.BulkBatchSize = batchSize);
             var manager = stack.Manager;
             // Three values a row on insert takes this many rows past the 2,000 parameter limit,
             // into the bulk engine.
@@ -54,6 +54,6 @@
         [InlineData(0)]
         [InlineData(-1)]
         public void BatchSize_BelowOne_IsRefused(int size) =>
-            Assert.Throws<ArgumentOutOfRangeException>(() => new SQLConfiguration { BulkCopyBatchSize = size });
+            Assert.Throws<ArgumentOutOfRangeException>(() => new SQLConfiguration { BulkBatchSize = size });
     }
 }

@@ -50,6 +50,13 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
         };
     }
 
+    /// <summary>A stack with its PostgreSQL settings changed by <paramref name="configure"/>.</summary>
+    public Task<NucleusTestStack> StartStackAsync(Action<TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        return StartStackAsync((RelationalProviderOptions options) => configure((TFM.Nucleus.Data.PostgreSQL.PostgresConfiguration)options));
+    }
+
     /// <inheritdoc />
     public override async Task ExecuteAsync(string sql, CancellationToken token = default)
     {

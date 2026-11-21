@@ -114,6 +114,7 @@ namespace TFM.Nucleus
         public readonly bool SuppressLogging;
         public readonly bool AbbreviatedLogging;
         public readonly bool LinkWhenLogging;
+        [Obsolete("Set for a [ParentObject] property and read by nothing.")]
         public bool SkipOnDbRead => _skipOnDbRead;
         private readonly bool _skipOnDbRead = false;
 
@@ -466,7 +467,7 @@ namespace TFM.Nucleus
 
     }
 
-    public class PropertySchemaException : Exception
+    public class PropertySchemaException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
         public string? PropertyName { get; }

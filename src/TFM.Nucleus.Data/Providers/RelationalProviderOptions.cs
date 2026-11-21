@@ -13,7 +13,7 @@ namespace TFM.Nucleus.Data.Providers
     {
         protected RelationalProviderOptions(int maxParametersPerQuery)
         {
-            MaxParametersPerQuery = maxParametersPerQuery;
+            MaxParametersPerCommand = maxParametersPerQuery;
         }
 
         public readonly Guid ID = Guid.NewGuid();
@@ -39,8 +39,19 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The most parallel contexts one oversized write fans out to.</summary>
         public int MaxThreadsForLargeQuery { get; set; } = 12;
 
-        /// <summary>The most parameters one command binds; a larger write is split or bulk copied.</summary>
-        public int MaxParametersPerQuery { get; set; }
+        /// <summary>
+        /// The most parameters one command binds; a larger write is split, or handed to the bulk
+        /// engine. The same value the provider reports as its capability of that name.
+        /// </summary>
+        public int MaxParametersPerCommand { get; set; }
+
+        /// <summary>The old name of <see cref="MaxParametersPerCommand"/>.</summary>
+        [Obsolete("Use MaxParametersPerCommand, the name the provider's capabilities already use for the same value.")]
+        public int MaxParametersPerQuery
+        {
+            get => MaxParametersPerCommand;
+            set => MaxParametersPerCommand = value;
+        }
 
         private int _poolWaitTimeoutSeconds = 10;
 
@@ -85,8 +96,29 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        /// <summary>The command timeout of each bulk copy and bulk statement, in seconds.</summary>
-        public int BulkCopyTimeoutSeconds { get; set; } = 60;
+        private int _bulkTimeoutSeconds = 60;
+
+        /// <summary>
+        /// The command timeout of each bulk write, in seconds, whatever mechanism the engine
+        /// writes it with. 0 means no limit. An engine with no bulk engine ignores it.
+        /// </summary>
+        public int BulkTimeoutSeconds
+        {
+            get => _bulkTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _bulkTimeoutSeconds = value;
+            }
+        }
+
+        /// <summary>The old name of <see cref="BulkTimeoutSeconds"/>.</summary>
+        [Obsolete("Use BulkTimeoutSeconds. The setting covers every bulk write, not one engine's bulk copy.")]
+        public int BulkCopyTimeoutSeconds
+        {
+            get => BulkTimeoutSeconds;
+            set => BulkTimeoutSeconds = value;
+        }
 
         private TableNamingPolicy _tableNaming = TableNamingPolicy.FullName;
 

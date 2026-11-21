@@ -56,6 +56,10 @@ namespace TFM.Nucleus.Data.Schema
         /// <summary>The column gets an index of its own: declared, or a child's parent column.</summary>
         public readonly bool Indexed;
 
+        public readonly bool IndexDescending;
+
+        /// <summary>The old name of <see cref="IndexDescending"/>.</summary>
+        [Obsolete("Use IndexDescending, the name the attribute and the catalog use.")]
         public readonly bool IndexSortDescending;
 
         /// <summary>True when the column gets an index of its own (plain or unique).</summary>
@@ -98,7 +102,10 @@ namespace TFM.Nucleus.Data.Schema
             Indexed = attr.Indexed || propertySchema.IsParentObject;
             ClrType = GetClrType(propertySchema);
             RequiresCast = WillRequireCast(propertySchema);
-            IndexSortDescending = attr.IndexDescending;
+            IndexDescending = attr.IndexDescending;
+#pragma warning disable CS0618 // kept in step for code compiled against the old field
+            IndexSortDescending = IndexDescending;
+#pragma warning restore CS0618
             // A max-length or externally stored value cannot be an index key on every engine.
             // Fail at schema build with a readable message instead of a raw error inside Update.
             if (HasColumnIndex && (IsMax || ExternalStorage))

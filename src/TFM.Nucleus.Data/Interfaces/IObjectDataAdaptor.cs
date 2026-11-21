@@ -95,6 +95,27 @@ namespace TFM.Nucleus.Data
             throw new NotSupportedException($"{GetType().Name} cannot exclude child collections.");
 
         /// <summary>
+        /// The same query with a lazy ([RetrieveOnDemand]) child collection loaded with its rows,
+        /// as in <c>.Include(m =&gt; m.Naps)</c>.
+        /// </summary>
+        public IQueryable<TICoreObject> Include(System.Linq.Expressions.Expression<Func<TICoreObject, TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection>> collection) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include child collections.");
+
+        /// <summary>
+        /// The same query with the entities a <c>[LinkedObject]</c> property refers to loaded with
+        /// its rows, as in <c>.Include(m =&gt; m.Keeper)</c>.
+        /// </summary>
+        public IQueryable<TICoreObject> Include(System.Linq.Expressions.Expression<Func<TICoreObject, ICoreObject?>> reference) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include linked objects.");
+
+        /// <summary>
+        /// The same query with a linked collection's members loaded with its rows, as in
+        /// <c>.Include(t =&gt; t.Monkeys)</c>.
+        /// </summary>
+        public IQueryable<TICoreObject> Include(System.Linq.Expressions.Expression<Func<TICoreObject, TFM.Nucleus.Abstractions.Interfaces.INucleusLinkedCollection>> collection) =>
+            throw new NotSupportedException($"{GetType().Name} cannot include linked collections.");
+
+        /// <summary>
         /// The same query also returning the rows of a soft-deletable type that are marked
         /// deleted, and those of its child collections.
         /// </summary>

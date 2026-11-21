@@ -23,7 +23,7 @@ namespace TFM.Nucleus.Data.SQL
         /// <summary>The condition that selects rows which have not been soft deleted.</summary>
         internal const string LiveRowFilter = "[IsDeleted] = 0";
 
-        private static string NoLock(Query q) => q.WithNoLock ? " WITH(NOLOCK)" : "";
+        private static string NoLock(Query q) => q.AllowDirtyRead ? " WITH(NOLOCK)" : "";
 
         // ---- Select
 

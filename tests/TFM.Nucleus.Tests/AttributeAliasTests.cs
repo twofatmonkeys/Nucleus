@@ -50,12 +50,12 @@
                 var a = obsolete[name];
                 var b = neutral[name];
                 Assert.Equal(b.Indexed, a.Indexed);
-                Assert.Equal(b.IndexSortDescending, a.IndexSortDescending);
+                Assert.Equal(b.IndexDescending, a.IndexDescending);
                 Assert.Equal(b.FullTextSearch, a.FullTextSearch);
                 Assert.Equal(b.ExternalStorage, a.ExternalStorage);
             }
             Assert.True(neutral["Code"].Indexed);
-            Assert.True(neutral["Code"].IndexSortDescending);
+            Assert.True(neutral["Code"].IndexDescending);
             Assert.True(neutral["Text"].FullTextSearch);
             Assert.True(neutral["Blob"].ExternalStorage);
         }

@@ -1040,6 +1040,58 @@ namespace TFM.Nucleus.Data
 
         T? INucleusRuntime.LoadByID<T>(Guid id, LoadOptions? options) where T : default => LoadByID<T>(id, options);
 
+        Task<NucleusCollection<T>> INucleusRuntime.LoadAllAsync<T>(CancellationToken cancellationToken)
+        {
+            // The cache has no asynchronous fill: a [Cacheable] type is answered as Load<T>() answers it.
+            if (_objectSchema.Get<T>() is { IsCacheable: true })
+                return Task.FromResult(Load<T>());
+            return LoadCoreAsync<T>(Expression.Constant(true), [], [], false, cancellationToken);
+        }
+
+        T? INucleusRuntime.LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options) where T : default =>
+            LoadFirst(predicate, options);
+
+        Task<T?> INucleusRuntime.LoadFirstAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
+            LoadFirstAsync(predicate, options, cancellationToken);
+
+        /// <summary>
+        /// The first row <paramref name="predicate"/> matches, or null when there is none. The
+        /// query asks for one row, so a predicate many rows match still reads one.
+        /// </summary>
+        public T? LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null) where T : ICoreObject<T>, new()
+        {
+            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
+                return default;
+            using var context = provider.CreateContext();
+            return ChildGraphBinder.BuildCollection<T>(query, context.GetDataSet(query), LazyLoader, this, excluded).FirstOrDefault();
+        }
+
+        /// <inheritdoc cref="LoadFirst{T}(Expression{Func{T, bool}}, LoadOptions?)"/>
+        public async Task<T?> LoadFirstAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
+                return default;
+            using var context = await provider.CreateContextAsync(token: cancellationToken);
+            return ChildGraphBinder.BuildCollection<T>(query, await context.GetDataSetAsync(query, cancellationToken), LazyLoader, this, excluded).FirstOrDefault();
+        }
+
+        /// <summary>The select for the first match, or null when the predicate can match nothing.</summary>
+        private ISelectQuery? FirstQuery<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, out IDataProvider provider, out IPropertySchema[] excluded)
+            where T : ICoreObject<T>, new()
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            options ??= LoadOptions.Default;
+            provider = ProviderFor<T>();
+            excluded = ExcludedCollections<T>(options.Exclude);
+            var included = IncludedCollections<T>(options.Include, excluded);
+            if (ExpressionParser.Classify(predicate) == PredicateShape.MatchesNone)
+                return null;
+            var query = ParseSelect<T>(provider, predicate, excluded, included, options.IncludeDeleted);
+            query.Skip = 0;
+            query.Take = 1;
+            return query;
+        }
+
         Task<T?> INucleusRuntime.LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
             LoadByIDAsync<T>(id, options, cancellationToken);
 

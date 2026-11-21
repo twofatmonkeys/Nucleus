@@ -67,7 +67,7 @@ namespace TFM.Nucleus.Tests
             // Indexed flag of its own, so the schema adds a plain ascending index.
             Assert.True(parent.Indexed);
             Assert.False(parent.Unique);
-            Assert.False(parent.IndexSortDescending);
+            Assert.False(parent.IndexDescending);
             Assert.Contains(parent, schema.IndexedColumns);
             Assert.Equal($"NCI_{schema.TableName}_Parent", IndexNaming.ColumnIndexName(schema, parent));
         }

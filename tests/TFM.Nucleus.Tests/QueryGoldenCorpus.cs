@@ -119,7 +119,7 @@ namespace TFM.Nucleus.Tests
                 ["select.paged.ordered.notake"] = () => Select<TestWidget>(q => { q.Skip = 10; q.AddOrderBy("Name", descending: true); }),
                 ["select.count"] = () => Select<TestWidget>(q => q.WithTotalCount = true),
                 ["select.count.where"] = () => Select<TestWidget>(q => { q.WithTotalCount = true; q.Where.And("Quantity", 3); }),
-                ["select.nolockflag"] = () => Select<TestWidget>(q => { q.WithNoLock = true; q.WithTotalCount = true; }),
+                ["select.nolockflag"] = () => Select<TestWidget>(q => { q.AllowDirtyRead = true; q.WithTotalCount = true; }),
                 ["select.empty"] = () => new SelectQuery(renderer, "[dbo].[tbl_TestWidget]", typeof(TestWidget)).BuildQuery(),
                 ["select.tablename"] = () =>
                 {

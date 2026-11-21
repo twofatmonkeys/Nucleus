@@ -14,7 +14,7 @@ namespace TFM.Nucleus.Data
     /// When the index is not one Nucleus manages, such as a primary key or an index added by hand,
     /// the entity and names are null and the lists are empty.
     /// </summary>
-    public class UniqueViolationException : Exception
+    public class UniqueViolationException : TFM.Nucleus.NucleusException
     {
         public UniqueViolationException(string message, string? indexName, Type? entityType, string? columnName, Exception innerException)
             : this(message, indexName, entityType, columnName, columnName, innerException)

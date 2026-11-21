@@ -20,6 +20,16 @@ Older repos are named inconsistently (spaces, a `.NET` suffix). New ones use the
 package id and nothing else, so the folder, the repo, the solution, the assembly and the package all
 read the same.
 
+### Spellings that are fixed
+
+Two abbreviations are spelled one way in member names, and new members follow them:
+
+- Identity is `ID`: `LoadByID`, `ParentIDPropertyName`.
+- Database is `DB`: `IsDBColumn`, `OnAfterLoadFromDB`.
+
+A few older members spell them otherwise (`TryGetById`, `DbDataContext`, `DatabaseColumnAttribute`).
+They stay as they are, and nothing is given a second name to match.
+
 ### Folders inside a project
 
 `Abstractions`, `Configuration`, `Extensions`, `Models`, `Services`. Add more when a real grouping

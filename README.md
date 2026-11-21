@@ -11,7 +11,7 @@ This repository holds the whole family. Seven packages ship from it, all on one 
 | `TFM.Nucleus.Abstractions` | Contracts: `ICoreObject`, `IDataProvider` and `IDataContext`, the neutral query model (`IQuery`, `IQueryParameter`, `Operator`), schema interfaces, the `DataSet` row buffer, `NucleusCollection` and `NucleusChildCollection`, `PagedResult<T>`, `IChangeSubscription`, `INucleusRuntime`, `NucleusOptions`. Zero SQL. |
 | `TFM.Nucleus` | The core: `CoreObject` entity base classes, attribute-driven schema reflection (`ObjectSchema` and `PropertySchema` with IL-emitted materialisers), change tracking, the static convenience API, `NucleusLoggerProvider`, and DI registration. |
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](#provider-seam)). Contains no SQL, proven by a tripwire test. |
-| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSQLDataProvider`) and `SQLConfiguration`. |
+| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSqlServerDataProvider`) and `SQLConfiguration`. |
 | `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](#postgresql). |
 | `TFM.Nucleus.Data.SQLite` | SQLite provider for file databases in embedded and local applications (SQLite 3.35 or later, bundled, over Microsoft.Data.Sqlite): query rendering, the SQLite schema dialect and catalog, and write-ahead logging. No change notifications or full-text indexes. Its public surface is its registration (`AddNucleusSqliteDataProvider`) and `SqliteConfiguration`. See [SQLite](#sqlite). |
 | `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server, PostgreSQL and SQLite test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](#testing-against-a-live-database). |
@@ -42,7 +42,7 @@ var services = new ServiceCollection();
 services.AddLogging();
 services.AddNucleus();                       // options and the schema provider
 services.AddNucleusData();                   // provider registry and object data manager
-services.AddNucleusSQLDataProvider(options =>
+services.AddNucleusSqlServerDataProvider(options =>
 {
     options.Server = "localhost";            // host, host:port or host\instance
     options.Database = "MyApp";
@@ -235,8 +235,8 @@ otherwise. These are the differences an application can see:
 - **Change notifications need no server setup.** Initialisation creates a statement-level trigger
   per table that notifies the table's channel, and `SubscribeToChangesAsync<T>()` listens on it
   with a connection of its own, reconnecting after a dropped connection (and reporting one change,
-  since a notification sent while it was down is lost). `ContextOptions.UseDependency` is a SQL
-  Server option and has no effect here.
+  since a notification sent while it was down is lost). `ContextOptions.WatchForChanges` is for an
+  engine whose notifications are registered by the reading connection, and has no effect here.
 - **Bulk writes use COPY.** An oversized insert or update batch is copied into a temp table with
   COPY BINARY and written with one statement; an update applies each row's own changed columns.
 - **Values the server sets use `clock_timestamp()`**, so each statement stamps its own time rather
@@ -453,7 +453,7 @@ No two rows may share every key value. The index is filtered to rows whose keys 
 A table is named, in order of precedence, by the type's `[DatabaseTable]`, then by its own (or an inherited) `[TableNaming]` policy, then by its provider's `TableNaming` option. The default policy, `TableNamingPolicy.FullName`, gives every table the name it always had: `tbl_` and the type's full name with each `.` and `+` replaced by `_`, so `Shop.Billing.Invoice` is `tbl_Shop_Billing_Invoice`. `TableNamingPolicy.ObjectName(levels)` keeps only the last `levels` parts of the full name, a nested type's outer type counting as a part: `ObjectName(1)` names it `tbl_Invoice` and `ObjectName(2)` `tbl_Billing_Invoice`. More levels than the name has gives the full name.
 
 ```csharp
-services.AddNucleusSQLDataProvider(options =>
+services.AddNucleusSqlServerDataProvider(options =>
 {
     options.TableNaming = TableNamingPolicy.ObjectName(2);
     options.RenameFullNameTables = true; // adopt each existing full-name table
@@ -506,7 +506,9 @@ These live on `CoreObject` and forward to the runtime that `AddNucleusData()` pu
 |---|---|---|
 | `LoadByID<T>(Guid id)` | `T?` | O(1) from cache for `[Cacheable]` types. |
 | `TryLoadByID<T>(Guid id, out T? obj)` | `bool` | Non-throwing form of the above. |
-| `LoadObjectWhere<T>(Expression<Func<T, bool>>)` | `T?` | First match, or null. |
+| `LoadByIDAsync<T>(Guid id, CancellationToken)` | `Task<T?>` | The same on the asynchronous path. |
+| `LoadFirstWhere<T>(Expression<Func<T, bool>>)`, `LoadFirstWhereAsync<T>(..., CancellationToken)` | `T?`, `Task<T?>` | First match, or null. One row is read, however many match. `LoadObjectWhere` is obsolete: it loaded every match to return the first. |
+| `LoadAllAsync<T>(CancellationToken)` | `Task<NucleusCollection<T>>` | Whole collection on the asynchronous path. |
 | `LoadAll<T>()` | `NucleusCollection<T>` | Whole collection. |
 | `LoadWhere<T>(Expression<Func<T, bool>>)` | `NucleusCollection<T>` | Translated to a parameterised query. |
 | `LoadWhereAsync<T>(Expression<Func<T, bool>>, CancellationToken)` | `Task<NucleusCollection<T>>` | Async form. |
@@ -836,10 +838,10 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `AddNucleus(Action<NucleusOptions>)` | `TFM.Nucleus` | The same, with explicit options. `ReadOnlySchema` defaults to `true` here. An `AppName` or `AppVersion` the options leave unset is read from the entry assembly. |
 | `AddNucleusLogging()` | `TFM.Nucleus` | Opt-in. Persists host log entries into the `NucleusLogEntry` table. |
 | `AddNucleusData()` | `TFM.Nucleus.Data` | Registers the provider registry and the object data manager, and publishes the ambient runtime that the static API uses. |
-| `AddNucleusSQLDataProvider()` | `TFM.Nucleus.Data.SQL` | Configures from the `SQL_SERVER`, `SQL_DATABASE`, `SQL_USERNAME` and `SQL_PASSWORD` environment variables. |
-| `AddNucleusSQLDataProvider(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Configures explicitly. |
-| `AddNucleusSQLDataProvider<TRoot>(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Registers a provider rooted at `TRoot`, for spanning several databases. |
-| `AddNucleusSQLDataProvider(Type rootType, Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | The same for open-generic roots, for example `typeof(AppRoot<>)`. |
+| `AddNucleusSqlServerDataProvider()` | `TFM.Nucleus.Data.SQL` | Configures from the `SQL_SERVER`, `SQL_DATABASE`, `SQL_USERNAME` and `SQL_PASSWORD` environment variables. |
+| `AddNucleusSqlServerDataProvider(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Configures explicitly. |
+| `AddNucleusSqlServerDataProvider<TRoot>(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Registers a provider rooted at `TRoot`, for spanning several databases. |
+| `AddNucleusSqlServerDataProvider(Type rootType, Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | The same for open-generic roots, for example `typeof(AppRoot<>)`. |
 | `AddNucleusPostgresDataProvider()` | `TFM.Nucleus.Data.PostgreSQL` | Configures from the `PG_SERVER`, `PG_DATABASE`, `PG_USERNAME` and `PG_PASSWORD` environment variables, and `PG_PORT` when set. |
 | `AddNucleusPostgresDataProvider(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Configures explicitly. |
 | `AddNucleusPostgresDataProvider<TRoot>(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Registers a provider rooted at `TRoot`. Roots on SQL Server and on PostgreSQL can live in one application. |
@@ -870,18 +872,18 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `UseIntegratedSecurity` | `false` | Use Windows authentication and ignore the credentials above. |
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
-| `SQLPacketSize` | `1500` | Network packet size. |
+| `PacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
-| `MaxParametersPerQuery` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
+| `MaxParametersPerCommand` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `10` | How long opening a context on the asynchronous path waits for a free slot under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a command timeout: queries and saves use the driver's default of 30 seconds. `CommandTimeoutSeconds` is its obsolete name. |
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
-| `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
-| `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
+| `BulkTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
+| `BulkBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
 | `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails. A busy server can take longer than 3 seconds to finish a login, and the open then fails with a connection timeout that is not retried; raise it for a server under load. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
 | `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](#table-names). |
 | `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](#table-names). |
 
-Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize` and `ConnectTimeoutSeconds` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The driver's connect retries reconnect a connection that broke while idle; they do not retry an open that times out.
+Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and `ConnectTimeoutSeconds` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The driver's connect retries reconnect a connection that broke while idle; they do not retry an open that times out.
 
 ### PostgresConfiguration
 
@@ -894,13 +896,14 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize
 | `Schema` | `public` | The schema the tables live in. Created when missing. |
 | `SslMode` | driver default | `Disable`, `Allow`, `Prefer`, `Require`, `VerifyCA` or `VerifyFull`. |
 | `ConnectionString` | none | A raw Npgsql connection string that bypasses the builder. `Database` still names the database to create and read. |
-| `ConnectRetryCount` | `3` | Attempts at opening a connection when the failure is transient, with an exponential back-off. |
+| `ConnectAttempts` | `3` | Attempts at opening a connection when the failure is transient, the first included, with an exponential back-off. `ConnectRetryCount` is its obsolete name. |
+| `ConnectTimeoutSeconds` | `15` | How long opening a connection waits before it fails. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
-| `MaxParametersPerQuery` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
+| `MaxParametersPerCommand` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
-| `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
+| `BulkTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
 
@@ -915,7 +918,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize
 | `UseWriteAheadLog` | `true` | Puts the file in write-ahead log mode on initialise, so reads run while one connection writes. The mode is kept in the file. |
 | `BusyTimeoutSeconds` | `30` | How long a command waits for another connection's write lock before it fails. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once. |
-| `MaxParametersPerQuery` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
+| `MaxParametersPerCommand` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
 | `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
@@ -936,6 +939,13 @@ catch (UniqueViolationException ex) when (ex.IsIndex<PdfTemplateFile>("TemplateP
     // the template already has a file at that path
 }
 ```
+
+Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
+`catch (NucleusException)` catches the family: `UniqueViolationException`, `DataProviderException`
+and each provider's own, `DataContextException`, `InvalidQueryException`, `CoreObjectException` and
+the schema exceptions. Nucleus also throws the framework's own exceptions where they are the right
+ones (`ArgumentException`, `NotSupportedException`, `OperationCanceledException`); those are not
+wrapped.
 
 ## Known limits
 
@@ -983,6 +993,33 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
 
 These came in with the API surface review. Nothing was removed: each replaced member still works
 and is marked obsolete, so a build that treats warnings as errors will stop on them.
+
+- **Names aligned.** The old name of each still works.
+
+  | Was | Is |
+  |---|---|
+  | `AddNucleusSQLDataProvider` | `AddNucleusSqlServerDataProvider` |
+  | `SQLConfiguration.SQLPacketSize`, `BulkCopyBatchSize` | `PacketSize`, `BulkBatchSize` |
+  | `MaxParametersPerQuery` | `MaxParametersPerCommand`, the name the provider's capabilities already used |
+  | `BulkCopyTimeoutSeconds` | `BulkTimeoutSeconds`; a negative value is now refused |
+  | `PostgresConfiguration.ConnectRetryCount` | `ConnectAttempts`: it always counted attempts |
+  | `Query.WithNoLock` | `Query.AllowDirtyRead` |
+  | `ContextOptions.UseDependency`, `IDataContext.HasDependency` | `WatchForChanges`, `WatchesForChanges` |
+  | `SqlDataProviderException.Type`, `SqlDataProviderExceptionType` | `Kind`, `DataProviderErrorKind` |
+  | `CoreObject.LoadObjectWhere` | `LoadFirstWhere`, which reads one row |
+  | `IQueryParameter.castAsOutputParameter` | `AsOutputParameter` |
+- **One exception base.** Every Nucleus exception derives from `NucleusException`. Each still
+  derives from `Exception` through it, so existing catch clauses are unaffected.
+- **PostgreSQL's connect timeout is a setting.** `PostgresConfiguration.ConnectTimeoutSeconds`,
+  15 seconds as before.
+- **The static API loads asynchronously.** `CoreObject.LoadByIDAsync`, `LoadAllAsync` and
+  `LoadFirstWhereAsync`. A context has `RollbackAsync`.
+- **A test stack's manager resolves from its services** as `IObjectDataManager`, the type
+  production code takes. A stack still does not publish the ambient runtime the static API uses.
+  `PostgresTestDatabase` and `SqliteTestDatabase` gain a `StartStackAsync` taking their own
+  configuration type, as `SqlServerTestDatabase` had.
+- **Unused public types are obsolete:** `ITFMHasChanges`, `DataProviderConnectionStatus`,
+  `IInitializeWithString<T>` and `IPropertySchema.SkipOnDbRead`.
 
 - **The manager interface loads.** `IObjectDataManager` gains `LoadByIDAsync`, `LoadAsync`,
   `LoadPagedAsync` and `LoadStreamAsync`, taking a typed predicate and a `LoadOptions`
@@ -1241,7 +1278,7 @@ These came in with the fixes for the save path findings.
   the object's `DataProvider`, which its child collections build their writes through, so a loaded
   parent with a child collection threw through `Save` and every `IDataContext` save. The provider
   now sets it as it builds each write.
-- **A batch at exactly `MaxParametersPerQuery` runs as one command**, and a split batch fills each
+- **A batch at exactly `MaxParametersPerCommand` runs as one command**, and a split batch fills each
   command up to the limit. It used to split one parameter early.
 - **A save of new and existing objects over the limit no longer throws.** The bulk engine writes
   its inserts and its updates as two writes in the same transaction.
@@ -1251,7 +1288,8 @@ These came in with the fixes for the SQL Server review findings.
 - **SQL Server selects read committed data.** `Query.WithNoLock` was inverted: every select ran
   `WITH(NOLOCK)` and read uncommitted rows unless the flag was set, which removed the hint. A
   select now reads committed data, as on PostgreSQL, so it can wait for a row another transaction
-  is writing. Set `WithNoLock = true` on a query to read uncommitted rows.
+  is writing. Set `AllowDirtyRead = true` on a query to read uncommitted rows (`WithNoLock` is its
+  obsolete name).
 - **`ColumnName` names the column.** It used to reach predicates only, while the table, every
   write and every read used the property name, so a property with a different `ColumnName` was
   filtered on a column that did not exist. A loaded `DataSet` or `StreamingRow` labels its values
@@ -1271,7 +1309,7 @@ These came in with the fixes for the SQL Server review findings.
 
 These came in with the shared provider layer.
 
-- **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSQLDataProvider`,
+- **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSqlServerDataProvider`,
   `SQLConfiguration` and `SqlDataProviderException`. `SQLDataProvider`, `SqlDataContext`, the query
   classes, the schema classes, `ParameterExtensions`, `ConfigureSQLOptions` and
   `SqlDataContextException` are gone from the public surface; the query and schema model are in

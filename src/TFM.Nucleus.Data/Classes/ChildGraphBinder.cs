@@ -15,6 +15,7 @@ namespace TFM.Nucleus.Data
     /// queries streamed one by one; both feed the same materialisation. Everything is attached as
     /// loaded: no change is staged on a child, a referenced entity or the parent.
     /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ChildGraphBinder
     {
         /// <summary>

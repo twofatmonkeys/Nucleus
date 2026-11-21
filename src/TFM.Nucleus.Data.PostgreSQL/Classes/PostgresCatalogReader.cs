@@ -181,6 +181,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
         }
 
         private ValueTask Open(NpgsqlConnection connection, bool async, CancellationToken cancellationToken) =>
-            ConnectionOpener.OpenAsync(connection, async, Config.ConnectRetryCount, PostgresErrors.IsTransient, cancellationToken);
+            ConnectionOpener.OpenAsync(connection, async, Config.ConnectAttempts, PostgresErrors.IsTransient, cancellationToken);
     }
 }

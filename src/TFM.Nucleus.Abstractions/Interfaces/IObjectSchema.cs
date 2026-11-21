@@ -90,6 +90,22 @@ namespace TFM.Nucleus
         /// <summary>The child collection property holding <paramref name="type"/>; null when there is none.</summary>
         public IPropertySchema? TryGetChildCollectionProperty(Type type);
 
+        /// <summary>
+        /// The child collection property holding <paramref name="type"/>, in the shape a Try
+        /// method has: false, and null, when there is none.
+        /// </summary>
+        public bool TryGetChildCollectionProperty(Type type, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IPropertySchema? property)
+        {
+            property = TryGetChildCollectionProperty(type);
+            return property is not null;
+        }
+
+        /// <summary>
+        /// The <c>NucleusLinkedCollection</c> properties: <see cref="LinkedCollectionProperties"/>
+        /// under the name its child collection counterpart has.
+        /// </summary>
+        public IPropertySchema[] NucleusLinkedCollectionProperties => LinkedCollectionProperties;
+
         /// <summary>True when the type has <c>NucleusLinkedCollection</c> properties.</summary>
         public bool HasLinkedCollections => false;
 

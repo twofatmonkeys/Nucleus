@@ -13,20 +13,24 @@ noted otherwise. Everything under "Open" is still true of the code.
 A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
 "Fixed"). Still open:
 
-- **Naming and parity.** The SQL Server registration and options are spelled `SQL` where every
-  other type says `SqlServer`; the parameter limit has two names (`MaxParametersPerQuery` on the
-  options, `MaxParametersPerCommand` on the capabilities); PostgreSQL's `ConnectRetryCount` counts
-  attempts, not retries; the exceptions share no base type; child and linked collections name the
-  same things differently (`ParentObject`/`Owner`, `ChildObjects`/`Members`); the static API has
-  no asynchronous load by ID; `LoadObjectWhere` loads every match to return the first. To be
-  aligned additively.
+- **`AddNucleus` is the one registration outside `Microsoft.Extensions.DependencyInjection`.** It
+  is in `TFM.Nucleus`, so it needs a using the provider registrations do not. A forwarding copy in
+  the other namespace would make every call ambiguous in a file that imports both, so it can only
+  be moved, which breaks callers; it goes with the other breaking renames.
+- **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
+  aligning the relationship attributes.
+- **`ConnectAttempts` is PostgreSQL's alone.** SQL Server and SQLite open once. It was not lifted
+  to the shared options, because that would switch a retry on for engines whose transient
+  failures nobody has classified.
+- **A test stack does not publish the ambient runtime.** `NucleusRuntime.Current` is one per
+  process and several stacks share a test process, so the static `CoreObject` API under a test
+  stack uses whichever runtime was published last, if any. Tests use the stack's manager.
+- **The test stack's start methods take no cancellation token**, because
+  `IDataProvider.InitializeAsync` takes none.
 - **Names that cannot be aligned additively.** `eServerFunction`, `EDataSchemaStatus`, the
   all-caps members of `QueryType` and `OrderByType`, the `DataType` enum (it collides with
   `System.ComponentModel.DataAnnotations.DataType`) and the attributes without the `Attribute`
   suffix. Renaming them breaks consumers at compile time, so they go together in one release.
-- **Engine-named members.** `Query.WithNoLock`, `ContextOptions.UseDependency`,
-  `IDataContext.HasDependency`, `BulkCopyTimeoutSeconds` and `BulkCopyBatchSize` name a SQL Server
-  feature rather than what they mean.
 - **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
   `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
   consumer calls them, and an overload beside them would make a call without arguments ambiguous.
@@ -374,6 +378,39 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### API surface alignment (November 2026)
+
+The same review, the names. All additive: the old name of each is obsolete and forwards.
+
+- **SQL Server was spelled three ways** (`SQLConfiguration`, `SqlDataProviderException`,
+  `SqlServerTestDatabase`). The registration is `AddNucleusSqlServerDataProvider`, in
+  `NucleusSqlServerServiceExtensions`; the old class was named `ServiceExtensions`, which any other
+  library's class of that name in the same namespace would have collided with. The type
+  `SQLConfiguration` keeps its name: options are bound by type, so an alias type would not bind.
+- **One value had two names**: `MaxParametersPerQuery` on the options and
+  `MaxParametersPerCommand` on the capabilities. The options take the second.
+- **Options named after a SQL Server feature** are named for what they do: `BulkTimeoutSeconds`,
+  `BulkBatchSize`, `PacketSize`, `Query.AllowDirtyRead`, `ContextOptions.WatchForChanges`.
+- **`ConnectRetryCount` counted attempts.** It is `ConnectAttempts`. PostgreSQL's fixed 15 second
+  connect timeout is `ConnectTimeoutSeconds`, as SQL Server's became.
+- **The exceptions shared no base.** They derive from `NucleusException`.
+  `SqlDataProviderException.Type` and its enum duplicated `Kind` value for value and are obsolete.
+- **Child and linked collections named the same things differently.** Both interfaces answer to
+  `Owner`, `ItemType`, `Items` and `RemovedItems`; `INucleusChildCollection` has `LoadAsync`, which
+  only the class had; `IObjectDataAdaptor` has `Include`, which only the class had.
+- **`LoadObjectWhere` loaded every match to return the first.** `LoadFirstWhere` asks for one
+  row. The static API also gains `LoadByIDAsync` and `LoadAllAsync`.
+- **`TryGetChildCollectionProperty` returned its result** instead of a bool and an out value. It
+  has an overload in the usual shape.
+- **Public types nothing uses** are obsolete: `ITFMHasChanges`, `DataProviderConnectionStatus`,
+  `IInitializeWithString<T>`, `IPropertySchema.SkipOnDbRead`, and `Parameter.columnSchema`, which
+  differed from `ColumnSchema` only by case. The helper classes that are public only so the other
+  Nucleus assemblies can reach them (`StringExtensions`, `TypeExtensions`, `ChildGraphBinder` and
+  the like) are hidden from completion.
+
+Cover: `ApiAlignmentTests`, and the first-match, runtime and rollback tests in
+`ManagerLoadIntegrationTests`.
 
 ### API surface traps (November 2026)
 

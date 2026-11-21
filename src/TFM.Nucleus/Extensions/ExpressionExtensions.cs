@@ -4,6 +4,7 @@ using System.Reflection;
 
 namespace TFM.Nucleus
 {
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ExpressionExtensions
     {
         public static Expression<Func<T, bool>> AndAlso<T>(

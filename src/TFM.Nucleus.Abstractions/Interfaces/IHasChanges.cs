@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
+    [Obsolete("Implemented by nothing in Nucleus. An entity reports its changes through ICoreObject.HasChanges.")]
     public interface ITFMHasChanges : INotifyPropertyChanged
     {
         public bool HasChanges { get; }

@@ -106,6 +106,11 @@ public abstract class NucleusTestDatabase
         services.AddLogging(builder => builder.AddProvider(log));
         services.AddNucleus();
         addProvider(services);
+        // The stack's manager is resolvable as the interface production code takes. It is built
+        // here, not by AddNucleusData, so that a stack does not publish the process-wide ambient
+        // runtime: several stacks live in one test process, and the last to start would take it.
+        services.AddSingleton<IObjectDataManager>(sp =>
+            new ObjectDataManager(sp.GetRequiredService<IDataProvider>(), sp.GetRequiredService<IObjectSchemaProvider>(), null));
         var built = services.BuildServiceProvider();
         try
         {
@@ -113,7 +118,7 @@ public abstract class NucleusTestDatabase
             var status = await provider.InitializeAsync();
             if (status != DataProviderStatus.Ok)
                 throw new InvalidOperationException($"{ProviderName} test schema initialization failed: {status}{Environment.NewLine}{string.Join(Environment.NewLine, log.Entries)}");
-            return new NucleusTestStack(built, provider, new ObjectDataManager(provider, built.GetRequiredService<IObjectSchemaProvider>(), null), log);
+            return new NucleusTestStack(built, provider, (ObjectDataManager)built.GetRequiredService<IObjectDataManager>(), log);
         }
         catch
         {

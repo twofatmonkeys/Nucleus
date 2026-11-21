@@ -8,7 +8,15 @@ namespace TFM.Nucleus.Data
     public interface IDataContext : IDisposable, IAsyncDisposable
     {
         public bool HasTransaction { get; }
+        /// <summary>The old name of <see cref="WatchesForChanges"/>.</summary>
+        [Obsolete("Use WatchesForChanges.")]
         public bool HasDependency { get; }
+
+        /// <summary>True when the context was opened with <see cref="ContextOptions.WatchForChanges"/>.</summary>
+        public bool WatchesForChanges =>
+#pragma warning disable CS0618 // an implementation that predates this member answers under the old name
+            HasDependency;
+#pragma warning restore CS0618
         public bool HasChildren { get; }
         public IDataContext? Parent { get; }
 
@@ -94,6 +102,17 @@ namespace TFM.Nucleus.Data
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token);
 
         public void Rollback();
+
+        /// <summary>
+        /// Rolls the context's transaction back, for a caller on the asynchronous path. A
+        /// rollback sends nothing a caller waits on, so this completes at once.
+        /// </summary>
+        public Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Rollback();
+            return Task.CompletedTask;
+        }
         public void TryRollback();
 
         public Task TryRollbackAsync();

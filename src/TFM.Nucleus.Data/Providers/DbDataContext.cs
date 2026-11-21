@@ -58,6 +58,10 @@ namespace TFM.Nucleus.Data.Providers
         protected DbCommand? Command => _command;
 
         public bool HasTransaction => _useTransaction;
+        public bool WatchesForChanges => _useDependency;
+
+        /// <summary>The old name of <see cref="WatchesForChanges"/>.</summary>
+        [Obsolete("Use WatchesForChanges.")]
         public bool HasDependency => _useDependency;
         private bool HasChildren => !_childContexts.IsEmpty;
         public int ConnectionsAvailable => Options.MaxConnectionPoolSize - _contextCache.Values.Count(x => !x._disposed);
@@ -255,6 +259,7 @@ namespace TFM.Nucleus.Data.Providers
 
         #region IDataContext Implementation
         bool IDataContext.HasTransaction => HasTransaction;
+        bool IDataContext.WatchesForChanges => _useDependency;
         bool IDataContext.HasDependency => _useDependency;
         bool IDataContext.HasChildren => HasChildren;
         IDataContext? IDataContext.Parent => _parent;
@@ -828,9 +833,9 @@ namespace TFM.Nucleus.Data.Providers
         {
             var parameters = chunk.Parameters;
             var count = ParameterBinding.Bind(parameters).Count();
-            if (count > Options.MaxParametersPerQuery)
+            if (count > Options.MaxParametersPerCommand)
                 throw new InvalidQueryException(
-                    $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerQuery}. Narrow the predicate.");
+                    $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerCommand}. Narrow the predicate.");
             return parameters;
         }
 
@@ -848,7 +853,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             try
             {
-                foreach (var qry in query.Split(Options.MaxParametersPerQuery))
+                foreach (var qry in query.Split(Options.MaxParametersPerCommand))
                     ExecuteWriteAsync(qry, async: false, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception ex)
@@ -879,17 +884,17 @@ namespace TFM.Nucleus.Data.Providers
                 {
                     // Bulk path: single connection, single transaction, no parameter limit.
                     // Must check BEFORE NeedsSplitting which mutates LinkedQueries.
-                    if (queriesByType.GetParameterCount() > Options.MaxParametersPerQuery && CanUseBulkPath(queriesByType))
+                    if (queriesByType.GetParameterCount() > Options.MaxParametersPerCommand && CanUseBulkPath(queriesByType))
                     {
                         await ExecuteBulkAsync(queriesByType, token);
                     }
-                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerQuery)
+                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerCommand)
                     {
                         // One writer at a time: the parts run in order on this context's connection.
-                        foreach (var part in queriesByType.Split(Options.MaxParametersPerQuery))
+                        foreach (var part in queriesByType.Split(Options.MaxParametersPerCommand))
                             await ExecuteWriteAsync(part, async: true, token);
                     }
-                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerQuery, out var queries))
+                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerCommand, out var queries))
                     {
                         // Fallback parallel path for queries without schema
                         await Parallel.ForEachAsync(queries!,
@@ -972,7 +977,7 @@ namespace TFM.Nucleus.Data.Providers
     }
 
     /// <summary>A failure of a data context itself, as opposed to the database.</summary>
-    public class DataContextException : Exception
+    public class DataContextException : TFM.Nucleus.NucleusException
     {
         public DataContextErrorKind Kind { get; }
 

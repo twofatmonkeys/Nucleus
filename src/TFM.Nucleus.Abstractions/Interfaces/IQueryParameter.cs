@@ -17,6 +17,13 @@ namespace TFM.Nucleus.Data
 
         public IQueryParameterCollection CreateCollection();
 
+        [Obsolete("Use AsOutputParameter.")]
         public IQueryOutputParameter castAsOutputParameter();
+
+        /// <summary>This parameter as an output parameter; throws <see cref="InvalidCastException"/> when it is not one.</summary>
+        public IQueryOutputParameter AsOutputParameter() =>
+#pragma warning disable CS0618 // an implementation that predates this member answers under the old name
+            castAsOutputParameter();
+#pragma warning restore CS0618
     }
 }

@@ -35,7 +35,7 @@ namespace TFM.Nucleus.Data.SQLite
         public override DataProviderCapabilities Capabilities => new()
         {
             ParameterPrefix = "@",
-            MaxParametersPerCommand = Config.MaxParametersPerQuery,
+            MaxParametersPerCommand = Config.MaxParametersPerCommand,
             SupportsBulkOperations = false,
             SupportsChangeNotifications = false,
             SupportsOffsetPaging = true,

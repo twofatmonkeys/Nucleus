@@ -103,6 +103,49 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         [Fact]
+        public async Task LoadFirst_ReadsOneRow_HoweverManyMatch()
+        {
+            var (_, prefix, _) = await SeedAsync(3);
+            var manager = fixture.RequireManager();
+
+            var first = await manager.LoadFirstAsync<IntWidget>(w => w.Name!.StartsWith(prefix), cancellationToken: Ct);
+            var firstSync = manager.LoadFirst<IntWidget>(w => w.Name!.StartsWith(prefix));
+            var none = await manager.LoadFirstAsync<IntWidget>(w => w.Name == prefix + "nobody", cancellationToken: Ct);
+
+            Assert.StartsWith(prefix, first!.Name);
+            Assert.StartsWith(prefix, firstSync!.Name);
+            Assert.Null(none);
+        }
+
+        [Fact]
+        public async Task TheRuntime_LoadsByIDAndEveryRow_OnTheAsynchronousPath()
+        {
+            var (_, _, widgets) = await SeedAsync(2);
+            INucleusRuntime runtime = fixture.RequireManager();
+
+            var found = await runtime.LoadByIDAsync<IntWidget>(widgets[0].ID, cancellationToken: Ct);
+            var all = await runtime.LoadAllAsync<IntWidget>(Ct);
+
+            Assert.Equal(widgets[0].Name, found!.Name);
+            Assert.Contains(all, w => w.ID == widgets[1].ID);
+        }
+
+        [Fact]
+        public async Task RollbackAsync_UndoesWhatTheContextWrote()
+        {
+            IObjectDataManager data = fixture.RequireManager();
+            var widget = new IntWidget { Name = $"ml-rb-{Guid.NewGuid():N}", Quantity = 1 };
+
+            await using (var context = await data.CreateContextAsync<IntWidget>(ContextOptions.Transactional, Ct))
+            {
+                await context.SaveAsync(widget, Ct);
+                await context.RollbackAsync(Ct);
+            }
+
+            Assert.Null(await data.LoadByIDAsync<IntWidget>(widget.ID, Ct));
+        }
+
+        [Fact]
         public async Task SaveAsync_OfMixedTypes_WritesEachToItsOwnTable()
         {
             IObjectDataManager data = fixture.RequireManager();

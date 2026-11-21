@@ -3,6 +3,7 @@ using System.Reflection;
 
 namespace TFM.Nucleus
 {
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class LinqExtensions
     {
         public static object GetValue(this MethodCallExpression expression) => Evaluate(expression);

@@ -101,6 +101,7 @@ namespace TFM.Nucleus.Data
         Unknown,
     }
 
+    [Obsolete("Used by nothing in Nucleus. A provider reports DataProviderStatus.")]
     public enum DataProviderConnectionStatus
     {
         NotConfigured,

@@ -13,7 +13,11 @@ namespace TFM.Nucleus.Data
         #region IQueryParameter Implementation
         IQueryParameterCollection IQueryParameter.CreateCollection() =>
             CreateCollection().AsQueryParameters();
-        public IQueryOutputParameter castAsOutputParameter() => throw new InvalidCastException("Cannot cast a Parameter to an Output Parameter");
+[Obsolete("Use AsOutputParameter.")]
+        public IQueryOutputParameter castAsOutputParameter() => AsOutputParameter();
+
+        /// <inheritdoc cref="IQueryParameter.AsOutputParameter"/>
+        public virtual IQueryOutputParameter AsOutputParameter() => throw new InvalidCastException("Cannot cast a Parameter to an Output Parameter");
         #endregion
 
         public string? Name { get => _name; }
@@ -33,7 +37,12 @@ namespace TFM.Nucleus.Data
         }
         private readonly object? _value;
 
+#pragma warning disable CS0618 // the obsolete field is the storage, so code compiled against it still works
         public IDataColumnSchema? ColumnSchema => columnSchema;
+#pragma warning restore CS0618
+
+        /// <summary>The old name of <see cref="ColumnSchema"/>, differing from it only by case.</summary>
+        [Obsolete("Use ColumnSchema.")]
         public IDataColumnSchema? columnSchema;
 
         public string? Variable => _variable;
@@ -56,7 +65,9 @@ namespace TFM.Nucleus.Data
         { }
         public Parameter(IDataColumnSchema colSchema, object? value)
         {
+#pragma warning disable CS0618 // the obsolete field is the storage
             columnSchema = colSchema;
+#pragma warning restore CS0618
             _name = colSchema.ColumnName;
             _value = colSchema.GetClrValue(value);
             _variable = NextVariableName();

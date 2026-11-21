@@ -183,7 +183,7 @@ namespace TFM.Nucleus.Data.Schema
             dialect.IdentifierComparer.Equals(existing.ColumnName, dialect.PhysicalName(col.ColumnName)) &&
             existing.IsUnique == col.Unique &&
             existing.HasFilter == col.Unique &&
-            existing.IsDescending == col.IndexSortDescending;
+            existing.IsDescending == col.IndexDescending;
     }
 
     internal enum TableUpdateKind

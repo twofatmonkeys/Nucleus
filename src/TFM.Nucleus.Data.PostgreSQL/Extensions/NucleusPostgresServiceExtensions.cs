@@ -8,7 +8,7 @@ using TFM.Nucleus.Data.Schema;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
-    /// <summary>Registers the PostgreSQL provider. The overloads mirror AddNucleusSQLDataProvider's.</summary>
+    /// <summary>Registers the PostgreSQL provider. The overloads mirror the SQL Server registration's.</summary>
     public static class NucleusPostgresServiceExtensions
     {
         /// <summary>

@@ -96,6 +96,21 @@ namespace TFM.Nucleus
         Task<NucleusCollection<T>> LoadWhereAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support load options.");
 
+        /// <summary>Loads every row on the asynchronous path. A <c>[Cacheable]</c> type answers from its cache.</summary>
+        Task<NucleusCollection<T>> LoadAllAsync<T>(CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading every row on the asynchronous path.");
+
+        /// <summary>
+        /// The first row <paramref name="predicate"/> matches, or null when there is none. One
+        /// row is asked for and one comes back, however many match.
+        /// </summary>
+        T? LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading the first match.");
+
+        /// <inheritdoc cref="LoadFirst{T}(Expression{Func{T, bool}}, LoadOptions?)"/>
+        Task<T?> LoadFirstAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading the first match.");
+
         /// <summary>Loads by primary key as <paramref name="options"/> say, or null when there is no such row.</summary>
         T? LoadByID<T>(Guid id, LoadOptions? options) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support load options.");

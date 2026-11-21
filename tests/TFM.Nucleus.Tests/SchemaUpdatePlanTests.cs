@@ -275,7 +275,7 @@ namespace TFM.Nucleus.Tests
                 ColumnName = c.ColumnName,
                 IsUnique = c.Unique,
                 HasFilter = c.Unique,
-                IsDescending = c.IndexSortDescending,
+                IsDescending = c.IndexDescending,
             })];
             return new CatalogSnapshot([table.TableName], columns, indexes);
         }

@@ -831,11 +831,28 @@ namespace TFM.Nucleus
             return obj != null;
         }
 
+        /// <summary>Loads by primary key on the asynchronous path, or null when there is no such row.</summary>
+        public static Task<T?> LoadByIDAsync<T>(Guid id, CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadByIDAsync<T>(id, null, cancellationToken);
+
+        [Obsolete("Use LoadFirstWhere. This loads every matching row to return the first.")]
         public static T? LoadObjectWhere<T>(Expression<Func<T, bool>> expression) where T : CoreObject<T>, new() =>
             LoadWhere(expression).FirstOrDefault();
 
+        /// <summary>The first row the predicate matches, or null. One row is read, however many match.</summary>
+        public static T? LoadFirstWhere<T>(Expression<Func<T, bool>> predicate) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadFirst(predicate);
+
+        /// <inheritdoc cref="LoadFirstWhere{T}(Expression{Func{T, bool}})"/>
+        public static Task<T?> LoadFirstWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadFirstAsync(predicate, null, cancellationToken);
+
         public static NucleusCollection<T> LoadAll<T>() where T : CoreObject<T>, new() =>
             NucleusRuntime.Current.LoadAll<T>();
+
+        /// <summary>Loads every row on the asynchronous path. A [Cacheable] type answers from its cache.</summary>
+        public static Task<NucleusCollection<T>> LoadAllAsync<T>(CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadAllAsync<T>(cancellationToken);
 
         public static NucleusCollection<T> LoadWhere<T>(Expression<Func<T, bool>> expression) where T : CoreObject<T>, new() =>
             NucleusRuntime.Current.LoadWhere<T>(expression.Body);
@@ -991,7 +1008,7 @@ namespace TFM.Nucleus
     }
 
 
-    public class CoreObjectException : Exception
+    public class CoreObjectException : TFM.Nucleus.NucleusException
     {
         public CoreObjectExceptionType ErrorType;
         public CoreObjectException(CoreObjectExceptionType type) : base($"{type}")

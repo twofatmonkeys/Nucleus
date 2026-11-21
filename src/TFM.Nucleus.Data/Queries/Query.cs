@@ -29,7 +29,21 @@ namespace TFM.Nucleus.Data.Queries
         /// a select reads committed data. SQL Server only: PostgreSQL never reads uncommitted rows
         /// and ignores it.
         /// </summary>
+        /// <summary>The old name of <see cref="AllowDirtyRead"/>, and still where its value is kept.</summary>
+        [Obsolete("Use AllowDirtyRead, which says what the flag means rather than how one engine spells it.")]
         public bool WithNoLock = false;
+
+        /// <summary>
+        /// The read does not wait for writers and may see rows a transaction has not committed.
+        /// An engine whose readers never wait for writers ignores it.
+        /// </summary>
+        public bool AllowDirtyRead
+        {
+#pragma warning disable CS0618 // the obsolete field is the storage, so code compiled against it still works
+            get => WithNoLock;
+            set => WithNoLock = value;
+#pragma warning restore CS0618
+        }
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
         private readonly List<Query> _linkedQueries = [];
@@ -372,7 +386,7 @@ namespace TFM.Nucleus.Data.Queries
 
     }
 
-    public class InvalidQueryException : Exception
+    public class InvalidQueryException : TFM.Nucleus.NucleusException
     {
         public InvalidQueryException()
         {

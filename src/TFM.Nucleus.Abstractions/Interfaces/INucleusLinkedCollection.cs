@@ -56,6 +56,17 @@ namespace TFM.Nucleus.Abstractions.Interfaces
         /// </summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
         void AttachLoaded(IEnumerable<ICoreObject> members);
+
+        /// <summary>The type of the collection's items: <see cref="MemberType"/> under the name a child collection shares.</summary>
+        Type ItemType => MemberType;
+
+        /// <summary>The items held: <see cref="Members"/> under the name a child collection shares.</summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        IEnumerable<ICoreObject> Items => Members;
+
+        /// <summary>The stored items removed since the last save: <see cref="RemovedMembers"/> under the name a child collection shares.</summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        IEnumerable<ICoreObject> RemovedItems => RemovedMembers;
     }
 
     /// <inheritdoc cref="INucleusLinkedCollection"/>

@@ -77,6 +77,7 @@ namespace TFM.Nucleus
         [Obsolete("Use IsFullTextSearch.")]
         public bool HasFullTextIndex { get; }
         public bool IsDBColumn { get; }
+        [Obsolete("Set for a [ParentObject] property and read by nothing.")]
         public bool SkipOnDbRead { get; }
         public bool IsOverridden { get; }
         [Obsolete("Use IsIndexed.")]

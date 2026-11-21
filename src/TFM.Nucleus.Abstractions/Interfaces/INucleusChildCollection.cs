@@ -76,6 +76,29 @@ namespace TFM.Nucleus.Abstractions.Interfaces
         [EditorBrowsable(EditorBrowsableState.Never)]
         public ICoreObject ParentObject =>
             throw new NotSupportedException($"{GetType().Name} does not expose its parent.");
+
+        /// <summary>
+        /// The object the collection belongs to. The same name a linked collection uses, so code
+        /// that handles both reads one member.
+        /// </summary>
+        public ICoreObject Owner => ParentObject;
+
+        /// <summary>The type of the collection's items: <see cref="ChildType"/> under the name a linked collection shares.</summary>
+        public Type ItemType => ChildType;
+
+        /// <summary>The items held: <see cref="ChildObjects"/> under the name a linked collection shares.</summary>
+        public IEnumerable<ICoreObject> Items => ChildObjects;
+
+        /// <summary>The stored items removed since the last save: <see cref="RemovedObjects"/> under the name a linked collection shares.</summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public IEnumerable<ICoreObject> RemovedItems => RemovedObjects;
+
+        /// <summary>
+        /// Loads a collection that was left out when its owner was loaded (excluded, or lazy). A
+        /// loaded collection is left as it is.
+        /// </summary>
+        public Task LoadAsync(System.Threading.CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException($"{GetType().Name} cannot load itself.");
     }
 
     public interface INucleusChildCollection<TChild, TParent> : INucleusChildCollection,  IEnumerable<TChild>, INotifyCollectionChanged, INotifyPropertyChanged, IDisposable

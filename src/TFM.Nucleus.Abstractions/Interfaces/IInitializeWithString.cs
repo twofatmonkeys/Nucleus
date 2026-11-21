@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
+    [Obsolete("Used by nothing in Nucleus, and named as an interface though it is a static class. Call Activator.CreateInstance yourself.")]
     public static class IInitializeWithString<T> 
     {
         public static T? Initialize(string s)

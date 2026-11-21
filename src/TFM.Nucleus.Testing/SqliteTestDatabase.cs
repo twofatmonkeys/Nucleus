@@ -34,6 +34,13 @@ public sealed class SqliteTestDatabase : NucleusTestDatabase
     public override void AddRootedProvider(IServiceCollection services, Type rootType, Action<RelationalProviderOptions> configure) =>
         services.AddNucleusSqliteDataProvider(rootType, options => UseTestFile(options, configure));
 
+    /// <summary>A stack with its SQLite settings changed by <paramref name="configure"/>.</summary>
+    public Task<NucleusTestStack> StartStackAsync(Action<TFM.Nucleus.Data.SQLite.SqliteConfiguration> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        return StartStackAsync((RelationalProviderOptions options) => configure((TFM.Nucleus.Data.SQLite.SqliteConfiguration)options));
+    }
+
     /// <inheritdoc />
     public override async Task ExecuteAsync(string sql, CancellationToken token = default)
     {
