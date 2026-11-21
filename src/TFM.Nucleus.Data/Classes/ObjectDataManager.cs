@@ -38,10 +38,10 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Saves the object with its child collections (deleting the stored children removed from
-        /// them) and the forceSave links it reaches, in one transaction. A failure rolls back. A
-        /// <see cref="UniqueViolationException"/>, an <see cref="OperationCanceledException"/>, a
-        /// <see cref="DataProviderException"/> and a <see cref="DataContextException"/> are thrown
-        /// as they are; any other failure is wrapped.
+        /// them) and the forceSave links it reaches, in one transaction. A failure rolls back and
+        /// is thrown as it was: a database failure as a <see cref="DatabaseException"/> (a
+        /// <see cref="UniqueViolationException"/> for a broken unique index), a cancellation as an
+        /// <see cref="OperationCanceledException"/>, and nothing wrapped.
         /// </summary>
         Task SaveAsync<T>(T obj, CancellationToken token) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support a cancellable save.");
