@@ -106,21 +106,21 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` and
   `CoreObject.AllowDeletions` remain as obsolete aliases or no-ops. Remove them at the next major
   version.
-- **A linked, not owned, collection was not built; it now is** (November 2026, for the Wellspring
-  marketing run's vouchers): `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
+- **A linked, not owned, collection was not built; it now is** (November 2026):
+  `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
   declares and `[LinkedBy]` names, loaded on the first read of a member or included, its new and
   changed members saved with the one, a removed stored member deleted when its type is
   `[Deletable]`, and a delete of a one with members refused. What changed from the note that stood
-  here: the members are saved with the one, because the run records a campaign and its vouchers in
-  one transaction; and a delete is always refused, with no cascade, since vouchers are never
-  deleted. Open, and in the README's known limits: the refusal is a check in the delete's
+  here: the members are saved with the one, because a one and its members are recorded in
+  one transaction; and a delete is always refused, with no cascade, since the members outlive
+  any one use of them. Open, and in the README's known limits: the refusal is a check in the delete's
   transaction, not a foreign key, so a member inserted concurrently is not seen; and the one must be
   a root, because a parent's cascade deletes children without loading them. Cover:
   `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
 
 ### Found with the linked object read, fixed (November 2026)
 
-Found while designing linked collections for the Wellspring marketing run, by an integration test
+Found while designing linked collections, by an integration test
 that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
 
 - **A loaded `[LinkedObject]` could not be read.** A load stored the referenced entity's ID, and
@@ -183,7 +183,7 @@ database removes that wait; Nucleus does not set it.
 
 ### Found with links to child types, fixed (November 2026)
 
-Raised by a consumer that needed a voucher to refer to a campaign's recipient, a child type.
+Raised by a consumer that needed a root to refer to another root's child, a child type.
 Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
 
 - **A child loaded on its own could not read its parent.** A child loaded by a link, by `LoadByID`
@@ -294,8 +294,7 @@ safe to call, but removing it is a public API change and was left for a major ve
 
 ### Commented-out code
 
-Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs`, `SQLConfiguration.cs`
-and `DBColumn.cs`.
+Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs` and `DBColumn.cs`.
 
 ### Saving a parent rewrites every loaded child
 
@@ -636,7 +635,7 @@ Found on the way:
 
 ### A table with a keyword column could never be rebuilt on SQL Server (November 2026)
 
-Found by the RedPoint website: adding a column to an entity with a property named `By` stopped the
+Found by a consumer: adding a column to an entity with a property named `By` stopped the
 provider starting with "Incorrect syntax near the keyword 'By'", and the rebuild rolled back. CREATE
 TABLE brackets every column name, so such a table is created without trouble, but the rebuild's row
 copy (`SqlServerSchemaDialect.CopyTableDataSql`) joined the names bare. Every table with a column
@@ -725,7 +724,7 @@ show each change, and the named tests rather than `RegressionTests.cs`.
 - **A raw statement kept the previous statement's parameters.** The schema rebuild ran its rename
   scripts on one command without clearing parameters. SQL Server ignored the extras; a stricter
   driver would not. Every statement now clears them.
-- **S3Library sniffed for SQL Server.** It recognised a unique violation by reflecting on a type
+- **A store sniffed for SQL Server.** It recognised a unique violation by reflecting on a type
   named `SqlException` and reading the index name out of its message, so it could not work on any
   other engine. Providers now report `UniqueViolationException`, and the store matches its entity
   and column.
@@ -733,10 +732,10 @@ show each change, and the named tests rather than `RegressionTests.cs`.
   a caller catching `OperationCanceledException` missed it (on SQL Server it depended on where
   SqlClient happened to throw). Cancellation now propagates as thrown, after a transactional
   context is marked for rollback.
-- **TFM.Stencil's round-trip case could not pass on PostgreSQL.** `Save_ThenGet_RoundTripsEveryField`
-  compared `CreatedUtc` and `UpdatedUtc` to the tick, and `timestamptz` keeps microseconds, so the
-  case failed by the 100 ns a value carries below a microsecond. TFM.Stencil 1.26.304.1 compares
-  them as the same instant to the microsecond; the Stencil pins moved to it together.
+- **A store's round-trip test could not pass on PostgreSQL.** It
+  compared two stored instants to the tick, and `timestamptz` keeps microseconds, so the
+  case failed by the 100 ns a value carries below a microsecond. The store's test now compares
+  them as the same instant to the microsecond.
 
 ### The predicate parser dropped terms it could not place
 

@@ -19,6 +19,7 @@
     <File Path="docs/code-review-findings.md" />
     <File Path="docs/conventions.md" />
     <File Path="docs/publishing.md" />
+    <File Path="docs/sample-domain.md" />
     <File Path="docs/versioning.md" />
   </Folder>
   <Project Path="src/TFM.Nucleus.Abstractions/TFM.Nucleus.Abstractions.csproj" />

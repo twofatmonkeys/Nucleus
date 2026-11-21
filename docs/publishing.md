@@ -97,7 +97,7 @@ If a TFM package genuinely lives on nuget.org and not on GitHub Packages, add th
 explicit pattern under `nuget.org`:
 
 ```xml
-<package pattern="TFM.ApplePay" />
+<package pattern="TFM.Widgets" />
 ```
 
 Do not widen the `TFM.*` rule to cover it.
@@ -106,7 +106,7 @@ Do not widen the `TFM.*` rule to cover it.
 
 - The assembly for each target framework, with embedded pdb and SourceLink metadata.
 - The XML documentation file.
-- `README.md`, `LICENSE.txt`, `images/icon.png`.
+- `README.md`, `LICENSE.txt`, `icon.png` (at the package root).
 
 No `.snupkg`. Symbols are embedded, so a separate symbols package would be empty and GitHub Packages
 would reject it anyway.

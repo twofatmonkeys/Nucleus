@@ -328,8 +328,9 @@ test projects multi-target `net8.0;net10.0` like the shipping packages.
 
 `Directory.Build.props` suppresses one warning, IDE0040, and `tests\Directory.Build.props`
 suppresses xUnit1051. Both are mechanical style edits rather than defects; see
-`docs\code-review-findings.md`. Nothing else is suppressed, so a nullable warning or an analyzer
-warning in new code fails CI.
+`docs\code-review-findings.md`. `src\Directory.Build.props` suppresses CS1591, so a public
+member without an XML comment does not fail the build. Nothing else is suppressed, so a nullable
+warning or an analyzer warning in new code fails CI.
 
 ## Modelling rules for consumers
 
@@ -346,10 +347,10 @@ warning in new code fails CI.
   root; children cascade. Do not delete children by predicate before deleting a parent.
 - A child collection that can grow large is `[RetrieveOnDemand]`, and a listing that needs its
   children `Include`s them. Never read a lazy collection per parent in a loop.
-- A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(v => v.Recipient)`).
+- A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(m => m.Keeper)`).
   Never load the referenced entities by their IDs by hand, and never keep a raw `Guid` column
   beside a reference to avoid the read.
-- Roots that belong to another root (a campaign's vouchers) are a `NucleusLinkedCollection<TMany, TOne>`
+- Roots that belong to another root (a troop's monkeys) are a `NucleusLinkedCollection<TMany, TOne>`
   on the one, with `[LinkedBy]` naming an indexed key on the many. Never hold them in a private
   `List<T>` loaded by hand, and never save them in a loop beside the one: add them to the
   collection and save the one. A listing that reads the collection on every row `Include`s it.
@@ -420,6 +421,8 @@ warning in new code fails CI.
   share one version by design.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
+  Exception: `Microsoft.Data.SqlClient` is one unconditioned reference, because the package
+  multi-targets itself and one version serves both frameworks.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
   repo and read what they need from `Directory.Build.props` at run time (`VersionMajor`,
   `PublishToNuGetOrg`, `TargetFrameworks`). If something seems to need a knob in the workflow, add
@@ -430,7 +433,13 @@ warning in new code fails CI.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
-  behaviour; a library flag with that meaning takes another name (TFM.S3Library.Nucleus's `S3AssetRecord.SoftDeleted`).
+  behaviour; a library flag with that meaning takes another name, such as `SoftDeleted`.
 - **Update `README.md` in the same commit** as any change to the public surface. It is packed into
   all seven packages and is the reference documentation consumers see on the feed.
 - **No em dashes in authored documentation.** Use hyphens.
+- **Examples are hypothetical; no real consumer is named.** No document, XML comment, test or
+  message in this repo names a real application, site, customer, server or machine, and no
+  example is copied from consumer code. Examples use the TFM sample domain in
+  `docs\sample-domain.md`. A finding records what happened, not who hit it. One exception: the
+  sibling TFM packages that hold the stores are named in the stores table and its migration
+  note, because a consumer needs the package id to install it.

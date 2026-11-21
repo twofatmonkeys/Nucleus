@@ -20,9 +20,10 @@ Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.Po
 
 ## Install
 
-The packages are published to GitHub Packages. Add the feed once, then reference the provider package for your database: it pulls the other three transitively.
+The packages are published to GitHub Packages. Add the feed once, then reference `TFM.Nucleus` (the entity base classes and `AddNucleus`) and the provider package for your database. The provider package pulls `TFM.Nucleus.Abstractions` and `TFM.Nucleus.Data` transitively; it does not pull `TFM.Nucleus`.
 
 ```bash
+dotnet add package TFM.Nucleus                   # always
 dotnet add package TFM.Nucleus.Data.SQL          # SQL Server
 dotnet add package TFM.Nucleus.Data.PostgreSQL   # PostgreSQL 16 or later
 dotnet add package TFM.Nucleus.Data.SQLite       # a SQLite database file
@@ -81,7 +82,7 @@ How a table is migrated depends on what changed. A table that only lacks columns
 Define entities. Properties are backed by the framework's change-tracking dictionaries through `GetValue`/`SetValue` rather than by fields:
 
 ```csharp
-[Cacheable(refreshInterval: 120, cacheLifetime: 900)]
+[Deletable]   // deletion is opt-in; the children go with their customer
 public class Customer : CoreObject<Customer>
 {
     [DatabaseColumn(Indexed = true)]
@@ -312,7 +313,7 @@ var database = NucleusTestDatabase.SqlServer;          // or .Postgres, or .Sqli
 if (!database.IsConfigured)
     return;                                            // skip with database.SkipReason, your framework's way
 
-using (await database.SchemaLockAsync())               // the net8.0 and net10.0 runs share the database
+using var schemaLock = await database.SchemaLockAsync();   // the net8.0 and net10.0 runs share the database
 using var stack = await database.StartStackAsync();    // AddNucleus + the provider, schema initialised
 var store = new MyStore(stack.Manager);
 ```
@@ -685,8 +686,7 @@ referenced type must be stored by the same provider as the rows; including one s
 throws rather than leaving every row to load its own. A referenced entity included this way is
 loaded with its own child collections and runs its load hook.
 
-A `[LinkedObject]` can name a child type, such as a voucher's `MarketingRecipient` that belongs to
-a campaign. The child loads like any referenced entity, and its `Parent` holds the parent's ID
+A `[LinkedObject]` can name a child type. The child loads like any referenced entity, and its `Parent` holds the parent's ID
 until it is first read, which loads the parent the same way. The same goes for a child loaded on
 its own by `LoadByID` or a query of its type. The parent loads as `LoadByID` loads it, so its child
 collection holds instances of its own, not the one that read it. A child is saved through its

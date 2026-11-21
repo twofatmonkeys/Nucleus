@@ -24,9 +24,10 @@ number alone.
 
 ## How CI derives it
 
-`.github/workflows/tag-and-release.yml`, step "Compute version", on every push to `master`:
+`.github/workflows/tag-and-release.yml`, steps "Read repo settings" and "Compute version", on every
+push to `master`:
 
-1. Read `VersionMajor` off the primary project with `dotnet msbuild -getProperty:VersionMajor`. This
+1. Read `VersionMajor` from `Directory.Build.props` with `dotnet msbuild -getProperty:VersionMajor`. This
    is an evaluation, not a build, so it runs before restore. A missing or non numeric value fails
    the run rather than silently producing a nonsense version.
 2. Compute `YY` and `DDD` from the runner clock with `TZ=Australia/Sydney` set at job level.
@@ -68,10 +69,10 @@ at 1 on every run and collide with the existing release.
 ## Multi-package repos
 
 Every package in a repo shares one version, taken from the one `VersionMajor` and the one run. That
-is a change from `TFM Oidc .NET`, where each of the four projects carried its own `AssemblyVersion`
-maintained by a Visual Studio extension and the four drifted apart. One version per repo means the
-release notes, the tag and the four packages all agree, and a consumer pinning
-`TFM.Oidc.Server 1.26.241.3` knows exactly which `TFM.Oidc.Core` it was built against.
+is a change from the older multi-project repos, where each project carried its own `AssemblyVersion`
+maintained by a Visual Studio extension and they drifted apart. One version per repo means the
+release notes, the tag and the packages all agree, and a consumer pinning
+`TFM.Widgets.Server 1.26.241.3` knows exactly which `TFM.Widgets.Core` it was built against.
 
 The cost is that a package with no changes still gets republished on a new version. `--skip-duplicate`
 makes that harmless, and the alternative was four versions nobody could reason about.

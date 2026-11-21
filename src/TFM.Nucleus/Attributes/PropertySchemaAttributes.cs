@@ -95,7 +95,7 @@ namespace TFM.Nucleus
     /// <summary>
     /// Names the key a <c>NucleusLinkedCollection&lt;TMany, TOne&gt;</c> property is kept by: the
     /// property of the many type that holds the one's ID, as in
-    /// <c>[LinkedBy(nameof(Voucher.CampaignId))]</c>. The key is a stored, indexed <c>Guid</c>,
+    /// <c>[LinkedBy(nameof(Monkey.TroopId))]</c>. The key is a stored, indexed <c>Guid</c>,
     /// <c>Guid?</c>, or a <c>[LinkedObject]</c> typed as the one; the many type declares it, so its
     /// table and its queries do not depend on the one.
     /// </summary>

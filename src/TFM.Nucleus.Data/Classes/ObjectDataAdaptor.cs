@@ -72,7 +72,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// The same query with a lazy ([RetrieveOnDemand]) child collection loaded with the
-        /// rows, as in <c>.Include(c =&gt; c.Recipients)</c>: the children of every returned parent
+        /// rows, as in <c>.Include(m =&gt; m.Naps)</c>: the children of every returned parent
         /// come in the same round trip, so a listing that reads them does not load each parent's
         /// collection on its own.
         /// </summary>
@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// The same query with the entities a <c>[LinkedObject]</c> property refers to loaded with
-        /// the rows, as in <c>.Include(v =&gt; v.Recipient)</c>: one query for the whole read, so a
+        /// the rows, as in <c>.Include(m =&gt; m.Keeper)</c>: one query for the whole read, so a
         /// listing that reads the reference on every row does not load each one on its own. The
         /// referenced type must be stored by the same provider.
         /// </summary>
@@ -90,7 +90,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// The same query with a linked collection's members loaded with the rows, as in
-        /// <c>.Include(c =&gt; c.Vouchers)</c>: one query for the members of every returned row, so
+        /// <c>.Include(t =&gt; t.Monkeys)</c>: one query for the members of every returned row, so
         /// a listing that reads the collection on every row does not load each one on its own.
         /// </summary>
         public IQueryable<T> Include(Expression<Func<T, INucleusLinkedCollection>> collection) =>
