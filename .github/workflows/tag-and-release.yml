@@ -5,10 +5,22 @@ name: Tag Version & Release
 #
 # Every setting it needs is read from Directory.Build.props at run time:
 #
-#   VersionMajor        the major component of the version. See docs/versioning.md.
-#   PublishToNuGetOrg   'true' also pushes to nuget.org. Anything else publishes to GitHub
-#                       Packages only, which is the default for internal packages.
-#   TargetFrameworks    determines which .NET runtimes get installed for the test run.
+#   VersionMajor                  the major component of the version. See docs/versioning.md.
+#   PublishToNuGetOrg             'true' also pushes stable releases to nuget.org. Anything else
+#                                 publishes to GitHub Packages only, which is the default for
+#                                 internal packages.
+#   PublishPrereleaseToNuGetOrg   'true' also pushes alpha and beta packages to nuget.org, but only
+#                                 when PublishToNuGetOrg is 'true' as well.
+#   TargetFrameworks              determines which .NET runtimes get installed for the test run.
+#
+# The branch decides the release channel. The branch names are a scaffold convention, not a per
+# repo setting:
+#
+#   master   stable      1.26.325.4
+#   beta     prerelease  1.26.325.4-beta.1
+#   alpha    prerelease  1.26.325.4-alpha.1
+#
+# Any other branch fails the run, so a manual dispatch from a feature branch cannot publish.
 #
 # Keeping this file identical in every package repo means it can be updated by copying, and any
 # drift between repos shows up as a diff rather than hiding in an env block.
@@ -18,6 +30,8 @@ on:
   push:
     branches:
       - master
+      - beta
+      - alpha
   workflow_dispatch:
 
 permissions:
@@ -27,6 +41,13 @@ permissions:
 
 # Two pushes landing seconds apart would otherwise compute the same revision number, and the second
 # release would collide on the tag. Serialising the runs makes the revision counter safe.
+#
+# The group is per branch, not repo wide. A repo wide group would also serialise master against
+# beta, but GitHub cancels a pending run when another one queues behind it in the same group, so
+# three pushes across branches would silently drop a publish. Tags from different channels can
+# never collide because the suffix differs. The race that remains is only about ordering: a beta
+# run reading N=4 while master is cutting 1.26.325.4 produces 1.26.325.4-beta.M after the stable one
+# already exists. See docs/versioning.md.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -53,6 +74,42 @@ jobs:
       # action still on node20 fails outright rather than warning. When bumping an action, check its
       # action.yml still says node24 before pinning the new major: actions/upload-artifact v5, for
       # instance, was still node20 and only v6 moved across.
+
+      # First, before anything is installed, so a run from the wrong ref fails in seconds. The push
+      # trigger only fires on the three channel branches, but workflow_dispatch can be started from
+      # any branch or tag, and without this check it would publish a stable package from it.
+      - name: Resolve release channel
+        id: channel
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" != "branch" ]; then
+            echo "::error::Releases run from a branch, not a ${GITHUB_REF_TYPE} (${GITHUB_REF_NAME})."
+            exit 1
+          fi
+
+          case "${GITHUB_REF_NAME}" in
+            master)
+              LABEL=""
+              PRERELEASE="false"
+              ;;
+            beta|alpha)
+              LABEL="${GITHUB_REF_NAME}"
+              PRERELEASE="true"
+              ;;
+            *)
+              echo "::error::Releases run only from master, beta or alpha (got '${GITHUB_REF_NAME}')."
+              exit 1
+              ;;
+          esac
+
+          echo "Branch:  ${GITHUB_REF_NAME}"
+          echo "Channel: ${LABEL:-stable}"
+          {
+            echo "label=${LABEL}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -85,12 +142,33 @@ jobs:
           # to the public feed, which is the safe direction to fail in.
           PUBLISH=$(dotnet msbuild Directory.Build.props -getProperty:PublishToNuGetOrg \
             | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          PUBLISH_PRE=$(dotnet msbuild Directory.Build.props -getProperty:PublishPrereleaseToNuGetOrg \
+            | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
 
-          echo "VersionMajor:      ${MAJOR}"
-          echo "PublishToNuGetOrg: ${PUBLISH:-(not set, GitHub Packages only)}"
+          # The effective flag for this run. A prerelease needs both switches: PublishToNuGetOrg says
+          # the package is public at all, PublishPrereleaseToNuGetOrg says its early builds are too.
+          # Requiring both means an internal package can never reach nuget.org via its beta branch.
+          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+            if [ "${PUBLISH}" = "true" ] && [ "${PUBLISH_PRE}" = "true" ]; then
+              EFFECTIVE="true"
+            else
+              EFFECTIVE="false"
+            fi
+          else
+            EFFECTIVE="${PUBLISH}"
+          fi
+
+          echo "VersionMajor:                ${MAJOR}"
+          echo "PublishToNuGetOrg:           ${PUBLISH:-(not set)}"
+          echo "PublishPrereleaseToNuGetOrg: ${PUBLISH_PRE:-(not set)}"
+          if [ "${EFFECTIVE}" = "true" ]; then
+            echo "This run publishes to:       GitHub Packages and nuget.org"
+          else
+            echo "This run publishes to:       GitHub Packages only"
+          fi
           {
             echo "version-major=${MAJOR}"
-            echo "publish-nuget-org=${PUBLISH}"
+            echo "publish-nuget-org=${EFFECTIVE}"
           } >> "$GITHUB_OUTPUT"
 
       # A multi targeted test project needs every target framework's runtime present, not just the
@@ -135,27 +213,48 @@ jobs:
         with:
           dotnet-version: ${{ steps.tfms.outputs.runtimes }}
 
-      # Version schema: MAJOR.YY.DDD.N
+      # Version schema: MAJOR.YY.DDD.N, plus -LABEL.M on a prerelease channel
       #   MAJOR  from <VersionMajor> in Directory.Build.props
       #   YY     two digit year, Australia/Sydney
       #   DDD    day of year, no leading zeros
-      #   N      one more than the highest existing tag for that day
-      # Nothing is committed back to master: the tag history is the record of what shipped.
+      #   N      one more than the highest existing stable tag for that day
+      #   LABEL  alpha or beta, from the branch. Absent on master.
+      #   M      one more than the highest existing LABEL tag for that N
+      # A prerelease therefore takes the number master would cut next, so 1.26.325.4-beta.2 sorts
+      # below the stable 1.26.325.4 it leads up to. The stable counter only counts purely numeric
+      # revisions, so prerelease tags never move it.
+      # Nothing is committed back to any branch: the tag history is the record of what shipped.
       - name: Compute version
         id: version
         run: |
           set -euo pipefail
           MAJOR="${{ steps.settings.outputs.version-major }}"
+          LABEL="${{ steps.channel.outputs.label }}"
 
           YY=$(date +%y)
           DDD=$(date +%-j)
           PREFIX="v${MAJOR}.${YY}.${DDD}."
           LAST=$(git tag --list "${PREFIX}*" | sed "s|^${PREFIX}||" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
           REV=$(( ${LAST:-0} + 1 ))
-          VERSION="${MAJOR}.${YY}.${DDD}.${REV}"
+          VERSION_PREFIX="${MAJOR}.${YY}.${DDD}.${REV}"
+          echo "Highest stable revision already tagged today: ${LAST:-none}"
 
-          echo "Version: ${VERSION} (highest revision already tagged today: ${LAST:-none})"
+          if [ -z "${LABEL}" ]; then
+            VERSION_SUFFIX=""
+            VERSION="${VERSION_PREFIX}"
+          else
+            PRE_PREFIX="v${VERSION_PREFIX}-${LABEL}."
+            LAST_PRE=$(git tag --list "${PRE_PREFIX}*" | sed "s|^${PRE_PREFIX}||" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+            PRE_REV=$(( ${LAST_PRE:-0} + 1 ))
+            VERSION_SUFFIX="${LABEL}.${PRE_REV}"
+            VERSION="${VERSION_PREFIX}-${VERSION_SUFFIX}"
+            echo "Highest ${LABEL} build already tagged for ${VERSION_PREFIX}: ${LAST_PRE:-none}"
+          fi
+
+          echo "Version: ${VERSION}"
           {
+            echo "version-prefix=${VERSION_PREFIX}"
+            echo "version-suffix=${VERSION_SUFFIX}"
             echo "version=${VERSION}"
             echo "tag=v${VERSION}"
           } >> "$GITHUB_OUTPUT"
@@ -163,18 +262,23 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      # VersionPrefix is passed to build, test and pack alike. Passing it only to pack would stamp
-      # the package with one version and the assembly inside it with another.
+      # VersionPrefix and VersionSuffix are passed to build, test and pack alike. Passing them only
+      # to pack would stamp the package with one version and the assembly inside it with another.
+      # AssemblyVersion and FileVersion come from VersionPrefix alone, so they stay four numeric
+      # parts; the SDK joins prefix and suffix into the package and informational versions. On
+      # master the suffix is empty, which is the same as not passing it.
       - name: Build
         run: >
           dotnet build --configuration Release --no-restore
-          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:VersionPrefix=${{ steps.version.outputs.version-prefix }}
+          -p:VersionSuffix=${{ steps.version.outputs.version-suffix }}
           -p:ContinuousIntegrationBuild=true
 
       - name: Test
         run: >
           dotnet test --configuration Release --no-build
-          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:VersionPrefix=${{ steps.version.outputs.version-prefix }}
+          -p:VersionSuffix=${{ steps.version.outputs.version-suffix }}
           -p:ContinuousIntegrationBuild=true
           --logger "trx;LogFileName=test-results.trx"
           --results-directory "${{ github.workspace }}/test-results"
@@ -192,7 +296,8 @@ jobs:
       - name: Pack
         run: >
           dotnet pack --configuration Release --no-build
-          -p:VersionPrefix=${{ steps.version.outputs.version }}
+          -p:VersionPrefix=${{ steps.version.outputs.version-prefix }}
+          -p:VersionSuffix=${{ steps.version.outputs.version-suffix }}
           -p:ContinuousIntegrationBuild=true
           --output "${ARTIFACTS}"
 
@@ -232,7 +337,10 @@ jobs:
       # release/vX.Y.Z.N rather than vX.Y.Z.N: the GitHub release below creates a tag of that name,
       # and a branch and a tag sharing a name make every later "git checkout vX.Y.Z.N" ambiguous.
       # Pushing the ref directly is idempotent, unlike "git checkout -b".
+      # Stable releases only: a prerelease is already pinned by its tag, and a branch per alpha or
+      # beta push would bury the stable release branches.
       - name: Create release branch
+        if: steps.channel.outputs.prerelease != 'true'
         run: |
           BRANCH="release/${{ steps.version.outputs.tag }}"
           if git ls-remote --exit-code --heads origin "${BRANCH}" > /dev/null 2>&1; then
@@ -254,10 +362,17 @@ jobs:
             done
           } > release-notes.md
 
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --repo "${{ github.repository }}" \
-            --target "${GITHUB_SHA}" \
-            --title "${{ steps.version.outputs.tag }}" \
-            --notes-file release-notes.md \
-            --generate-notes \
-            "${ARTIFACTS}"/*.nupkg
+          ARGS=(
+            --repo "${{ github.repository }}"
+            --target "${GITHUB_SHA}"
+            --title "${{ steps.version.outputs.tag }}"
+            --notes-file release-notes.md
+            --generate-notes
+          )
+          # A prerelease is never marked Latest, so the stable release stays the one GitHub shows
+          # as current.
+          if [ "${{ steps.channel.outputs.prerelease }}" = "true" ]; then
+            ARGS+=(--prerelease)
+          fi
+
+          gh release create "${{ steps.version.outputs.tag }}" "${ARGS[@]}" "${ARTIFACTS}"/*.nupkg

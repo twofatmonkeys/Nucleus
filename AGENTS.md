@@ -448,8 +448,15 @@ warning or an analyzer warning in new code fails CI.
   multi-targets itself and one version serves both frameworks.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
   repo and read what they need from `Directory.Build.props` at run time (`VersionMajor`,
-  `PublishToNuGetOrg`, `TargetFrameworks`). If something seems to need a knob in the workflow, add
-  the property to `Directory.Build.props` and read it instead.
+  `PublishToNuGetOrg`, `PublishPrereleaseToNuGetOrg`, `TargetFrameworks`). If something seems to
+  need a knob in the workflow, add the property to `Directory.Build.props` and read it instead.
+- **Three release branches, by convention.** `tag-and-release.yml` releases stable from `master`
+  and prereleases from `beta` (`-beta.M`) and `alpha` (`-alpha.M`), and fails on any other ref. The
+  branch names are fixed across every TFM package repo, not a per repo setting. A prerelease takes
+  the `N` master would cut next, so it sorts below that stable release, and like a stable release it
+  publishes all seven packages on one version. It gets a tag and a prerelease GitHub release but no
+  `release/` branch, and reaches nuget.org only when both nuget.org switches are `true`. See
+  `docs/versioning.md`.
 - **Evolve the public surface additively.** Two production sites already consume these packages,
   and `CoreObject` is the base class of every entity in them. A breaking change to the entity base,
   an attribute, or a registration method is a major version and a coordinated release.

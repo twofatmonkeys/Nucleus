@@ -37,6 +37,10 @@
       the highest existing v$(VersionMajor).YY.DDD.* git tag plus one, which makes the tag history
       the source of truth and keeps master free of version bump commits.
 
+      A push to beta or alpha also passes -p:VersionSuffix=beta.M or alpha.M, giving a prerelease
+      package such as 2.26.325.4-beta.2. AssemblyVersion and FileVersion below still take the
+      numeric VersionPrefix only. See docs\versioning.md.
+
       History note: the 1.x packages were built from the pre-monorepo layout, the last of them
       stamped 1.26.194.0, and that code is preserved on the archive/v1 branch. v2 is a breaking
       release: the entity base is generic (CoreObject<T>), deletion is opt-in through [Deletable],
@@ -80,7 +84,7 @@
   <PropertyGroup Label="Publishing">
     <!--
       Read by .github\workflows\tag-and-release.yml. Every release publishes to GitHub Packages;
-      this decides whether it also pushes to nuget.org.
+      this decides whether a stable release from master also pushes to nuget.org.
 
       Turning it on is not sufficient on its own. nuget.org will only accept the push if a trusted
       publishing policy naming this repository and this workflow already exists, so the real gate is
@@ -91,6 +95,13 @@
       every package repo. Anything absent or not exactly "true" means no nuget.org push.
     -->
     <PublishToNuGetOrg>false</PublishToNuGetOrg>
+    <!--
+      Whether alpha and beta packages also go to nuget.org. Only takes effect when
+      PublishToNuGetOrg is true as well, so an internal package can never reach the public feed
+      through a prerelease branch. Leave it false unless consumers outside GitHub Packages really
+      need early builds: every alpha or beta push would add a public, permanent version.
+    -->
+    <PublishPrereleaseToNuGetOrg>false</PublishPrereleaseToNuGetOrg>
   </PropertyGroup>
 
 </Project>
