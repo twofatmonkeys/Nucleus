@@ -359,22 +359,37 @@ every query whose `TableSchema` is null, so none of them runs and nothing says s
 schema, so only a hand-built query passed to `ExecuteQueryAsync` is affected. Verified by reading
 the code; no test reaches it.
 
-### A provider holds two connection pools of MaxConnectionPoolSize each (November 2026)
-
-The SQL Server and PostgreSQL configurations build a transactional connection string and a
-non-transactional one with `Enlist=false`. The drivers pool by connection string, so a provider
-keeps two pools, each up to `MaxConnectionPoolSize`, and the setting the README called the
-connection pool ceiling allows twice that many server connections per process. The slot limit in
-`DbDataContext` counts open contexts, not pooled connections, so it does not bound them either;
-idle pooled connections stay open until the driver prunes them. Measured on a store's PostgreSQL
-contract suite: up to 99 idle connections across the net8.0 and net10.0 runs, against a
-`max_connections` of 100, which failed with 53300 "too many clients". The test package now caps
-its PostgreSQL stacks at 20 (`PostgresTestDatabase.TestPoolSize`, peak 84 over six runs, every
-run passing). The provider is unchanged: one pool, or the setting split across the two, changes
-how many connections a production site opens and needs a decision. The README documents the
-doubling in the option tables and the known limits.
-
 ## Fixed
+
+### A provider held two connection pools of MaxConnectionPoolSize each (November 2026)
+
+The SQL Server and PostgreSQL configurations built a transactional connection string and a
+non-transactional one with `Enlist=false`. The drivers pool by connection string, so a provider
+kept two pools, each up to `MaxConnectionPoolSize`, and the server could see twice the setting
+from one process. Measured on a store's PostgreSQL contract suite: up to 99 idle connections
+across the net8.0 and net10.0 runs, against a `max_connections` of 100, which failed with 53300
+"too many clients". Three more gaps sat beside it:
+
+- A raw `ConnectionString` never got `MaxConnectionPoolSize`, so the driver's default of 100 was
+  the real cap.
+- A change subscription held a pooled connection but no context slot. Once there was one pool, a
+  context could pass the slot check and then time out in the driver's pool.
+- The slot count was static for each context type, so every provider of one engine in a process
+  shared one budget.
+
+Now:
+
+- Every connection to the database has one connection string, with `Enlist=false` and the pool
+  sized to the setting, raw strings included.
+- The startup connections (`master`, and the PostgreSQL maintenance database) are not pooled.
+- Each provider has its own `ConnectionSlots`, which its root contexts and change subscriptions
+  share.
+- With no connection enlisting, a transactional context inside an ambient `TransactionScope`
+  would commit outside it, so it is refused (`DataContextErrorKind.AmbientTransaction`).
+
+`PostgresConnectionLimitTests` counts the server's connections from one provider, and
+`ConnectionLimitIntegrationTests` holds every engine to the limit and the refusal. The test
+package's PostgreSQL cap of 20 stays.
 
 ### A context save did not follow its transaction in memory (November 2026)
 

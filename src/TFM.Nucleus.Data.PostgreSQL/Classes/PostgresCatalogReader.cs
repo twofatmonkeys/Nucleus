@@ -131,7 +131,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         {
             try
             {
-                using var connection = Config.BuildConnection(useTransaction: false);
+                using var connection = Config.BuildConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
@@ -165,7 +165,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
             try
             {
                 List<T> rows = [];
-                using var connection = Config.BuildConnection(useTransaction: false);
+                using var connection = Config.BuildConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = query;
@@ -181,6 +181,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
         }
 
         private ValueTask Open(NpgsqlConnection connection, bool async, CancellationToken cancellationToken) =>
-            ConnectionOpener.OpenAsync(connection, async, Config.ConnectAttempts, PostgresErrors.IsTransient, cancellationToken);
+            ConnectionOpener.OpenAsync(connection, async, Config.ConnectAttempts, PostgresErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), cancellationToken);
     }
 }

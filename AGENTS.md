@@ -87,7 +87,16 @@ SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalP
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
 over System.Data.Common; `ProviderRegistration` is the registration every provider's `Add...`
-extensions share, so a provider's extensions only name its types. A transactional context is
+extensions share, so a provider's extensions only name its types. `MaxConnectionPoolSize` is the
+one connection limit: a provider's `ConnectionSlots` (one per provider, not per context type)
+counts its root contexts and live change subscriptions, and every connection to the database has
+one connection string with `Enlist=false` and the driver pool sized to the setting, raw strings
+included, so the driver keeps one pool. The startup connections (`master`, the PostgreSQL
+maintenance database) are unpooled. With nothing enlisting, a transactional root opened inside an
+ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
+`ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
+timeout. The defaults fail fast and alike: nothing waits more than 3 s (pool wait, connect,
+SQLite busy timeout). A transactional context is
 committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
 operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
 through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A context
@@ -310,8 +319,8 @@ and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer
 `DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
 configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
 stack whose initialisation fails includes its warnings and errors in the message. A PostgreSQL
-stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because the provider
-keeps two pools of `MaxConnectionPoolSize` each and two runs at the default exhausted the server. A fixture boots
+stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because two runs at
+the default of 100 exhausted the server. A fixture boots
 its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
 runs once raced to create the same tables and one of them failed. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second

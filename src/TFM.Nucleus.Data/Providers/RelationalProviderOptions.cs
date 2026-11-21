@@ -33,7 +33,11 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         public string? ConnectionString { get; set; }
 
-        /// <summary>The most contexts open at once across the process.</summary>
+        /// <summary>
+        /// The most connections the provider holds to its database: its open contexts and its live
+        /// change subscriptions share it, and the driver's pool is sized to it. A raw
+        /// <see cref="ConnectionString"/>'s own pool size is overwritten with it.
+        /// </summary>
         public int MaxConnectionPoolSize { get; set; } = 100;
 
         /// <summary>No longer used: an oversized write runs its parts in order on its own context.</summary>
@@ -63,13 +67,14 @@ namespace TFM.Nucleus.Data.Providers
             set => MaxParametersPerCommand = value;
         }
 
-        private int _poolWaitTimeoutSeconds = 10;
+        private int _poolWaitTimeoutSeconds = 3;
 
         /// <summary>
-        /// How long opening a context on the asynchronous path waits for a free slot when
-        /// <see cref="MaxConnectionPoolSize"/> contexts are already open, in seconds, before it
-        /// fails. 0 fails at once. The synchronous path never waits. It is not a command timeout:
-        /// commands use the driver's default.
+        /// How long opening a context or a change subscription on the asynchronous path waits for
+        /// a free slot when <see cref="MaxConnectionPoolSize"/> are already held, in seconds, before
+        /// it fails. 3 by default: the failure goes back to the caller, who decides whether to wait
+        /// longer or retry. 0 fails at once. The synchronous path never waits. It is not a command
+        /// timeout: commands use the driver's default.
         /// </summary>
         public int PoolWaitTimeoutSeconds
         {

@@ -19,16 +19,15 @@ namespace TFM.Nucleus.Data.Providers
     /// The <see cref="IDataContext"/> every relational provider shares, over System.Data.Common:
     /// one connection, one command and an optional transaction per context; a tree of child
     /// contexts on their root's connection and transaction, which commits or rolls back whole; a
-    /// process-wide limit on open contexts; reads into <see cref="DataSet"/> with child collection
+    /// per-provider limit on held connections (<see cref="ConnectionSlots"/>); reads into <see cref="DataSet"/> with child collection
     /// result sets; deletes that report the rows they affected; and the two write paths (split by
     /// parameter count on the sync path; grouped by table, then bulk copied or run as commands in
     /// order on the async path). A provider supplies the connection and overrides the hooks its
     /// engine needs.
     /// </summary>
-    /// <typeparam name="TSelf">The provider's context type; each type keeps its own pool of open contexts.</typeparam>
+    /// <typeparam name="TSelf">The provider's context type.</typeparam>
     public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
     {
-        private static readonly ConcurrentDictionary<Guid, TSelf> _contextCache = new();
         private readonly ConcurrentDictionary<Guid, TSelf> _childContexts = new();
         private readonly RelationalDataProvider _provider;
 
@@ -48,6 +47,8 @@ namespace TFM.Nucleus.Data.Providers
         // The root of a child's tree, whose connection and transaction it uses; null on a root.
         private TSelf? _root;
         private DbConnection? _connection;
+        // On a root, its share of the provider's connection budget; released when it closes.
+        private ConnectionSlot? _slot;
         // On a root, what the tree's saves committed in memory, put back if the transaction does
         // not commit. Created by the first save.
         private CommitUndoLog? _undo;
@@ -83,11 +84,16 @@ namespace TFM.Nucleus.Data.Providers
         [Obsolete("Use WatchesForChanges.")]
         public bool HasDependency => _useDependency;
         private bool HasChildren => !_childContexts.IsEmpty;
-        public int ConnectionsAvailable => Options.MaxConnectionPoolSize - _contextCache.Values.Count(x => !x._disposed);
+        /// <summary>The provider's free connection slots, shared by its root contexts and its change subscriptions.</summary>
+        public int ConnectionsAvailable => _provider.ConnectionSlots.Available;
 
         // ---- Hooks a provider implements or overrides.
 
-        /// <summary>A new, closed connection; a non-transactional one must not enlist in an ambient transaction.</summary>
+        /// <summary>
+        /// A new, closed connection that does not enlist in an ambient transaction, transactional
+        /// or not, built from one connection string so the driver keeps one pool, sized to
+        /// <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>.
+        /// </summary>
         protected abstract DbConnection BuildConnection(bool useTransaction);
 
         /// <summary>No longer called: there is no parallel write path.</summary>
@@ -197,10 +203,6 @@ namespace TFM.Nucleus.Data.Providers
         protected Task OpenAsync(TSelf? parent, bool useTransaction, bool useDependency, CancellationToken token) =>
             OpenCore(parent, useTransaction, useDependency, async: true, token).AsTask();
 
-        private DataContextException PoolExhausted(string detail) =>
-            new($"No context is free: all {Options.MaxConnectionPoolSize} (MaxConnectionPoolSize) are open, {detail}. " +
-                "Dispose contexts sooner or raise the limit.", DataContextErrorKind.PoolExhausted);
-
         private async ValueTask OpenCore(TSelf? parent, bool useTransaction, bool useDependency, bool async, CancellationToken token)
         {
             if (_isInitialized)
@@ -211,28 +213,23 @@ namespace TFM.Nucleus.Data.Providers
                 return;
             }
 
-            if (async)
-            {
-                var sw = Stopwatch.StartNew();
-                while (ConnectionsAvailable < 1)
-                {
-                    if (sw.ElapsedMilliseconds >= Options.PoolWaitTimeoutSeconds * 1000L)
-                        throw PoolExhausted($"after waiting {Options.PoolWaitTimeoutSeconds} s (PoolWaitTimeoutSeconds)");
-                    await Task.Delay(100, token);
-                }
-            }
-            else if (ConnectionsAvailable < 1)
-                throw PoolExhausted("and the synchronous path does not wait");
-            Debug.WriteLine($"Data Context Info: {ConnectionsAvailable} connections currently available from {_contextCache.Count} total in cache"
-                , "Database");
+            // No connection enlists, so a transaction here would commit outside the caller's
+            // scope and survive its rollback. Refused rather than silently escaping it.
+            if (useTransaction && System.Transactions.Transaction.Current != null)
+                throw new DataContextException(
+                    "A transactional context cannot be opened inside an ambient transaction (a TransactionScope): its own transaction would commit " +
+                    "even if the scope rolled back. Open the context outside the scope, and make the context's transaction the unit of work.",
+                    DataContextErrorKind.AmbientTransaction);
+
+            var slots = _provider.ConnectionSlots;
+            _slot = async ? await slots.AcquireAsync(token) : slots.Acquire();
+            Debug.WriteLine($"Data Context Info: {slots.Available} of {slots.Capacity} connection slots available", "Database");
 
             _useTransaction = useTransaction;
             _useDependency = useDependency;
-            _connection = BuildConnection(useTransaction);
-            if (!_contextCache.TryAdd(ContextId, (TSelf)this))
-                throw new Exception("Error adding Context to collection.");
             try
             {
+                _connection = BuildConnection(useTransaction);
                 await OpenConnection(async, token);
                 _command = _connection.CreateCommand();
                 if (HasTransaction)
@@ -242,13 +239,16 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch
             {
-                // A context that never opened must not keep its pool slot.
-                _contextCache.TryRemove(ContextId, out _);
-                if (async)
-                    await _connection.DisposeAsync();
-                else
-                    _connection.Dispose();
-                _connection = null;
+                // A context that never opened must not keep its slot.
+                ReleaseSlot();
+                if (_connection != null)
+                {
+                    if (async)
+                        await _connection.DisposeAsync();
+                    else
+                        _connection.Dispose();
+                    _connection = null;
+                }
                 throw;
             }
             if (_useDependency)
@@ -258,8 +258,16 @@ namespace TFM.Nucleus.Data.Providers
             _isInitialized = true;
         }
 
+        // Every attempt shares the connection's own connect timeout, so retries never make an open
+        // wait longer than the timeout it was configured with.
         private ValueTask OpenConnection(bool async, CancellationToken token) =>
-            ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, token);
+            ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, ConnectionOpener.TimeoutOf(_connection!), token);
+
+        private void ReleaseSlot()
+        {
+            _slot?.Dispose();
+            _slot = null;
+        }
 
         /// <summary>
         /// Opens a child on its root's connection and transaction, so the tree commits or rolls
@@ -624,7 +632,6 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private async ValueTask FinallyDispose(bool async)
         {
-            var finished = false;
             try
             {
                 if (HasTransaction && !_completed)
@@ -637,29 +644,31 @@ namespace TFM.Nucleus.Data.Providers
                     await EndTransaction(commit, async).ConfigureAwait(false);
                 }
                 _childContexts.Clear();
-                finished = true;
             }
             finally
             {
-                if (_connection != null)
+                try
                 {
-                    Debug.WriteLine($"Disposing of database connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff}", "Database");
-                    if (async)
+                    if (_connection != null)
                     {
-                        await _connection.CloseAsync().ConfigureAwait(false);
-                        await _connection.DisposeAsync().ConfigureAwait(false);
+                        Debug.WriteLine($"Disposing of database connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff}", "Database");
+                        if (async)
+                        {
+                            await _connection.CloseAsync().ConfigureAwait(false);
+                            await _connection.DisposeAsync().ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _connection.Close();
+                            _connection.Dispose();
+                        }
+                        _connection = null;
                     }
-                    else
-                    {
-                        _connection.Close();
-                        _connection.Dispose();
-                    }
-                    _connection = null;
                 }
-                // After a failed commit or rollback that failure is the one to report, so a
-                // missing pool entry only throws when everything above finished.
-                if (!_contextCache.TryRemove(ContextId, out _) && finished)
-                    throw new Exception("Error removing Context from collection");
+                finally
+                {
+                    ReleaseSlot();
+                }
             }
         }
 
@@ -1255,7 +1264,7 @@ namespace TFM.Nucleus.Data.Providers
         InvalidIQueryType = 30,
         /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
         MissingResultSet = 40,
-        /// <summary>Every context the provider allows at once was open, and none came free in time.</summary>
+        /// <summary>Every connection the provider allows (MaxConnectionPoolSize) was held by its contexts and change subscriptions, and none came free in time.</summary>
         PoolExhausted = 50,
         /// <summary>Something was run on a context whose transaction had already been committed or rolled back.</summary>
         TransactionCompleted = 60,
@@ -1263,6 +1272,8 @@ namespace TFM.Nucleus.Data.Providers
         TransactionDoomed = 70,
         /// <summary>A commit was asked of a root while a child context of its transaction was still open.</summary>
         ChildContextOpen = 80,
+        /// <summary>A transactional context was opened inside an ambient transaction (a TransactionScope), which its own transaction would escape.</summary>
+        AmbientTransaction = 90,
         Unspecified = 99,
     }
 

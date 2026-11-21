@@ -140,7 +140,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
@@ -187,7 +187,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = SqlServerSchemaDialect.CreateFullTextCatalogSql(catalogName);
@@ -207,7 +207,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
@@ -253,7 +253,7 @@ namespace TFM.Nucleus.Data.SQL
         private async ValueTask<IReadOnlyList<T>> ReadAll<T>(string query, Func<DbDataReader, T> read, bool async, CancellationToken cancellationToken)
         {
             List<T> rows = [];
-            using var connection = Config.BuildNewSQLConnection(false);
+            using var connection = Config.BuildNewSQLConnection();
             await Open(connection, async, cancellationToken);
             using var command = connection.CreateCommand();
             command.CommandText = query;

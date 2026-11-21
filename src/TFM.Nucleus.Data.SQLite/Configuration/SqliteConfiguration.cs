@@ -34,12 +34,14 @@ namespace TFM.Nucleus.Data.SQLite
         /// </summary>
         public bool UseWriteAheadLog { get; set; } = true;
 
-        private int _busyTimeoutSeconds = 30;
+        private int _busyTimeoutSeconds = 3;
 
         /// <summary>
         /// How long a command waits for another connection's write lock, in seconds, before it
         /// fails. SQLite lets one connection write at a time; every other writer, in this process or
-        /// another, waits up to this long.
+        /// another, waits up to this long. 3 by default: the failure goes back to the caller, who
+        /// decides whether to wait longer or retry. An application that writes heavily from
+        /// several connections raises it.
         /// </summary>
         public int BusyTimeoutSeconds
         {
