@@ -169,7 +169,7 @@ $nucleus$",
             if (!column.HasColumnIndex)
                 throw new ArgumentException($"Column '{column.ColumnName}' does not carry a column index.", nameof(column));
             var name = Quote(IndexNaming.ColumnIndexName(table, column));
-            var key = $"({Quote(column.ColumnName)} {(column.IndexSortDescending ? "DESC" : "ASC")})";
+            var key = $"({Quote(column.ColumnName)} {(column.IndexDescending ? "DESC" : "ASC")})";
             return column.Unique
                 ? $"CREATE UNIQUE INDEX {name} ON {TableName(table.TableName)} {key} WHERE {Quote(column.ColumnName)} IS NOT NULL"
                 : $"CREATE INDEX {name} ON {TableName(table.TableName)} {key}";

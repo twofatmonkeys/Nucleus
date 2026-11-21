@@ -180,8 +180,6 @@ namespace TFM.Nucleus
         public readonly int CacheLifetime = 0;
         public readonly int CacheRefreshInterval = 0;
         public readonly int Priority = 0; // Default priority, can be set by attribute
-        [Obsolete("Use HasNucleusChildCollections.")]
-        public readonly bool HasLinkedChildObjects;
         public bool HasParentObject => _hasParentObject;
         private readonly bool _hasParentObject;
         public IPropertySchema? ParentObjectProperty => _parentObjectProperty;
@@ -248,14 +246,11 @@ namespace TFM.Nucleus
             _parentObjectProperty = _propertyCache.Values.SingleOrDefault(x => x.IsParentObject);
             _hasParentObject = _parentObjectProperty != null;
             HasLinkedObjects = LinkedObjectProperties.Length > 0;
-#pragma warning disable CS0618 // the obsolete alias keeps answering for older callers
-            HasLinkedChildObjects = HasNucleusChildCollections;
-#pragma warning restore CS0618
-            IsDatabaseEnabled = !Attribute.IsDefined(Type, typeof(SuppressDB)) && AllDBColumns.Length > 2;
-            IsCacheable = Attribute.IsDefined(Type, typeof(Cacheable));
+            IsDatabaseEnabled = !Attribute.IsDefined(Type, typeof(NotStoredAttribute)) && AllDBColumns.Length > 2;
+            IsCacheable = Attribute.IsDefined(Type, typeof(CacheableAttribute));
             if (IsCacheable)
             {
-                var attr = Attribute.GetCustomAttribute(Type, typeof(Cacheable)) as Cacheable;
+                var attr = Attribute.GetCustomAttribute(Type, typeof(CacheableAttribute)) as CacheableAttribute;
                 CacheLifetime = attr!.CacheLifetime;
                 CacheRefreshInterval = attr.RefreshInterval;
                 // A cached instance is shared by every caller, and loading a lazy collection
@@ -265,13 +260,13 @@ namespace TFM.Nucleus
                         $"{Type.Name} is [Cacheable], so its child collection {lazy.Name} cannot be [RetrieveOnDemand]: " +
                         "its cached instances are shared, and loading the collection would change them for every caller.", Type);
             }
-            SuppressLogging = Attribute.IsDefined(Type, typeof(SuppressLogging));
+            SuppressLogging = Attribute.IsDefined(Type, typeof(SuppressLoggingAttribute));
             _deleteDeclaration = (DeletableAttribute?)Attribute.GetCustomAttribute(Type, typeof(DeletableAttribute));
             IsDeletable = _deleteDeclaration is { Enabled: true };
             DeleteBehavior = IsDeletable ? _deleteDeclaration!.Behavior : DeleteBehavior.Hard;
             _deletePolicy = new Lazy<DeletePolicy>(ResolveDeletePolicy);
-            if (Attribute.IsDefined(Type, typeof(InitializePriority)))
-                Priority = ((InitializePriority)Attribute.GetCustomAttribute(Type, typeof(InitializePriority))!).Priority;
+            if (Attribute.IsDefined(Type, typeof(InitializePriorityAttribute)))
+                Priority = ((InitializePriorityAttribute)Attribute.GetCustomAttribute(Type, typeof(InitializePriorityAttribute))!).Priority;
             foreach (var pi in AllProperties.Select(x => x.PropertyInfo))
                 dProperties.TryAdd(pi.Name, pi);
         }
@@ -334,19 +329,12 @@ namespace TFM.Nucleus
                 : throw new InvalidCastException($"{thisT?.GetType()} is not a CoreObject, cannot get linked objects.");
         public IPropertySchema[] AllProperties => _propertyCache.Values.ToArray();
         public IPropertySchema[] AllDBColumns => _propertyCache.Values.Where(x => x.IsDBColumn).ToArray();
-        [Obsolete("Use NucleusChildCollectionProperties.")]
-        public IPropertySchema[] LinkedChildObjectProperties => [.. _nucleusChildCollectionProperties.Values];
         public IPropertySchema[]? NucleusChildCollectionProperties => [.. _nucleusChildCollectionProperties.Values];
         public IPropertySchema[] LinkedObjectProperties => _linkedObjectProperties;
         //public IObjectSchema? ParentObjectSchema => ParentProperty?.ObjectSchema;
         // OfType filters out properties with no resolvable schema, so these never contain nulls.
         public IObjectSchema[]? LinkedObjectSchemas =>
             [.. LinkedObjectProperties.Select(x => x.ObjectSchema).OfType<IObjectSchema>()];
-        [Obsolete("Use NucleusChildCollectionProperties and each property's ChildSchema.")]
-        public IObjectSchema[]? LinkedChildObjectSchemas => ChildCollectionSchemas;
-
-        private IObjectSchema[] ChildCollectionSchemas =>
-            [.. _nucleusChildCollectionProperties.Values.Select(x => x.ChildSchema).OfType<IObjectSchema>()];
 
 
         public async Task<IDictionary> Extract(DbDataReader reader, CancellationToken token)
@@ -394,7 +382,6 @@ namespace TFM.Nucleus
         int IObjectSchema.Priority => Priority;
         bool IObjectSchema.IsCacheable => IsCacheable;
         bool IObjectSchema.IsDatabaseEnabled => IsDatabaseEnabled;
-        bool IObjectSchema.HasLinkedChildObjects => HasNucleusChildCollections;
         bool IObjectSchema.HasParentObject => HasParentObject;
         bool IObjectSchema.HasLinkedObjects => HasLinkedObjects;
         bool IObjectSchema.HasNucleusChildCollections => HasNucleusChildCollections;
@@ -408,14 +395,9 @@ namespace TFM.Nucleus
         // Held links only: a loaded link nobody has read is its stored ID, and is not loaded here.
         IEnumerable<ICoreObject> IObjectSchema.GetLinkedObjects(ICoreObject obj) =>
             _linkedObjectProperties.Select(p => obj.GetPropertyValue(p.Name)).OfType<ICoreObject>();
-        // Held children only: reading a collection's ChildObjects never loads it.
-        IEnumerable<ICoreObject> IObjectSchema.GetLinkedChildObjects(ICoreObject obj) =>
-            obj.NucleusChildCollections.SelectMany(collection => collection.ChildObjects);
         Guid[] IObjectSchema.GetLinkedIDsForLogging(object obj) => GetLinkedIDsForLogging((T)obj);
-        IPropertySchema[] IObjectSchema.LinkedChildObjectProperties => [.. _nucleusChildCollectionProperties.Values];
         IPropertySchema[]? IObjectSchema.NucleusChildCollectionProperties => NucleusChildCollectionProperties;
         IObjectSchema[]? IObjectSchema.LinkedObjectSchemas => LinkedObjectSchemas;
-        IObjectSchema[]? IObjectSchema.LinkedChildObjectSchemas => ChildCollectionSchemas;
         IObjectSchema IObjectSchema.GetObjectSchema(Type type) => ObjectSchema.Get(type);
         IObjectSchema IObjectSchema.GetObjectSchema<TAlt>() => ObjectSchema.Get<TAlt>();
 
@@ -483,7 +465,7 @@ namespace TFM.Nucleus
                     "The one side of a linked collection is a root, which is deleted only on its own.", Type);
             // A cached instance is shared by every caller, and loading its members would change it
             // under all of them, as for a lazy child collection.
-            if (Attribute.IsDefined(Type, typeof(Cacheable)))
+            if (Attribute.IsDefined(Type, typeof(CacheableAttribute)))
                 throw new ObjectSchemaException(
                     $"{Type.Name} is [Cacheable], so it cannot have the linked collection {first.Name}: " +
                     "its cached instances are shared, and loading the members would change them for every caller.", Type);
@@ -694,7 +676,7 @@ namespace TFM.Nucleus
         public override string ToString() => $"ObjectSchema({FullName ?? "null"})";
     }
 
-    public class ObjectSchemaException : Exception
+    public class ObjectSchemaException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
 
@@ -710,7 +692,7 @@ namespace TFM.Nucleus
                 : $"Object Schema error for Null Type, {message}";
     }
 
-    public class InvalidObjectTypeException : Exception
+    public class InvalidObjectTypeException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
 
@@ -725,7 +707,7 @@ namespace TFM.Nucleus
         }
     }
 
-    public class PropertyNotFoundException : Exception
+    public class PropertyNotFoundException : TFM.Nucleus.NucleusException
     {
         public string PropertyName { get; }
         public IObjectSchema ObjectSchema { get; }

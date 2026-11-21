@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 {
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class Evaluator
     {
         /// <summary> 

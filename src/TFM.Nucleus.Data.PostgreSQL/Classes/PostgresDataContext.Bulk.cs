@@ -118,7 +118,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
             await using var importer = await NpgsqlConnection.BeginBinaryImportAsync(
                 $"COPY {Quote(staging)} ({string.Join(", ", names)}) FROM STDIN (FORMAT BINARY)", token);
-            importer.Timeout = TimeSpan.FromSeconds(Config.BulkCopyTimeoutSeconds);
+            importer.Timeout = TimeSpan.FromSeconds(Config.BulkTimeoutSeconds);
             foreach (var row in rows)
             {
                 await importer.StartRowAsync(token);
@@ -144,7 +144,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         {
             var command = Command ?? throw new DataContextException("No active Command", DataContextErrorKind.CurrentCommandIsNull);
             command.Parameters.Clear();
-            command.CommandTimeout = Config.BulkCopyTimeoutSeconds;
+            command.CommandTimeout = Config.BulkTimeoutSeconds;
             command.CommandText = commandText;
             if (outputs.IsEmpty)
             {

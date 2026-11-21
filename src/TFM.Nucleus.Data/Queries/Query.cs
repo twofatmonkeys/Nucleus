@@ -17,7 +17,7 @@ namespace TFM.Nucleus.Data.Queries
     {
         public string? TableName;
         public Type? ObjectType;
-        public QueryType Type = QueryType.SELECT;
+        public QueryKind Type = QueryKind.Select;
         public int Take = 0;
         public int Skip = 0;
         public List<string> Columns = [];
@@ -29,7 +29,21 @@ namespace TFM.Nucleus.Data.Queries
         /// a select reads committed data. SQL Server only: PostgreSQL never reads uncommitted rows
         /// and ignores it.
         /// </summary>
+        /// <summary>The old name of <see cref="AllowDirtyRead"/>, and still where its value is kept.</summary>
+        [Obsolete("Use AllowDirtyRead, which says what the flag means rather than how one engine spells it.")]
         public bool WithNoLock = false;
+
+        /// <summary>
+        /// The read does not wait for writers and may see rows a transaction has not committed.
+        /// An engine whose readers never wait for writers ignores it.
+        /// </summary>
+        public bool AllowDirtyRead
+        {
+#pragma warning disable CS0618 // the obsolete field is the storage, so code compiled against it still works
+            get => WithNoLock;
+            set => WithNoLock = value;
+#pragma warning restore CS0618
+        }
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
         private readonly List<Query> _linkedQueries = [];
@@ -208,7 +222,7 @@ namespace TFM.Nucleus.Data.Queries
                     if (p is not null && !Constraints.Contains(p.Name))
                         throw new Exception($"Parameter {p.Name} is not a valid constraint for this query.");
 
-            if (whereCollection.ExpressionType != WhereCollection.Type.Empty)
+            if (whereCollection.ExpressionType != WhereCollection.NodeKind.Empty)
                 Where.And(whereCollection);
         }
         public void AddWhereOr(WhereCollection whereCollection)
@@ -218,7 +232,7 @@ namespace TFM.Nucleus.Data.Queries
                     if (p is not null && !Constraints.Contains(p.Name))
                         throw new Exception($"Parameter {p.Name} is not a valid constraint for this query.");
 
-            if (whereCollection.ExpressionType != WhereCollection.Type.Empty)
+            if (whereCollection.ExpressionType != WhereCollection.NodeKind.Empty)
                 Where.Or(whereCollection);
         }
         public void AddWhereOr(Parameter parameter)
@@ -372,7 +386,7 @@ namespace TFM.Nucleus.Data.Queries
 
     }
 
-    public class InvalidQueryException : Exception
+    public class InvalidQueryException : TFM.Nucleus.NucleusException
     {
         public InvalidQueryException()
         {
@@ -389,34 +403,37 @@ namespace TFM.Nucleus.Data.Queries
         }
     }
 
-    public enum QueryType
+    /// <summary>What a query does to its table.</summary>
+    public enum QueryKind
     {
-        SELECT = 0,
-        UPDATE = 1,
-        INSERT = 2,
-        DELETE = 3,
+        Select = 0,
+        Update = 1,
+        Insert = 2,
+        Delete = 3,
     }
-    public enum OrderByType
+
+    /// <summary>The direction one column of an order sorts in.</summary>
+    public enum SortDirection
     {
-        ASCENDING = 0,
-        DESCENDING = 1,
+        Ascending = 0,
+        Descending = 1,
     }
 
     /// <summary>One column of an order, by name and direction. Renderers write it.</summary>
     public class OrderBy
     {
-        public readonly OrderByType Type = OrderByType.ASCENDING;
+        public readonly SortDirection Type = SortDirection.Ascending;
         public readonly string Column;
         public bool IsEmpty { get => (Column == null || Column == string.Empty); }
-        public bool IsDescending => Type == OrderByType.DESCENDING;
+        public bool IsDescending => Type == SortDirection.Descending;
 
-        public OrderBy(System.Reflection.PropertyInfo property) : this(property, OrderByType.ASCENDING)
+        public OrderBy(System.Reflection.PropertyInfo property) : this(property, SortDirection.Ascending)
         { }
-        public OrderBy(System.Reflection.PropertyInfo property, OrderByType type) : this(property.Name, type)
+        public OrderBy(System.Reflection.PropertyInfo property, SortDirection type) : this(property.Name, type)
         { }
-        public OrderBy(string column) : this(column, OrderByType.ASCENDING)
+        public OrderBy(string column) : this(column, SortDirection.Ascending)
         { }
-        public OrderBy(string column, OrderByType type)
+        public OrderBy(string column, SortDirection type)
         {
             Column = column;
             Type = type;
@@ -436,9 +453,9 @@ namespace TFM.Nucleus.Data.Queries
 
         public void Add(OrderBy property) => _properties.Add(property);
         public void Add(string column) => _properties.Add(new OrderBy(column));
-        public void Add(string column, OrderByType type) => _properties.Add(new OrderBy(column, type));
+        public void Add(string column, SortDirection type) => _properties.Add(new OrderBy(column, type));
         public void Add(PropertyInfo propertyInfo) => _properties.Add(new OrderBy(propertyInfo));
-        public void Add(PropertyInfo propertyInfo, OrderByType type) => _properties.Add(new OrderBy(propertyInfo, type));
+        public void Add(PropertyInfo propertyInfo, SortDirection type) => _properties.Add(new OrderBy(propertyInfo, type));
 
         public IEnumerator<OrderBy> GetEnumerator() => _properties.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -457,27 +474,27 @@ namespace TFM.Nucleus.Data.Queries
         private Parameter? _parameter;
         private string[] _constraints = [];
 
-        public bool IsEmpty => ExpressionType == Type.Empty;
+        public bool IsEmpty => ExpressionType == NodeKind.Empty;
         public bool UseConstraints => _constraints.Length > 0;
 
-        public Type ExpressionType => (_andCollection.Count > 0, _orCollection.Count > 0) switch
+        public NodeKind ExpressionType => (_andCollection.Count > 0, _orCollection.Count > 0) switch
         {
-            _ when _parameter != null => Type.Parameter,
-            (true, false) => Type.And,
-            (false, true) => Type.Or,
-            (false, false) => Type.Empty,
+            _ when _parameter != null => NodeKind.Parameter,
+            (true, false) => NodeKind.And,
+            (false, true) => NodeKind.Or,
+            (false, false) => NodeKind.Empty,
             _ => throw new InvalidOperationException(
                 $"WhereCollection has both and-terms ({_andCollection.Count}) and or-terms ({_orCollection.Count})")
         };
 
-        /// <summary>The term of a <see cref="Type.Parameter"/> node; null otherwise.</summary>
+        /// <summary>The term of a <see cref="NodeKind.Parameter"/> node; null otherwise.</summary>
         public Parameter? Term => _parameter;
 
-        /// <summary>The operands of an <see cref="Type.And"/> or <see cref="Type.Or"/> node; empty otherwise.</summary>
+        /// <summary>The operands of an <see cref="NodeKind.And"/> or <see cref="NodeKind.Or"/> node; empty otherwise.</summary>
         public IReadOnlyList<WhereCollection> Terms => ExpressionType switch
         {
-            Type.And => _andCollection,
-            Type.Or => _orCollection,
+            NodeKind.And => _andCollection,
+            NodeKind.Or => _orCollection,
             _ => [],
         };
 
@@ -513,18 +530,18 @@ namespace TFM.Nucleus.Data.Queries
         {
             switch (ExpressionType)
             {
-                case Type.Empty:
+                case NodeKind.Empty:
                     _parameter = parameter;
                     break;
-                case Type.Parameter:
+                case NodeKind.Parameter:
                     _andCollection.Add(_parameter!);
                     _parameter = null;
                     _andCollection.Add(parameter);
                     break;
-                case Type.And:
+                case NodeKind.And:
                     _andCollection.Add(parameter);
                     break;
-                case Type.Or:
+                case NodeKind.Or:
                     WrapCurrentAs(isOr: true);
                     _andCollection.Add(parameter);
                     break;
@@ -535,11 +552,11 @@ namespace TFM.Nucleus.Data.Queries
         {
             switch (ExpressionType)
             {
-                case Type.Parameter:
+                case NodeKind.Parameter:
                     _andCollection.Add(_parameter!);
                     _parameter = null;
                     break;
-                case Type.Or:
+                case NodeKind.Or:
                     WrapCurrentAs(isOr: true);
                     break;
             }
@@ -550,19 +567,19 @@ namespace TFM.Nucleus.Data.Queries
         {
             switch (ExpressionType)
             {
-                case Type.Empty:
+                case NodeKind.Empty:
                     _parameter = parameter;
                     break;
-                case Type.Parameter:
+                case NodeKind.Parameter:
                     _orCollection.Add(_parameter!);
                     _parameter = null;
                     _orCollection.Add(parameter);
                     break;
-                case Type.And:
+                case NodeKind.And:
                     WrapCurrentAs(isOr: false);
                     _orCollection.Add(parameter);
                     break;
-                case Type.Or:
+                case NodeKind.Or:
                     _orCollection.Add(parameter);
                     break;
             }
@@ -572,11 +589,11 @@ namespace TFM.Nucleus.Data.Queries
         {
             switch (ExpressionType)
             {
-                case Type.Parameter:
+                case NodeKind.Parameter:
                     _orCollection.Add(_parameter!);
                     _parameter = null;
                     break;
-                case Type.And:
+                case NodeKind.And:
                     WrapCurrentAs(isOr: false);
                     break;
             }
@@ -585,19 +602,19 @@ namespace TFM.Nucleus.Data.Queries
 
         public ParameterCollection AllParameters() => ExpressionType switch
         {
-            Type.Parameter => (ParameterCollection?)_parameter ?? [],
-            Type.And => new(_andCollection.SelectMany(c => c.AllParameters())),
-            Type.Or => new(_orCollection.SelectMany(c => c.AllParameters())),
-            Type.Empty => [],
+            NodeKind.Parameter => (ParameterCollection?)_parameter ?? [],
+            NodeKind.And => new(_andCollection.SelectMany(c => c.AllParameters())),
+            NodeKind.Or => new(_orCollection.SelectMany(c => c.AllParameters())),
+            NodeKind.Empty => [],
             _ => throw new InvalidOperationException("Bad WhereParameter")
         };
 
         /// <summary>Diagnostic only, in C# notation; renderers write the dialect.</summary>
         public override string ToString() => ExpressionType switch
         {
-            Type.Parameter => _parameter!.ToString(),
-            Type.And => string.Join(" && ", _andCollection.Select(c => $"({c})")),
-            Type.Or => string.Join(" || ", _orCollection.Select(c => $"({c})")),
+            NodeKind.Parameter => _parameter!.ToString(),
+            NodeKind.And => string.Join(" && ", _andCollection.Select(c => $"({c})")),
+            NodeKind.Or => string.Join(" || ", _orCollection.Select(c => $"({c})")),
             _ => "",
         };
 
@@ -624,7 +641,8 @@ namespace TFM.Nucleus.Data.Queries
         public static implicit operator WhereCollection(Parameter v) => new(v);
         public static implicit operator WhereCollection(ParameterCollection v) => new(v);
 
-        public enum Type
+        /// <summary>What a node of a condition tree is: nothing, one term, or a group joined by AND or by OR.</summary>
+        public enum NodeKind
         {
             Empty = 99,
             Parameter = 0,

@@ -22,9 +22,6 @@ namespace TFM.Nucleus
         public int CacheRefreshInterval { get; }
         public bool IsDatabaseEnabled { get; }
 
-        /// <summary>The same as <see cref="HasNucleusChildCollections"/>.</summary>
-        [Obsolete("Use HasNucleusChildCollections.")]
-        public bool HasLinkedChildObjects { get; }
         public bool HasParentObject { get; }
         public IPropertySchema? ParentObjectProperty { get; }
         public bool HasLinkedObjects { get; }
@@ -65,22 +62,13 @@ namespace TFM.Nucleus
         //public ICoreObject? GetParentObject(object childObj);
         public IEnumerable<ICoreObject> GetLinkedObjects(ICoreObject obj);
 
-        /// <summary>The children held in the object's child collections, without loading any.</summary>
-        [Obsolete("Use ICoreObject.NucleusChildCollections.")]
-        public IEnumerable<ICoreObject> GetLinkedChildObjects(ICoreObject obj);
         //public IPropertySchema ParentIDProperty { get; }
         //public string ParentIDPropertyName { get; }
         public IPropertySchema[]? LinkedObjectProperties { get; }
 
-        /// <summary>The same as <see cref="NucleusChildCollectionProperties"/>.</summary>
-        [Obsolete("Use NucleusChildCollectionProperties.")]
-        public IPropertySchema[]? LinkedChildObjectProperties { get; }
         public IPropertySchema[]? NucleusChildCollectionProperties { get; }
         public IObjectSchema[]? LinkedObjectSchemas { get; }
 
-        /// <summary>The schemas of the child collections' types.</summary>
-        [Obsolete("Use NucleusChildCollectionProperties and each property's ChildSchema.")]
-        public IObjectSchema[]? LinkedChildObjectSchemas { get; }
         //public IPropertySchema[]? ChildObjectCollections { get; }
         //public IObjectSchema? ParentObjectSchema { get; }
 
@@ -89,6 +77,22 @@ namespace TFM.Nucleus
         public IPropertySchema[] AllDBColumns { get; }
         /// <summary>The child collection property holding <paramref name="type"/>; null when there is none.</summary>
         public IPropertySchema? TryGetChildCollectionProperty(Type type);
+
+        /// <summary>
+        /// The child collection property holding <paramref name="type"/>, in the shape a Try
+        /// method has: false, and null, when there is none.
+        /// </summary>
+        public bool TryGetChildCollectionProperty(Type type, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IPropertySchema? property)
+        {
+            property = TryGetChildCollectionProperty(type);
+            return property is not null;
+        }
+
+        /// <summary>
+        /// The <c>NucleusLinkedCollection</c> properties: <see cref="LinkedCollectionProperties"/>
+        /// under the name its child collection counterpart has.
+        /// </summary>
+        public IPropertySchema[] NucleusLinkedCollectionProperties => LinkedCollectionProperties;
 
         /// <summary>True when the type has <c>NucleusLinkedCollection</c> properties.</summary>
         public bool HasLinkedCollections => false;

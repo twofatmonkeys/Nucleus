@@ -12,7 +12,7 @@ namespace TFM.Nucleus.Data.Queries
         {
             if (!typeof(ICoreObject).IsAssignableFrom(objectType))
                 throw new Exception("Object type must implement ICoreObject");
-            Type = QueryType.SELECT;
+            Type = QueryKind.Select;
             ObjectType = objectType;
 
         }
@@ -21,7 +21,7 @@ namespace TFM.Nucleus.Data.Queries
         }
         public SelectQuery(IQueryRenderer renderer, string tablename, string[]? columnConstraints, Type objectType) : base(renderer)
         {
-            Type = QueryType.SELECT;
+            Type = QueryKind.Select;
             TableName = tablename;
             if (columnConstraints != null)
                 Constraints = columnConstraints;
@@ -44,7 +44,7 @@ namespace TFM.Nucleus.Data.Queries
         /// </param>
         public SelectQuery(IQueryRenderer renderer, IDataTableSchema tableSchema, Func<Type, IDataTableSchema?>? resolveTable = null) : base(renderer)
         {
-            Type = QueryType.SELECT;
+            Type = QueryKind.Select;
             TableName = tableSchema.TableName;
             Columns = [.. tableSchema.Columns.Select(c => c.ColumnName)];
             ObjectType = tableSchema.ObjectSchema.Type;
@@ -188,7 +188,7 @@ namespace TFM.Nucleus.Data.Queries
         /// <summary>Orders by a property, written as the column the property maps to.</summary>
         public void AddOrderBy(string propertyName, bool descending = false) =>
             OrderBy.Add(new OrderBy(TableSchema?.FindByPropertyName(propertyName)?.ColumnName ?? propertyName,
-                descending ? OrderByType.DESCENDING : OrderByType.ASCENDING));
+                descending ? SortDirection.Descending : SortDirection.Ascending));
 
         public bool ExcludeChildCollection(string propertyName) =>
             LinkedQueries.RemoveAll(q => q.ChildCollectionProperty == propertyName) > 0;

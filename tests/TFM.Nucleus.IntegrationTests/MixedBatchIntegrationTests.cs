@@ -14,7 +14,7 @@ namespace TFM.Nucleus.IntegrationTests
         {
             fixture.RequireSettings();
             using var schema = await fixture.SchemaLockAsync();
-            using var stack = await fixture.StartStackAsync(options => options.MaxParametersPerQuery = 60);
+            using var stack = await fixture.StartStackAsync(options => options.MaxParametersPerCommand = 60);
             var manager = stack.Manager;
             const int rows = 20;
             var prefix = $"mixed-{Guid.NewGuid():N}-";

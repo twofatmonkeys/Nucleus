@@ -102,7 +102,9 @@ namespace TFM.Nucleus.Tests
             var id = Guid.NewGuid();
             ds.FillNext([id, "Widget A", 5]);
 
+#pragma warning disable CS0618 // the obsolete bind is the subject of the test
             var widgets = ds.Bind<TestWidget>().ToList();
+#pragma warning restore CS0618
 
             var widget = Assert.Single(widgets);
             Assert.Equal("Widget A", widget.Name);
@@ -114,7 +116,9 @@ namespace TFM.Nucleus.Tests
         {
             using var ds = NewDataSet();
 
+#pragma warning disable CS0618 // the obsolete bind is the subject of the test
             Assert.Empty(ds.Bind<TestWidget>());
+#pragma warning restore CS0618
         }
     }
 }

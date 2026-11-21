@@ -51,11 +51,40 @@ namespace TFM.Nucleus.Data
 
 
         
+        /// <summary>Compares every table this provider stores with the database, changing nothing.</summary>
+        public DataProviderStatus CheckSchemaIsCurrent() =>
+#pragma warning disable CS0618 // a provider that predates this member has the check under the old signature
+            CheckSchemaIsCurrent(null);
+#pragma warning restore CS0618
+
+        /// <inheritdoc cref="CheckSchemaIsCurrent()"/>
+        public Task<DataProviderStatus> CheckSchemaIsCurrentAsync(CancellationToken cancellationToken = default) =>
+#pragma warning disable CS0618
+            CheckSchemaIsCurrentAsync((IEnumerable<IObjectSchema>?)null);
+#pragma warning restore CS0618
+
+        /// <summary>Creates and updates every table this provider stores to match its entity types.</summary>
+        public void UpdateSchema() =>
+#pragma warning disable CS0618
+            UpdateSchema([]);
+#pragma warning restore CS0618
+
+        /// <inheritdoc cref="UpdateSchema()"/>
+        public Task UpdateSchemaAsync(CancellationToken cancellationToken = default) =>
+#pragma warning disable CS0618
+            UpdateSchemaAsync(Array.Empty<IObjectSchema>());
+#pragma warning restore CS0618
+
+        [Obsolete("The argument is ignored: the provider checks or updates every table it stores. Use the overload without it.")]
         public DataProviderStatus CheckSchemaIsCurrent(IEnumerable<IObjectSchema>? objectSchemas);
+        [Obsolete("The argument is ignored: the provider checks or updates every table it stores. Use the overload without it.")]
         public Task<DataProviderStatus> CheckSchemaIsCurrentAsync(IEnumerable<IObjectSchema>? objectSchemas);
-        
+
+        [Obsolete("The argument is ignored: the provider checks or updates every table it stores. Use the overload without it.")]
         public void UpdateSchema(IEnumerable<IObjectSchema> objectSchemas);
+        [Obsolete("The argument is ignored: the provider checks or updates every table it stores. Use the overload without it.")]
         public Task UpdateSchemaAsync(IObjectSchema objectSchema);
+        [Obsolete("The argument is ignored: the provider checks or updates every table it stores. Use the overload without it.")]
         public Task UpdateSchemaAsync(IEnumerable<IObjectSchema> objectSchemas);
 
     }
@@ -72,6 +101,7 @@ namespace TFM.Nucleus.Data
         Unknown,
     }
 
+    [Obsolete("Used by nothing in Nucleus. A provider reports DataProviderStatus.")]
     public enum DataProviderConnectionStatus
     {
         NotConfigured,

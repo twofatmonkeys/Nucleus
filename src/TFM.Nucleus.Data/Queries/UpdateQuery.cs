@@ -11,13 +11,13 @@ namespace TFM.Nucleus.Data.Queries
     {
         public UpdateQuery(IQueryRenderer renderer, string tablename, string idColumn, Guid idValue) : base(renderer)
         {
-            Type = QueryType.UPDATE;
+            Type = QueryKind.Update;
             TableName = tablename;
             Where.And(idColumn, idValue);
         }
         public UpdateQuery(IQueryRenderer renderer, string tablename, string idColumn, object idValue) : base(renderer)
         {
-            Type = QueryType.UPDATE;
+            Type = QueryKind.Update;
             TableName = tablename;
             Where.And(idColumn, idValue);
         }
@@ -26,7 +26,7 @@ namespace TFM.Nucleus.Data.Queries
         {
             ArgumentNullException.ThrowIfNull(tableSchema, nameof(tableSchema));
             ArgumentNullException.ThrowIfNull(obj, nameof(obj));
-            Type = QueryType.UPDATE;
+            Type = QueryKind.Update;
             TableName = tableSchema.TableName;
             TableSchema = tableSchema;
             var idCol = tableSchema.IdentityColumn ?? throw new Exception("Table schema does not have an identity column defined");

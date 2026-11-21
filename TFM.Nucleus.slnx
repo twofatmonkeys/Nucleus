@@ -18,7 +18,9 @@
   <Folder Name="/docs/">
     <File Path="docs/code-review-findings.md" />
     <File Path="docs/conventions.md" />
+    <File Path="docs/contributing.md" />
     <File Path="docs/publishing.md" />
+    <File Path="docs/sample-domain.md" />
     <File Path="docs/versioning.md" />
   </Folder>
   <Project Path="src/TFM.Nucleus.Abstractions/TFM.Nucleus.Abstractions.csproj" />
@@ -28,8 +30,22 @@
   <Project Path="src/TFM.Nucleus.Data.PostgreSQL/TFM.Nucleus.Data.PostgreSQL.csproj" />
   <Project Path="src/TFM.Nucleus.Data.SQLite/TFM.Nucleus.Data.SQLite.csproj" />
   <Project Path="src/TFM.Nucleus.Testing/TFM.Nucleus.Testing.csproj" />
+  <Folder Name="/docs/guide/">
+    <File Path="docs/guide/behaviour-changes.md" />
+    <File Path="docs/guide/entities.md" />
+    <File Path="docs/guide/getting-started.md" />
+    <File Path="docs/guide/known-limits.md" />
+    <File Path="docs/guide/provider-authoring.md" />
+    <File Path="docs/guide/providers.md" />
+    <File Path="docs/guide/querying.md" />
+    <File Path="docs/guide/relationships.md" />
+    <File Path="docs/guide/saving.md" />
+    <File Path="docs/guide/schema.md" />
+    <File Path="docs/guide/testing.md" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TFM.Nucleus.Tests/TFM.Nucleus.Tests.csproj" />
     <Project Path="tests/TFM.Nucleus.IntegrationTests/TFM.Nucleus.IntegrationTests.csproj" />
+    <Project Path="tests/TFM.Nucleus.DocSamples/TFM.Nucleus.DocSamples.csproj" />
   </Folder>
 </Solution>

@@ -224,7 +224,7 @@ namespace TFM.Nucleus.IntegrationTests.Benchmarks
                 },
                 Run = () =>
                 {
-                    var queries = manager.DataProvider.CreateSaveQueries(orders);
+                    var queries = manager.Providers.AllProviders[0].CreateSaveQueries(orders);
                     Assert.NotEmpty(queries);
                     foreach (var query in queries)
                         Assert.False(string.IsNullOrEmpty(query.BuildQuery()));

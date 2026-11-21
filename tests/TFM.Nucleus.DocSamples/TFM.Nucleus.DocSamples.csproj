@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Every example in the documentation, as code that compiles and runs. The guide's code blocks
+       are copied from the #region blocks here, and DocSampleTests fails when one differs. No other
+       test project references this one: its entities would join every other stack's schema. -->
+
+  <PropertyGroup>
+    <RootNamespace>PortlyPrimate</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pinned per target framework like the shipping projects. The samples build a container
+         and bind a provider's options from configuration. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" Condition="'$(TargetFramework)' == 'net8.0'" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" Condition="'$(TargetFramework)' == 'net8.0'" />
+
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Abstractions\TFM.Nucleus.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus\TFM.Nucleus.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data\TFM.Nucleus.Data.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQL\TFM.Nucleus.Data.SQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.PostgreSQL\TFM.Nucleus.Data.PostgreSQL.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Data.SQLite\TFM.Nucleus.Data.SQLite.csproj" />
+    <ProjectReference Include="..\..\src\TFM.Nucleus.Testing\TFM.Nucleus.Testing.csproj" />
+  </ItemGroup>
+
+</Project>

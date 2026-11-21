@@ -53,7 +53,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
             var connection = _config.BuildConnection(useTransaction: false);
             try
             {
-                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, _config.ConnectRetryCount), PostgresErrors.IsTransient, token);
+                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, _config.ConnectAttempts), PostgresErrors.IsTransient, token);
                 connection.Notification += OnNotification;
                 await using var command = connection.CreateCommand();
                 command.CommandText = $"LISTEN {Quote(_channel)}";

@@ -191,7 +191,7 @@ namespace TFM.Nucleus.Tests
             var table = Growing();
             var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Without(table.TableName, "Key", "Extra"));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             var statement = Assert.Single(store.InTransaction);
             Assert.Equal(SqlServerSchemaDialect.AddColumnsSql(table, [table["Key"], table["Extra"]], []), statement);
@@ -204,7 +204,7 @@ namespace TFM.Nucleus.Tests
             var table = Growing();
             var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Without(table.TableName, SoftDelete.IsDeletedColumn, SoftDelete.DeletedAtColumn));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.Equal(SqlServerSchemaDialect.AddColumnsSql(table, [], [SoftDelete.IsDeletedColumn, SoftDelete.DeletedAtColumn]), Assert.Single(store.InTransaction));
         }
@@ -215,7 +215,7 @@ namespace TFM.Nucleus.Tests
             var table = Growing();
             var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Without(table.TableName, TableSchema.TimestampColumn));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.Equal(
                 [SqlServerSchemaDialect.AddColumnsSql(table, [table[TableSchema.TimestampColumn]], []), SqlServerSchemaDialect.BackfillTimestampSql(table.TableName)],
@@ -228,7 +228,7 @@ namespace TFM.Nucleus.Tests
             var table = Growing();
             var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Retyped(table.TableName, "Name", "int"));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.StartsWith("EXEC sp_rename 'tbl_TFM_Nucleus_Tests_TestGrowingWidget'", store.InTransaction[0], StringComparison.Ordinal);
             Assert.DoesNotContain(store.InTransaction, s => s.StartsWith("ALTER TABLE [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget] ADD [", StringComparison.Ordinal));
@@ -241,7 +241,7 @@ namespace TFM.Nucleus.Tests
             var table = Growing();
             var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Without(table.TableName, "Blob"));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.StartsWith("EXEC sp_rename ", store.InTransaction[0], StringComparison.Ordinal);
         }
@@ -275,7 +275,7 @@ namespace TFM.Nucleus.Tests
                 ColumnName = c.ColumnName,
                 IsUnique = c.Unique,
                 HasFilter = c.Unique,
-                IsDescending = c.IndexSortDescending,
+                IsDescending = c.IndexDescending,
             })];
             return new CatalogSnapshot([table.TableName], columns, indexes);
         }

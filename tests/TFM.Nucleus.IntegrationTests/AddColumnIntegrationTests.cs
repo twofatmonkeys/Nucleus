@@ -50,7 +50,7 @@ namespace TFM.Nucleus.IntegrationTests
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.Equal(tableId, await TableIdAsync(GrowingTable));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
 
                 var loaded = await stack.Manager.Get<IntGrowingItem>().Where(i => i.Name!.StartsWith("row-")).ToListAsync(Ct);
                 Assert.Equal(items.Select(i => i.ID).Order(), loaded.Select(i => i.ID).Order());
@@ -88,7 +88,7 @@ namespace TFM.Nucleus.IntegrationTests
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.Equal(tableId, await TableIdAsync(SoftTable));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
                 Assert.Equal(items.Count, (await stack.Manager.Get<IntGrowingSoftItem>().Where(i => i.Name!.StartsWith("soft-")).ToListAsync(Ct)).Count);
 
                 await stack.Manager.DeleteWhereAsync<IntGrowingSoftItem>(i => i.Name == "soft-0", Ct);
@@ -119,7 +119,7 @@ namespace TFM.Nucleus.IntegrationTests
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.NotEqual(tableId, await TableIdAsync(GrowingTable));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
 
                 var loaded = await stack.Manager.Get<IntGrowingItem>().Where(i => i.Name!.StartsWith("row-")).ToListAsync(Ct);
                 Assert.Equal(items.Select(i => (i.ID, i.Name, i.Key, i.Extra)).Order(), loaded.Select(i => (i.ID, i.Name, i.Key, i.Extra)).Order());

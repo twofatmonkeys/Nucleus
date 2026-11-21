@@ -154,7 +154,7 @@ namespace TFM.Nucleus.Data.SQL
             if (!col.HasColumnIndex)
                 throw new ArgumentException($"Column '{col.ColumnName}' does not carry a column index.", nameof(col));
             var name = IndexNaming.ColumnIndexName(table, col);
-            var sortOrder = col.IndexSortDescending ? "DESC" : "ASC";
+            var sortOrder = col.IndexDescending ? "DESC" : "ASC";
             if (col.Unique)
                 return $"CREATE UNIQUE NONCLUSTERED INDEX [{name}] ON [dbo].[{table.TableName}]" +
                        $"([{col.ColumnName}] {sortOrder}) WHERE [{col.ColumnName}] IS NOT NULL " + UniqueIndexOptions;

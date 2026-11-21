@@ -12,6 +12,7 @@ namespace TFM.Nucleus.Data
     /// data context both load through here, each with its own provider, so a lazy collection
     /// reads from the stack that loaded its parent rather than from the ambient runtime.
     /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class ChildCollectionLoader
     {
         /// <summary>

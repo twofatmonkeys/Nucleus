@@ -17,7 +17,7 @@
             fixture.RequireManager();
             using var schema = await fixture.SchemaLockAsync();
 
-            Assert.Equal(DataProviderStatus.Ok, await fixture.Provider!.CheckSchemaIsCurrentAsync(null));
+            Assert.Equal(DataProviderStatus.Ok, await fixture.Provider!.CheckSchemaIsCurrentAsync());
         }
 
         [Fact]
@@ -119,16 +119,16 @@
             var items = Enumerable.Range(0, rows).Select(i => new IntRenamedRow { Title = $"{prefix}-{i}", Code = $"{prefix}-c{i}", Count = i }).ToList();
             try
             {
-                await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                    await context.BulkSaveAsync(items, Ct);
+                await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                    await context.SaveAsync(items, Ct);
 
                 var saved = await manager.Get<IntRenamedRow>().Where(i => i.Title!.StartsWith(prefix)).ToListAsync(Ct);
                 Assert.Equal(rows, saved.Count);
                 Assert.All(saved, i => Assert.Equal($"{prefix}-c{i.Count}", i.Code));
 
                 saved.ForEach(i => i.Count += 1_000_000);
-                await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                    await context.BulkSaveAsync(saved, Ct);
+                await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                    await context.SaveAsync(saved, Ct);
 
                 var updated = await manager.Get<IntRenamedRow>().Where(i => i.Title!.StartsWith(prefix)).ToListAsync(Ct);
                 Assert.Equal(rows, updated.Count);

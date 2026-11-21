@@ -56,7 +56,7 @@ namespace TFM.Nucleus.Data.Queries
                 throw new NotSupportedException(throughOwner
                     ? $"Type {tableSchema.ObjectSchema.FullName} is not deletable through its owner; declare [Deletable] on it, its collection or its owner."
                     : $"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
-            Type = QueryType.DELETE;
+            Type = QueryKind.Delete;
             TableName = tableSchema.TableName;
             TableSchema = tableSchema;
             ObjectType = tableSchema.ObjectSchema.Type;

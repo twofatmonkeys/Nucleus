@@ -11,12 +11,12 @@ namespace TFM.Nucleus.Data
         CurrentDateTime = 0,
         /// <summary>The server's current date and time with its offset.</summary>
         CurrentDateTimeOffset = 1,
+        /// <summary>The server's current date and time in UTC.</summary>
         UtcNow = 2,
+        /// <summary>A new unique identifier made by the server.</summary>
         NewGuid = 3,
-        [Obsolete("Use CurrentDateTime.")]
-        SysDateTime = CurrentDateTime,
-        [Obsolete("Use CurrentDateTimeOffset.")]
-        SysDateTimeOffset = CurrentDateTimeOffset,
+        /// <summary>No server function: the value is bound, not computed by the server.</summary>
+        None = 99,
     }
 
     /// <summary>A server-evaluated value in a query term; carries only the token.</summary>

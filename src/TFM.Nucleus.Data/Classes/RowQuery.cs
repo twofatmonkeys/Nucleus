@@ -277,5 +277,9 @@ namespace TFM.Nucleus.Data
     }
 
     /// <summary>One page of a paged <see cref="RowQuery{T}"/>, with how many rows match in all.</summary>
-    public sealed record RowPage(IReadOnlyList<ResultRow> Rows, long TotalCount, int Skip, int Take);
+    public sealed record RowPage(IReadOnlyList<ResultRow> Rows, long TotalCount, int Skip, int Take)
+    {
+        /// <summary>True when rows remain after this page, as <c>PagedResult.HasMore</c> says for entities.</summary>
+        public bool HasMore => Skip + Rows.Count < TotalCount;
+    }
 }

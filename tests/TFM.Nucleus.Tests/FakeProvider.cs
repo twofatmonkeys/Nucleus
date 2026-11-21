@@ -200,7 +200,8 @@ namespace TFM.Nucleus.Tests
         public bool RolledBack { get; private set; }
 
         public bool HasTransaction => options.UseTransaction;
-        public bool HasDependency => options.UseDependency;
+        public bool WatchesForChanges => options.WatchForChanges;
+        public bool HasDependency => options.WatchForChanges;
         public bool HasChildren => false;
         public IDataContext? Parent => options.Parent;
 

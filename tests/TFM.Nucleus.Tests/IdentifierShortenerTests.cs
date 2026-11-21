@@ -19,13 +19,13 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void LongName_FitsTheLimit_KeepsItsStartAndEnd_AndIsStable()
         {
-            const string name = "NCI_tbl_TFM_Nucleus_Attribution_AttributionTouchRecord_SessionId"; // 64 bytes
+            const string name = "NCI_tbl_TFM_Nucleus_PortlyPrimate_PrimateGiftShopVisit_SessionId"; // 64 bytes
 
             var shortened = IdentifierShortener.Shorten(name, 63);
 
             Assert.Equal(63, Encoding.UTF8.GetByteCount(shortened));
-            Assert.StartsWith("NCI_tbl_TFM_Nucleus_Attributio_", shortened);
-            Assert.EndsWith("_onTouchRecord_SessionId", shortened);
+            Assert.StartsWith("NCI_tbl_TFM_Nucleus_PortlyPrim_", shortened);
+            Assert.EndsWith("_GiftShopVisit_SessionId", shortened);
             Assert.Equal(shortened, IdentifierShortener.Shorten(name, 63));
         }
 
@@ -66,7 +66,7 @@ namespace TFM.Nucleus.Tests
 namespace TFM.Nucleus.Tests
 {
     /// <summary>
-    /// A table whose generated names run past PostgreSQL's 63 bytes: the shape of a real touch
+    /// A table whose generated names run past PostgreSQL's 63 bytes: the shape of a visit
     /// table, with a unique id, two indexed lookup columns and text, under a long full name.
     /// </summary>
     [Deletable(DeleteBehavior.Hard)]
@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn(Indexed = true)]
         public DateTimeOffset Touched { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, 64)]
+        [DatabaseColumn(ColumnDataType.Unicode, 64)]
         public string? Source { get => GetValue<string>(); set => SetValue(value); }
     }
 }

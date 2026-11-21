@@ -21,11 +21,11 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
 
     /// <inheritdoc />
     public override void AddProvider(IServiceCollection services, Action<RelationalProviderOptions> configure) =>
-        services.AddNucleusSQLDataProvider(options => UseTestDatabase(options, configure));
+        services.AddNucleusSqlServerDataProvider(options => UseTestDatabase(options, configure));
 
     /// <inheritdoc />
     public override void AddRootedProvider(IServiceCollection services, Type rootType, Action<RelationalProviderOptions> configure) =>
-        services.AddNucleusSQLDataProvider(rootType, options => UseTestDatabase(options, configure));
+        services.AddNucleusSqlServerDataProvider(rootType, options => UseTestDatabase(options, configure));
 
     /// <summary>A stack with its SQL Server settings changed by <paramref name="configure"/>.</summary>
     public Task<NucleusTestStack> StartStackAsync(Action<SQLConfiguration> configure)

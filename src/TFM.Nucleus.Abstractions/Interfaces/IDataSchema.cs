@@ -10,9 +10,9 @@ namespace TFM.Nucleus.Data
     {
         public IEnumerable<IDataTableSchema> GetTables();
         public bool IsCompatible(IEnumerable<IObjectSchema> objSchemas);
-        public EDataSchemaStatus Initialize();
-        public Task<EDataSchemaStatus> InitializeAsync(CancellationToken? cancellationToken);
-        public EDataSchemaStatus Status { get; }
+        public DataSchemaStatus Initialize();
+        public Task<DataSchemaStatus> InitializeAsync(CancellationToken? cancellationToken);
+        public DataSchemaStatus Status { get; }
         public IDataTableSchema? GetTableSchema<T>();
         public IDataTableSchema? GetTableSchema(Type objectType);
     }
@@ -45,7 +45,7 @@ namespace TFM.Nucleus.Data
 
     }
 
-    public enum EDataSchemaStatus
+    public enum DataSchemaStatus
     {
         Ok,
         Error,

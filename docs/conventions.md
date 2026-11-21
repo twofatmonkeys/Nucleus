@@ -16,9 +16,19 @@
 | Options section | `TFM:<Area>`. | `"TFM:Widgets"` |
 | Exception type | Area plus `Exception`. | `WidgetException` |
 
-Older repos are named inconsistently (`TFM Oidc .NET`, `TFM Google Tracking`). New ones use the
+Older repos are named inconsistently (spaces, a `.NET` suffix). New ones use the
 package id and nothing else, so the folder, the repo, the solution, the assembly and the package all
 read the same.
+
+### Spellings that are fixed
+
+Two abbreviations are spelled one way in member names, and new members follow them:
+
+- Identity is `ID`: `LoadByID`, `ParentIDPropertyName`.
+- Database is `DB`: `IsDBColumn`, `OnAfterLoadFromDB`.
+
+A few older members spell them otherwise (`TryGetById`, `DbDataContext`, `DatabaseColumnAttribute`).
+They stay as they are, and nothing is given a second name to match.
 
 ### Folders inside a project
 
@@ -78,12 +88,11 @@ If you find yourself copying a property between two csproj files, it belongs one
 
 A single 8.0 reference used for both would work, but it forces a net10.0 consumer to carry the older
 assemblies for no reason. Test projects multi-target too, so both builds are actually exercised
-rather than only compiled. The release workflow reads `TargetFrameworks` off the project and installs
+rather than only compiled. The release workflow reads `TargetFrameworks` from every project under `src` and `tests` and installs
 the matching runtimes, so changing this list needs no workflow edit.
 
 For an ASP.NET Core only package, drop the `Microsoft.Extensions.*` references and use
-`<FrameworkReference Include="Microsoft.AspNetCore.App" />` instead, which is what
-`TFM.GoogleTracking` and `TFM.Paperwork` do.
+`<FrameworkReference Include="Microsoft.AspNetCore.App" />` instead.
 
 ## Testing
 

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus.Data
 {
-    public enum DataType
+    public enum ColumnDataType
     {
         NotSpecified,
         Unicode,

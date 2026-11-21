@@ -114,14 +114,13 @@ namespace TFM.Nucleus
         public readonly bool SuppressLogging;
         public readonly bool AbbreviatedLogging;
         public readonly bool LinkWhenLogging;
+        [Obsolete("Set for a [ParentObject] property and read by nothing.")]
         public bool SkipOnDbRead => _skipOnDbRead;
         private readonly bool _skipOnDbRead = false;
 
 
         public readonly bool IsLinkedObject;
         public readonly bool ForceLinkedSave = false;
-        [Obsolete("[LinkedChildCollection] has no effect. A child collection is a NucleusChildCollection property; test ChildType.")]
-        public readonly bool IsLinkedChildCollection;
 
         /// <summary>The [Deletable] declared on the property itself, if any. Only a child collection may carry one.</summary>
         public DeletableAttribute? DeleteDeclaration { get; }
@@ -147,25 +146,22 @@ namespace TFM.Nucleus
 
         private bool IsChildCollection => _isChildCollection;
         private readonly bool _isChildCollection;
+        [Obsolete("Created the v1 child collection of a [LinkedChildCollection] property, which no longer exists. It is never set.")]
         public readonly Func<T?, TPropertyType?>? PropertyCreator;
         public readonly Type? ChildType;
         public readonly bool IsParentObject;
         public readonly string? ParentIDPropertyName;
         public readonly Type Type;
         //public readonly bool Mandatory;
-        //public readonly eServerFunction SetValueOverride;
+        //public readonly ServerFunctionKind SetValueOverride;
         //public readonly bool ReturnOutputToProperty;
 
         public string Name => PropertyInfo.Name;
 
         public bool IsFullTextSearch => DBColumnAttribute?.FullTextSearch ?? false;
-        [Obsolete("Use IsFullTextSearch.")]
-        public bool HasFullTextIndex => IsFullTextSearch;
         public bool IsDBColumn => DBColumnAttribute != null;
-        public bool IsOverridden => IsDBColumn && DBColumnAttribute?.SetValueOverride != eServerFunction.NULL;
+        public bool IsOverridden => IsDBColumn && DBColumnAttribute?.SetValueOverride != ServerFunctionKind.None;
         public bool IsIndexed => DBColumnAttribute?.Indexed ?? false;
-        [Obsolete("Use IsIndexed.")]
-        public bool IsNonClusteredIndex => IsIndexed;
         public bool IsUnique => DBColumnAttribute?.Unique ?? false;
         //public bool ForceTimestamp => DBColumnAttribute?.ForceTimestamp ?? false;
         public IObjectSchema? ChildSchema =>
@@ -246,9 +242,6 @@ namespace TFM.Nucleus
         bool IPropertySchema.LinkWhenLogging => LinkWhenLogging;
         bool IPropertySchema.IsLinkedObject => IsLinkedObject;
         bool IPropertySchema.ForceLinkedSave => ForceLinkedSave;
-#pragma warning disable CS0618 // the obsolete flag is still reported as it is
-        bool IPropertySchema.IsLinkedChildCollection => IsLinkedChildCollection;
-#pragma warning restore CS0618
         DeletableAttribute? IPropertySchema.DeleteDeclaration => DeleteDeclaration;
         bool IPropertySchema.DeletesRemovedChildren => DeletesRemovedChildren;
         bool IPropertySchema.IsLazyChildCollection => IsLazyChildCollection;
@@ -268,10 +261,9 @@ namespace TFM.Nucleus
                 : null;
 
         object? IPropertySchema.Create(object? thisObj) =>
-            PropertyCreator is not null
-                ? PropertyCreator((T?)thisObj)
-                : throw new PropertySchemaException(
-                    "Create is only supported for [LinkedChildCollection] properties.", Name, Type);
+            throw new PropertySchemaException(
+                "Create made the v1 child collection of a [LinkedChildCollection] property, which no longer exists. " +
+                "A child collection is a NucleusChildCollection property and makes itself.", Name, Type);
 
         /// <summary>
         /// Writes an untyped value through the property's setter. A null for a non-nullable value
@@ -335,44 +327,20 @@ namespace TFM.Nucleus
             Type = pInfo.PropertyType;
             _ObjectSchema = objSchema;
             PropertyInfo = pInfo;
-            RetrieveOnDemand = Attribute.IsDefined(PropertyInfo, typeof(RetrieveOnDemand));
+            RetrieveOnDemand = Attribute.IsDefined(PropertyInfo, typeof(RetrieveOnDemandAttribute));
             if (Attribute.IsDefined(PropertyInfo, typeof(DatabaseColumnAttribute)))
                 DBColumnAttribute = (DatabaseColumnAttribute?)pInfo.GetCustomAttribute(typeof(DatabaseColumnAttribute));
-            IsLinkedObject = Attribute.IsDefined(PropertyInfo, typeof(LinkedObject));
+            IsLinkedObject = Attribute.IsDefined(PropertyInfo, typeof(LinkedObjectAttribute));
             if (IsLinkedObject)
-                ForceLinkedSave = ((LinkedObject?)pInfo.GetCustomAttribute(typeof(LinkedObject)))?.ForceSave ?? false;
-#pragma warning disable CS0618 // the obsolete attribute keeps its v1 property creator until it is removed
-            IsLinkedChildCollection = Attribute.IsDefined(PropertyInfo, typeof(LinkedChildCollection));
-#pragma warning restore CS0618
-            SuppressLogging = Attribute.IsDefined(PropertyInfo, typeof(SuppressLogging));
-            AbbreviatedLogging = Attribute.IsDefined(PropertyInfo, typeof(AbbreviatedLogging));
-            LinkWhenLogging = Attribute.IsDefined(PropertyInfo, typeof(LinkWhenLogging));
+                ForceLinkedSave = ((LinkedObjectAttribute?)pInfo.GetCustomAttribute(typeof(LinkedObjectAttribute)))?.ForceSave ?? false;
+            SuppressLogging = Attribute.IsDefined(PropertyInfo, typeof(SuppressLoggingAttribute));
+            AbbreviatedLogging = Attribute.IsDefined(PropertyInfo, typeof(AbbreviatedLoggingAttribute));
+            LinkWhenLogging = Attribute.IsDefined(PropertyInfo, typeof(LinkWhenLoggingAttribute));
             var childInterface = Type.GetInterfaces()
                 .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(INucleusChildCollection<,>));
             _isChildCollection = childInterface is not null;
             if (childInterface is not null)
                 ChildType = childInterface.GetGenericArguments()[0];
-#pragma warning disable CS0618
-            else if (IsLinkedChildCollection)
-#pragma warning restore CS0618
-            {
-                ChildType = pInfo.PropertyType.GetGenericArguments()[0];
-                var meth = new DynamicMethod(string.Empty, typeof(TPropertyType), new Type[] { typeof(T) });
-                var il = meth.GetILGenerator();
-                LocalBuilder loc_Property = il.DeclareLocal(typeof(TPropertyType));
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Newobj, typeof(TPropertyType).GetConstructor([typeof(T)]) ?? throw new NullReferenceException());
-                il.Emit(OpCodes.Stloc, loc_Property);
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldfld, typeof(T).BaseType?.GetField("_properties", BindingFlags.NonPublic | BindingFlags.Instance) ?? throw new NullReferenceException());
-                il.Emit(OpCodes.Ldstr, Name);
-                il.Emit(OpCodes.Ldloc, loc_Property);
-                il.Emit(OpCodes.Box, typeof(TPropertyType));
-                il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, object>).GetMethod("set_Item") ?? throw new NullReferenceException());
-                il.Emit(OpCodes.Ldloc, loc_Property);
-                il.Emit(OpCodes.Ret);
-                PropertyCreator = (Func<T?, TPropertyType>)meth.CreateDelegate(typeof(Func<T?, TPropertyType>));
-            }
             DeleteDeclaration = (DeletableAttribute?)Attribute.GetCustomAttribute(PropertyInfo, typeof(DeletableAttribute));
             if (DeleteDeclaration is not null && !_isChildCollection)
                 throw new PropertySchemaException(
@@ -398,10 +366,10 @@ namespace TFM.Nucleus
                 if (DBColumnAttribute is not null)
                     throw new PropertySchemaException("A NucleusLinkedCollection property is not a column; remove [DatabaseColumn].", Name, Type);
             }
-            IsParentObject = Attribute.IsDefined(PropertyInfo, typeof(ParentObject));
+            IsParentObject = Attribute.IsDefined(PropertyInfo, typeof(ParentObjectAttribute));
             if (IsParentObject)
             {
-                ParentIDPropertyName = ((ParentObject?)pInfo.GetCustomAttribute(typeof(ParentObject)))?.ParentIDProperty ?? $"{pInfo.Name}ID";
+                ParentIDPropertyName = ((ParentObjectAttribute?)pInfo.GetCustomAttribute(typeof(ParentObjectAttribute)))?.ParentIDProperty ?? $"{pInfo.Name}ID";
                 _skipOnDbRead = true;
             }
 
@@ -429,12 +397,6 @@ namespace TFM.Nucleus
                 throw new PropertySchemaException("[LinkWhenLogging] requires a property whose type implements ICoreObject.", Name, Type);
             if (IsLinkedObject && IsParentObject)
                 throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedObject].", Name, Type);
-#pragma warning disable CS0618
-            if (IsLinkedObject && IsLinkedChildCollection)
-                throw new PropertySchemaException("A property cannot be both [LinkedObject] and [LinkedChildCollection].", Name, Type);
-            if (IsLinkedChildCollection && IsParentObject)
-                throw new PropertySchemaException("A property cannot be both [ParentObject] and [LinkedChildCollection].", Name, Type);
-#pragma warning restore CS0618
         }
         //public void SetDelegateValue<TDeclaring,Tthis>(TDeclaring obj, Tthis value)
         //{
@@ -466,7 +428,7 @@ namespace TFM.Nucleus
 
     }
 
-    public class PropertySchemaException : Exception
+    public class PropertySchemaException : TFM.Nucleus.NucleusException
     {
         public Type? Type { get; }
         public string? PropertyName { get; }

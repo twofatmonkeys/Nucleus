@@ -355,7 +355,7 @@ namespace TFM.Nucleus.Tests
             var old = OldTable(table, "tbl_OlderNamingWidget", "Quantity");
             var store = new RecordingSchemaStore(old, typeof(TestLegacyWidget)) { ColumnsInTransaction = RenamedFrom(old) };
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             var adopt = SqlDialect.AdoptTable("tbl_OlderNamingWidget", table).Select(s => s.Text).ToList();
             Assert.Equal([.. adopt, SqlServerSchemaDialect.AddColumnsSql(table, [table["Quantity"]], [])], store.InTransaction);
@@ -375,7 +375,7 @@ namespace TFM.Nucleus.Tests
                 ColumnsInTransaction = RenamedFrom(old),
             };
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.Equal(SqlDialect.AdoptTable("tbl_TFM_Nucleus_Tests_TestNamingWidget", table).Select(s => s.Text), store.InTransaction);
             Assert.StartsWith("EXEC sp_rename 'tbl_TFM_Nucleus_Tests_TestNamingWidget', 'tbl_TestNamingWidget'", store.InTransaction[0], StringComparison.Ordinal);
@@ -390,7 +390,7 @@ namespace TFM.Nucleus.Tests
                 TableNaming = TableNamingPolicy.ObjectName(1),
             };
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.StartsWith("CREATE TABLE [dbo].[tbl_TestNamingWidget]", store.InTransaction[0], StringComparison.Ordinal);
             Assert.DoesNotContain(store.InTransaction, s => s.Contains("sp_rename", StringComparison.Ordinal));
@@ -403,7 +403,7 @@ namespace TFM.Nucleus.Tests
             var store = new RecordingSchemaStore(
                 Merge(OldTable(table, "tbl_OldNamingWidget"), OldTable(table, "tbl_OlderNamingWidget")), typeof(TestLegacyWidget));
 
-            Assert.Equal(EDataSchemaStatus.Error, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Error, store.Manager().Initialize());
 
             Assert.Empty(store.InTransaction);
             Assert.Empty(store.OutsideTransaction);
@@ -418,7 +418,7 @@ namespace TFM.Nucleus.Tests
             var table = Table<TestLegacyWidget>();
             var store = new RecordingSchemaStore(Merge(SchemaCatalog.Current("sqlserver", table), OldTable(table, "tbl_OldNamingWidget")), typeof(TestLegacyWidget));
 
-            Assert.Equal(EDataSchemaStatus.Ok, store.Manager().Initialize());
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
 
             Assert.Empty(store.InTransaction);
             Assert.Contains(store.Logged, l => l.Level == LogLevel.Warning && l.Message.Contains("old table tbl_OldNamingWidget is left as it is"));

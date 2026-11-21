@@ -26,8 +26,36 @@ namespace TFM.Nucleus.Data.PostgreSQL
         /// </summary>
         public string? SslMode { get; set; }
 
-        /// <summary>How many times opening a connection is attempted when the failure is transient.</summary>
-        public int ConnectRetryCount { get; set; } = 3;
+        /// <summary>
+        /// How many times opening a connection is attempted when the failure is transient, the
+        /// first attempt included. 1 or less means one attempt and no retry.
+        /// </summary>
+        public int ConnectAttempts { get; set; } = 3;
+
+        /// <summary>The old name of <see cref="ConnectAttempts"/>. It always counted attempts, not retries.</summary>
+        [Obsolete("Use ConnectAttempts. The value counts attempts, the first included, not retries.")]
+        public int ConnectRetryCount
+        {
+            get => ConnectAttempts;
+            set => ConnectAttempts = value;
+        }
+
+        private int _connectTimeoutSeconds = 15;
+
+        /// <summary>
+        /// Seconds to wait for a connection to open before failing, 15 by default. 0 waits
+        /// indefinitely. Ignored when <see cref="RelationalProviderOptions.ConnectionString"/> is
+        /// set, which carries its own.
+        /// </summary>
+        public int ConnectTimeoutSeconds
+        {
+            get => _connectTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _connectTimeoutSeconds = value;
+            }
+        }
 
         /// <summary>The database every server has, used to find and create the configured one.</summary>
         internal const string MaintenanceDatabase = "postgres";
@@ -40,7 +68,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         internal string BuildConnectionString(string? database, bool useTransaction)
         {
             var builder = ConnectionString != null ? new NpgsqlConnectionStringBuilder(ConnectionString) : NewBuilder();
-            builder.Database = database ?? throw new Exception("PostgreSQL database name is missing");
+            builder.Database = database ?? throw new PostgresDataProviderException("PostgreSQL database name is missing", DataProviderErrorKind.NotConfigured);
             if (!useTransaction)
                 builder.Enlist = false;
             return builder.ConnectionString;
@@ -48,7 +76,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         private NpgsqlConnectionStringBuilder NewBuilder()
         {
-            var server = Server ?? throw new Exception("PostgreSQL server name is missing");
+            var server = Server ?? throw new PostgresDataProviderException("PostgreSQL server name is missing", DataProviderErrorKind.NotConfigured);
             var port = Port;
             if (server.Contains(':'))
             {
@@ -59,11 +87,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
             {
                 Host = server,
                 Port = port,
-                Username = Username ?? throw new Exception("PostgreSQL user name is missing"),
-                Password = Password ?? throw new Exception("PostgreSQL password is missing"),
-                ApplicationName = AppName ?? throw new Exception("PostgreSQL application name is missing"),
+                Username = Username ?? throw new PostgresDataProviderException("PostgreSQL user name is missing", DataProviderErrorKind.NotConfigured),
+                Password = Password ?? throw new PostgresDataProviderException("PostgreSQL password is missing", DataProviderErrorKind.NotConfigured),
+                ApplicationName = AppName ?? throw new PostgresDataProviderException("PostgreSQL application name is missing", DataProviderErrorKind.NotConfigured),
                 MaxPoolSize = MaxConnectionPoolSize,
-                Timeout = 15,
+                Timeout = ConnectTimeoutSeconds,
                 KeepAlive = 30,
             };
             if (SslMode != null)

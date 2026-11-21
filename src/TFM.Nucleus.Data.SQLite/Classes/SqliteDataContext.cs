@@ -17,7 +17,7 @@ namespace TFM.Nucleus.Data.SQLite
     /// commands one after another on this context's own transaction; there is no bulk engine, and
     /// none is needed in-process. A transaction begins IMMEDIATE (the driver's default), taking
     /// the write lock at once, so two writers wait for each other rather than deadlock.
-    /// ContextOptions.UseDependency has no meaning here: SQLite has no change notifications.
+    /// ContextOptions.WatchForChanges has no meaning here: SQLite has no change notifications.
     /// </summary>
     internal sealed class SqliteDataContext : DbDataContext<SqliteDataContext>
     {
@@ -48,7 +48,7 @@ namespace TFM.Nucleus.Data.SQLite
 
         /// <summary>Never used: <see cref="AllowsConcurrentWriters"/> keeps oversized writes on this context.</summary>
         protected override Task<SqliteDataContext> CreateChildContextAsync(CancellationToken token) =>
-            CreateAsync(_sqliteProvider, this, HasTransaction, HasDependency, token);
+            CreateAsync(_sqliteProvider, this, HasTransaction, WatchesForChanges, token);
 
         protected override bool AllowsConcurrentWriters => false;
 

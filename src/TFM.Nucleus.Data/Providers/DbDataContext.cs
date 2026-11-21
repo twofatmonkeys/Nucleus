@@ -58,6 +58,10 @@ namespace TFM.Nucleus.Data.Providers
         protected DbCommand? Command => _command;
 
         public bool HasTransaction => _useTransaction;
+        public bool WatchesForChanges => _useDependency;
+
+        /// <summary>The old name of <see cref="WatchesForChanges"/>.</summary>
+        [Obsolete("Use WatchesForChanges.")]
         public bool HasDependency => _useDependency;
         private bool HasChildren => !_childContexts.IsEmpty;
         public int ConnectionsAvailable => Options.MaxConnectionPoolSize - _contextCache.Values.Count(x => !x._disposed);
@@ -176,6 +180,10 @@ namespace TFM.Nucleus.Data.Providers
         protected Task OpenAsync(TSelf? parent, bool useTransaction, bool useDependency, CancellationToken token) =>
             OpenCore(parent, useTransaction, useDependency, async: true, token).AsTask();
 
+        private DataContextException PoolExhausted(string detail) =>
+            new($"No context is free: all {Options.MaxConnectionPoolSize} (MaxConnectionPoolSize) are open, {detail}. " +
+                "Dispose contexts sooner or raise the limit.", DataContextErrorKind.PoolExhausted);
+
         private async ValueTask OpenCore(TSelf? parent, bool useTransaction, bool useDependency, bool async, CancellationToken token)
         {
             if (_isInitialized)
@@ -186,13 +194,13 @@ namespace TFM.Nucleus.Data.Providers
                 var sw = Stopwatch.StartNew();
                 while (ConnectionsAvailable < 1)
                 {
-                    await Task.Delay(100);
-                    if (sw.ElapsedMilliseconds > Options.CommandTimeoutSeconds * 1000)
-                        throw new Exception("Connection Pool size exceeded");
+                    if (sw.ElapsedMilliseconds >= Options.PoolWaitTimeoutSeconds * 1000L)
+                        throw PoolExhausted($"after waiting {Options.PoolWaitTimeoutSeconds} s (PoolWaitTimeoutSeconds)");
+                    await Task.Delay(100, token);
                 }
             }
             else if (ConnectionsAvailable < 1)
-                throw new Exception("Connection Pool size exceeded");
+                throw PoolExhausted("and the synchronous path does not wait");
             Debug.WriteLine($"Data Context Info: {ConnectionsAvailable} connections currently available from {_contextCache.Count} total in cache"
                 , "Database");
             if (parent != null && parent.GetType() != GetType())
@@ -251,6 +259,7 @@ namespace TFM.Nucleus.Data.Providers
 
         #region IDataContext Implementation
         bool IDataContext.HasTransaction => HasTransaction;
+        bool IDataContext.WatchesForChanges => _useDependency;
         bool IDataContext.HasDependency => _useDependency;
         bool IDataContext.HasChildren => HasChildren;
         IDataContext? IDataContext.Parent => _parent;
@@ -309,10 +318,10 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         /// <summary>
-        /// What a bulk save of the objects runs, each type's inserts and updates as separate
-        /// chains. Every object is validated first.
+        /// What a save of a batch of objects of any types runs, each type's inserts and updates as
+        /// separate chains. Every object is validated first.
         /// </summary>
-        private List<Query> BuildBulkSaveQueries(IEnumerable<ICoreObject?>? objects)
+        private List<Query> BuildBatchSaveQueries(IEnumerable<ICoreObject?>? objects)
         {
             var list = objects as IList<ICoreObject?> ?? objects?.ToList();
             SaveChecks.Run(list);
@@ -350,19 +359,26 @@ namespace TFM.Nucleus.Data.Providers
         Task IDataContext.TryRollbackAsync() { TryRollback(); return Task.CompletedTask; }
         Task IDataContext.TryRollbackAsync(CancellationToken token) { TryRollback(); return Task.CompletedTask; }
 
-        void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects)
+        void IDataContext.Save(IEnumerable<ICoreObject?> objs) => SaveBatch(objs);
+        Task IDataContext.SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken) => SaveBatchAsync(objs, cancellationToken);
+
+        // The obsolete names of the batch save. They always ran the same statements a save runs;
+        // which engine writes them was never the caller's choice.
+        void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects) => SaveBatch(objects);
+        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => SaveBatchAsync(objects, CancellationToken.None);
+        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => SaveBatchAsync(objects, token);
+
+        private void SaveBatch(IEnumerable<ICoreObject?>? objects)
         {
-            foreach (var query in BuildBulkSaveQueries(objects))
+            foreach (var query in BuildBatchSaveQueries(objects))
                 ExecuteSQL(query);
         }
-        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => BulkSaveAsync(objects, CancellationToken.None);
-        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => BulkSaveAsync(objects, token);
 
-        private async Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
+        private async Task SaveBatchAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
         {
             // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine. Each
             // type's inserts and updates are separate chains, which is the shape it batches by.
-            foreach (var query in BuildBulkSaveQueries(objects))
+            foreach (var query in BuildBatchSaveQueries(objects))
                 await ExecuteSQLAsync(query, token);
         }
 
@@ -817,9 +833,9 @@ namespace TFM.Nucleus.Data.Providers
         {
             var parameters = chunk.Parameters;
             var count = ParameterBinding.Bind(parameters).Count();
-            if (count > Options.MaxParametersPerQuery)
+            if (count > Options.MaxParametersPerCommand)
                 throw new InvalidQueryException(
-                    $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerQuery}. Narrow the predicate.");
+                    $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerCommand}. Narrow the predicate.");
             return parameters;
         }
 
@@ -837,7 +853,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             try
             {
-                foreach (var qry in query.Split(Options.MaxParametersPerQuery))
+                foreach (var qry in query.Split(Options.MaxParametersPerCommand))
                     ExecuteWriteAsync(qry, async: false, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception ex)
@@ -868,17 +884,17 @@ namespace TFM.Nucleus.Data.Providers
                 {
                     // Bulk path: single connection, single transaction, no parameter limit.
                     // Must check BEFORE NeedsSplitting which mutates LinkedQueries.
-                    if (queriesByType.GetParameterCount() > Options.MaxParametersPerQuery && CanUseBulkPath(queriesByType))
+                    if (queriesByType.GetParameterCount() > Options.MaxParametersPerCommand && CanUseBulkPath(queriesByType))
                     {
                         await ExecuteBulkAsync(queriesByType, token);
                     }
-                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerQuery)
+                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerCommand)
                     {
                         // One writer at a time: the parts run in order on this context's connection.
-                        foreach (var part in queriesByType.Split(Options.MaxParametersPerQuery))
+                        foreach (var part in queriesByType.Split(Options.MaxParametersPerCommand))
                             await ExecuteWriteAsync(part, async: true, token);
                     }
-                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerQuery, out var queries))
+                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerCommand, out var queries))
                     {
                         // Fallback parallel path for queries without schema
                         await Parallel.ForEachAsync(queries!,
@@ -961,7 +977,7 @@ namespace TFM.Nucleus.Data.Providers
     }
 
     /// <summary>A failure of a data context itself, as opposed to the database.</summary>
-    public class DataContextException : Exception
+    public class DataContextException : TFM.Nucleus.NucleusException
     {
         public DataContextErrorKind Kind { get; }
 
@@ -979,6 +995,8 @@ namespace TFM.Nucleus.Data.Providers
         InvalidIQueryType = 30,
         /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
         MissingResultSet = 40,
+        /// <summary>Every context the provider allows at once was open, and none came free in time.</summary>
+        PoolExhausted = 50,
         Unspecified = 99,
     }
 

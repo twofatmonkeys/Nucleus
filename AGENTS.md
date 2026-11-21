@@ -106,10 +106,18 @@ place at its next start.
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
 `IObjectDataManager`, so it carries every operation a store needs (writes with tokens, deletes,
-`CreateContextAsync<T>` and `SubscribeToChangesAsync<T>` routed by type) and reads go through
-`Get<T>()` and `Rows<T>()`. A member added to it gets a default body that throws
-`NotSupportedException`, so another implementation still compiles. `DataProvider` on it is
-obsolete: it is the unrooted default provider and misroutes a rooted type. `ObjectDataAdaptor<T>`
+`CreateContextAsync<T>` and `SubscribeToChangesAsync<T>` routed by type). Reads are its loads
+(`LoadByIDAsync`, `LoadAsync`, `LoadPagedAsync`, `LoadStreamAsync`, each taking a typed predicate
+and a `LoadOptions`: names to exclude, names to include, and whether soft-deleted rows are seen),
+`Get<T>()` and `Rows<T>()`. Every public load forwards to one private core per shape
+(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`), which
+the adaptor calls too. A member added to an interface gets a default body, so another
+implementation still compiles: it forwards to an older member where one does the same work
+(`IDataContext.Save(IEnumerable)` to `BulkSave`), and throws `NotSupportedException` otherwise.
+`DataProvider` and `DataProviderStatus` on it are obsolete: they are the unrooted default provider
+and its status, and misroute a rooted type; `Status` is the worst status across providers. A load
+that takes an untyped `Expression` accepts a predicate whole or as its body
+(`ExpressionParser.Normalize` unwraps a lambda). `ObjectDataAdaptor<T>`
 is a real LINQ provider; it is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so `Where` and the
 async operators (`ToListAsync` and the rest) are declared on `IObjectDataAdaptor<T>`, or .NET 10's
 `System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. `ExpressionParser` lowers expression trees to the neutral query model,
@@ -169,12 +177,14 @@ runs, by a select of member IDs whose key is in the rows the delete's own condit
 depth, the `forceSave` links it must write, and the stored children removed from collections.
 Validation (`CoreObject.Validate`), the writes and the commit all read it, so they cannot disagree.
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
-manager, `IDataContext.Save`/`SaveAsync` and `BulkSave`): removal deletes first, as top-level
+manager and `IDataContext.Save`/`SaveAsync`, for one object or a batch): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
 roots. Every save path validates before it builds anything, once per object: the manager's `Save`
 and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
-reaches the caller as thrown, and `DbDataContext` in its save and bulk save builders, which also
-covers the manager's `BulkSave`. Each calls `ICoreObject.PrepareForSave`, which `CoreObject` runs as
+reaches the caller as thrown, and `DbDataContext` in its save and batch save builders, which also
+covers the manager's save of a batch of mixed types. There is one save: `BulkSave` is the obsolete
+name of the batch save, and which engine writes a batch is decided in `DbDataContext.ExecuteSQLAsync`
+by its parameter count, never by the caller. The synchronous path has no bulk engine. Each calls `ICoreObject.PrepareForSave`, which `CoreObject` runs as
 `Validate()`, the saveable checks, then `PreSave()` on the object and its changed dependents, from
 one walk of the dependents (a flag keeps `base.Validate()` from walking them a second time).
 `CoreObject`'s own saves do not validate, because they route through the manager or a context;
@@ -222,7 +232,7 @@ microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `json
 reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
 A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
 unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
-retries a transient failure (`ConnectRetryCount`). Its output is pinned by `PostgresGoldens.cs`,
+retries a transient failure (`ConnectAttempts`). Its output is pinned by `PostgresGoldens.cs`,
 built from the same query corpus as the SQL Server goldens.
 
 `TFM.Nucleus.Data.SQLite` is SQLite's dialect over the same SDK, for one database file on a local
@@ -244,7 +254,7 @@ to replace old-named indexes; the primary key is unnamed because a rename would 
 stale. A unique violation (extended code 2067, or 1555 for the key) names columns, not the index, so
 the provider maps them back to the index through its table schemas. Initialise refuses a SQLite
 older than 3.35 and puts the file in write-ahead log mode (`UseWriteAheadLog`); transactions begin
-IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerQuery` is 2000, far under
+IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerCommand` is 2000, far under
 SQLite's 32766, because the driver binds each statement of a command by searching all its
 parameters, so a large multi-statement command is quadratic and holds the write lock throughout
 (an oversized save measured 33 s at 30000 against 0.3 s at 2000). Its output is pinned by
@@ -322,14 +332,22 @@ run them.
 
 ## Deviations from the scaffold
 
-One, recorded in `tests\Directory.Build.props`: the tests use **xunit.v3 2.0.0**, not the scaffold's
-xunit 2.9.3, because they were written against v3. Everything else follows the scaffold, and both
-test projects multi-target `net8.0;net10.0` like the shipping packages.
+Two. The tests use **xunit.v3 2.0.0**, not the scaffold's xunit 2.9.3, because they were written
+against v3 (recorded in `tests\Directory.Build.props`). And there is a test project that matches
+no shipping project: `tests\TFM.Nucleus.DocSamples` holds the documentation's examples as code and
+the tests that run them. Everything else follows the scaffold, and every test project
+multi-targets `net8.0;net10.0` like the shipping packages.
+
+`TFM.Nucleus.DocSamples` is referenced by no other test project, deliberately: entity types are
+found by scanning the loaded assemblies, so its sample entities would join the schema of every
+stack in a process that loaded it. Its own tests run the samples against a SQLite file they
+create in the temp folder and delete, so they need no configuration and run in CI.
 
 `Directory.Build.props` suppresses one warning, IDE0040, and `tests\Directory.Build.props`
 suppresses xUnit1051. Both are mechanical style edits rather than defects; see
-`docs\code-review-findings.md`. Nothing else is suppressed, so a nullable warning or an analyzer
-warning in new code fails CI.
+`docs\code-review-findings.md`. `src\Directory.Build.props` suppresses CS1591, so a public
+member without an XML comment does not fail the build. Nothing else is suppressed, so a nullable
+warning or an analyzer warning in new code fails CI.
 
 ## Modelling rules for consumers
 
@@ -338,18 +356,18 @@ warning in new code fails CI.
   column plus a private `List<T>`, and never write `Attach*`, `Remove*Line`,
   `AcknowledgeRemovals` or removal tracking in an entity or store. Those are antipatterns here.
 - Save the root; the graph follows, and the root's `Validate()` runs the children's. Do not loop
-  over children calling `SaveAsync`, do not restate a child's rules on the parent, and do not call
-  `BulkSaveAsync` for children (oversized batches go to the bulk engine automatically).
+  over children calling `SaveAsync`, do not restate a child's rules on the parent, and do not look for a
+  bulk save: there is one save, and an oversized batch goes to the bulk engine by itself.
 - Deletes are declared with `[Deletable]` on the child type, on the collection property or on an
   owner. The child type's `[Deletable(false)]` wins, and a conflict is a startup error. Removing a
   stored child from an undeclared collection throws. Delete the root, or `DeleteWhere` on the
   root; children cascade. Do not delete children by predicate before deleting a parent.
 - A child collection that can grow large is `[RetrieveOnDemand]`, and a listing that needs its
   children `Include`s them. Never read a lazy collection per parent in a loop.
-- A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(v => v.Recipient)`).
+- A listing that reads a `[LinkedObject]` on every row `Include`s it (`Include(m => m.Keeper)`).
   Never load the referenced entities by their IDs by hand, and never keep a raw `Guid` column
   beside a reference to avoid the read.
-- Roots that belong to another root (a campaign's vouchers) are a `NucleusLinkedCollection<TMany, TOne>`
+- Roots that belong to another root (a troop's monkeys) are a `NucleusLinkedCollection<TMany, TOne>`
   on the one, with `[LinkedBy]` naming an indexed key on the many. Never hold them in a private
   `List<T>` loaded by hand, and never save them in a loop beside the one: add them to the
   collection and save the one. A listing that reads the collection on every row `Include`s it.
@@ -360,10 +378,10 @@ warning in new code fails CI.
   try/catch that rolls back, because disposing the context commits. If a store needs something the
   interface lacks, that is a Nucleus defect: add it to the interface rather than casting.
 - When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
-  record it in `docs/code-review-findings.md` and in the README's known limits) rather than
+  record it in `docs/code-review-findings.md` and in `docs/guide/known-limits.md`) rather than
   working around it in the consumer.
-- Every open finding that changes what a consumer must do is listed in the README under "Known
-  limits", not only in `docs/code-review-findings.md`.
+- Every open finding that changes what a consumer must do is listed in
+  `docs/guide/known-limits.md`, not only in `docs/code-review-findings.md`.
 
 ## Rules
 
@@ -402,9 +420,15 @@ warning in new code fails CI.
   from the SDK base classes; it never re-implements a query rule, a tree walk, the schema compare
   or the execution paths. If a second provider needs something the first one has privately, move
   it into `Data` behind a neutral name, not into the second provider as a copy.
+- **Spell identity `ID` and database `DB` in member names** (`LoadByID`, `IsDBColumn`). Existing
+  members that spell them otherwise stay as they are; do not add a second name to match.
+- **Every exception Nucleus defines derives from `NucleusException`** (Abstractions). A new one
+  does too, and reports what failed through a `Kind` where it has several causes.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
-  SQL Server names stay, obsolete, because entities in production use them.
+  SQL Server names were removed in the November 2026 naming clean-up.
+- **A new attribute class is named with the `Attribute` suffix, and a new enum with no prefix
+  and PascalCase members.** `NotStoredAttribute`, `QueryKind.Select`.
 - **Change the SQL Server goldens or the API snapshot deliberately.** `SqlServerGoldens.cs` and
   `PublicApiSnapshot.cs` are written only by their accept tests, with `NUCLEUS_ACCEPT_GOLDENS=1`;
   the diff is the review.
@@ -420,6 +444,8 @@ warning in new code fails CI.
   share one version by design.
 - **Pin package references per target framework**, 8.0.x for `net8.0` and 10.0.x for `net10.0`, so
   consumers get assemblies built for their runtime rather than a lowest common denominator.
+  Exception: `Microsoft.Data.SqlClient` is one unconditioned reference, because the package
+  multi-targets itself and one version serves both frameworks.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
   repo and read what they need from `Directory.Build.props` at run time (`VersionMajor`,
   `PublishToNuGetOrg`, `TargetFrameworks`). If something seems to need a knob in the workflow, add
@@ -427,10 +453,32 @@ warning in new code fails CI.
 - **Evolve the public surface additively.** Two production sites already consume these packages,
   and `CoreObject` is the base class of every entity in them. A breaking change to the entity base,
   an attribute, or a registration method is a major version and a coordinated release.
+  Exception, November 2026: the naming clean-up (enum names, the `Attribute` suffix, `DataType`
+  to `ColumnDataType`, `AddNucleus` moved to the dependency injection namespace, removal of the
+  members obsolete before it) shipped on the v2 line. Reason: the API surface was being
+  straightened out ahead of publication, while every consumer (two sites and the four store
+  packages) was released by the same team in one coordinated release. This was a one-off. The
+  rule stands for everything after it; the repo is public and the packages will be published to
+  nuget.org once the surface is settled, which limits future breaking changes further.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
-  behaviour; a library flag with that meaning takes another name (TFM.S3Library.Nucleus's `S3AssetRecord.SoftDeleted`).
-- **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all seven packages and is the reference documentation consumers see on the feed.
+  behaviour; a library flag with that meaning takes another name, such as `SoftDeleted`.
+- **Update the guide in the same commit** as any change to the public surface: the page under
+  `docs\guide\` that covers it, `behaviour-changes.md` when behaviour changes, and `README.md`
+  when it names the member. The README is packed into all seven packages and is what a consumer
+  sees on the feed, so it stays short (what Nucleus is, install, a quick start, the page index)
+  and its links are absolute, because a relative link is dead on the feed.
+- **An example in the documentation is a sample that runs.** Every C# block in the README and the
+  guide is a copy of a `#region` in `tests\TFM.Nucleus.DocSamples`, named by the
+  `<!-- sample: name -->` line above it. Write or change the example in the sample, run it, then
+  copy it across with `NUCLEUS_ACCEPT_GOLDENS=1` (`DocSampleTests.Accept...`). Never type code into
+  a page: `DocSampleTests` fails on a block with no sample, a block that differs from its sample,
+  and a sample no page shows.
 - **No em dashes in authored documentation.** Use hyphens.
+- **Examples are hypothetical; no real consumer is named.** No document, XML comment, test or
+  message in this repo names a real application, site, customer, server or machine, and no
+  example is copied from consumer code. Examples use the TFM sample domain in
+  `docs\sample-domain.md`. A finding records what happened, not who hit it. One exception: the
+  sibling TFM packages that hold the stores are named in the stores table and its migration
+  note, because a consumer needs the package id to install it.

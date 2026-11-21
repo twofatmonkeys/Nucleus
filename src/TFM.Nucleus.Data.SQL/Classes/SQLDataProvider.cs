@@ -36,7 +36,7 @@ namespace TFM.Nucleus.Data.SQL
         public override DataProviderCapabilities Capabilities => new()
         {
             ParameterPrefix = "@",
-            MaxParametersPerCommand = SqlConfig.MaxParametersPerQuery,
+            MaxParametersPerCommand = SqlConfig.MaxParametersPerCommand,
             SupportsBulkOperations = true,
             SupportsChangeNotifications = true,
             SupportsOffsetPaging = true,
@@ -72,8 +72,8 @@ namespace TFM.Nucleus.Data.SQL
 
         protected override Exception ProviderException(DataProviderErrorKind kind, string? message = null) =>
             message == null
-                ? new SqlDataProviderException((SqlDataProviderExceptionType)kind)
-                : new SqlDataProviderException(message, (SqlDataProviderExceptionType)kind);
+                ? new SqlDataProviderException(kind)
+                : new SqlDataProviderException(message, kind);
 
         // 2601: duplicate key in a unique index; 2627: duplicate key in a unique constraint.
         // Both messages quote the index or constraint name.
@@ -105,29 +105,35 @@ namespace TFM.Nucleus.Data.SQL
                         $"{message} The write reads a [DatabaseColumn(ReturnOutputToProperty = true)] value back with an OUTPUT " +
                         $"clause, which SQL Server refuses on a table with an enabled trigger. Disable the trigger, or remove " +
                         $"ReturnOutputToProperty from the entity's columns. {sql.Message}",
-                        SqlDataProviderExceptionType.Error, exception);
+                        DataProviderErrorKind.Error, exception);
             return null;
         }
     }
 
     public class SqlDataProviderException : DataProviderException
     {
+        /// <summary>The same value as <see cref="DataProviderException.Kind"/>, under this provider's own enum.</summary>
+        [Obsolete("Use Kind, which every provider's exception has.")]
+#pragma warning disable CS0618 // the obsolete enum is this obsolete member's type
         public SqlDataProviderExceptionType Type => (SqlDataProviderExceptionType)Kind;
+#pragma warning restore CS0618
 
         internal SqlDataProviderException() : base(DataProviderErrorKind.Unspecified)
         {
         }
-        internal SqlDataProviderException(SqlDataProviderExceptionType type) : base((DataProviderErrorKind)type)
+        internal SqlDataProviderException(DataProviderErrorKind kind) : base(kind)
         {
         }
-        internal SqlDataProviderException(string message, SqlDataProviderExceptionType type) : base(message, (DataProviderErrorKind)type)
+        internal SqlDataProviderException(string message, DataProviderErrorKind kind) : base(message, kind)
         {
         }
-        internal SqlDataProviderException(string message, SqlDataProviderExceptionType type, Exception innerException) : base(message, (DataProviderErrorKind)type, innerException)
+        internal SqlDataProviderException(string message, DataProviderErrorKind kind, Exception innerException) : base(message, kind, innerException)
         {
         }
 
     }
+    /// <summary>A copy of <see cref="DataProviderErrorKind"/>, value for value.</summary>
+    [Obsolete("Use DataProviderErrorKind, which every provider reports through DataProviderException.Kind.")]
     public enum SqlDataProviderExceptionType
     {
         NotInitialized = 0,

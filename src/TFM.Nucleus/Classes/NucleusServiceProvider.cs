@@ -7,7 +7,9 @@ namespace TFM.Nucleus
     public class NucleusServiceProvider : INucleusServiceProvider
     {
         public ILogger? Logger { get; private set; }
-        public IDataProvider? DataProvider { get; private set; }
+        [Obsolete("One provider cannot route a type registered under a rooted provider. Resolve IObjectDataManager, whose members route by type.")]
+        public IDataProvider? DataProvider => _dataProvider;
+        private readonly IDataProvider? _dataProvider;
         public IObjectSchemaProvider? SchemaProvider { get; private set; }
         public NucleusOptions Options { get; private set; }
 
@@ -18,7 +20,7 @@ namespace TFM.Nucleus
             ILogger<NucleusServiceProvider>? logger = null,
             IObjectSchemaProvider? schemaProvider = null)
         {
-            DataProvider = dataProvider;
+            _dataProvider = dataProvider;
             Logger = logger;
             SchemaProvider = schemaProvider;
             Options = options?.Value ?? new NucleusOptions();

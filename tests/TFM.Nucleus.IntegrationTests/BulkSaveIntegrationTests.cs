@@ -20,8 +20,8 @@
             var prefix = $"bulk-{Guid.NewGuid():N}-";
             var widgets = Enumerable.Range(0, rows).Select(i => new IntWidget { Name = $"{prefix}{i}", Quantity = i }).ToList();
 
-            await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                await context.BulkSaveAsync(widgets, Ct);
+            await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                await context.SaveAsync(widgets, Ct);
 
             var saved = await manager.Get<IntWidget>().Where(w => w.Name!.StartsWith(prefix)).ToListAsync(Ct);
             Assert.Equal(rows, saved.Count);
@@ -35,8 +35,8 @@
                 else
                     w.Name += "-renamed";
             }
-            await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                await context.BulkSaveAsync(saved, Ct);
+            await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                await context.SaveAsync(saved, Ct);
 
             var updated = await manager.Get<IntWidget>().Where(w => w.Name!.StartsWith(prefix)).ToListAsync(Ct);
             Assert.Equal(rows, updated.Count);

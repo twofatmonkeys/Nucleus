@@ -19,36 +19,36 @@ namespace TFM.Nucleus.Data.Schema
     /// </summary>
     public class SchemaManager(ISchemaStore store, IObjectSchemaProvider objectSchemaProvider, ILogger? logger) : IDataSchema
     {
-        private bool Initialized => Status != EDataSchemaStatus.NotInitialized;
+        private bool Initialized => Status != DataSchemaStatus.NotInitialized;
         private readonly ISchemaStore _store = store;
         private readonly IObjectSchemaProvider _objectSchemaProvider = objectSchemaProvider;
         private readonly ILogger? _logger = logger;
 
         public ConcurrentDictionary<Type, TableSchema> TableCache { get; } = [];
 
-        public EDataSchemaStatus Status { get; private set; } = EDataSchemaStatus.NotInitialized;
+        public DataSchemaStatus Status { get; private set; } = DataSchemaStatus.NotInitialized;
 
         private ISchemaDialect Dialect => _store.Dialect;
 
         public TableSchema? GetTableSchema<T>() => GetTableSchema(typeof(T));
         public TableSchema? GetTableSchema(Type objectType)
         {
-            if (Status == EDataSchemaStatus.Ok)
+            if (Status == DataSchemaStatus.Ok)
                 return TableCache.TryGetValue(objectType, out var value) ? value : null;
-            if (Status == EDataSchemaStatus.NotInitialized)
-                if (Initialize() == EDataSchemaStatus.Ok)
+            if (Status == DataSchemaStatus.NotInitialized)
+                if (Initialize() == DataSchemaStatus.Ok)
                     return TableCache.TryGetValue(objectType, out var value) ? value : null;
 
             throw new Exception("Cannot get the table schema. Schema error.");
         }
 
-        public EDataSchemaStatus Initialize() => InitializeCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
-        public Task<EDataSchemaStatus> InitializeAsync(CancellationToken? cancellationToken = null) =>
+        public DataSchemaStatus Initialize() => InitializeCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
+        public Task<DataSchemaStatus> InitializeAsync(CancellationToken? cancellationToken = null) =>
             InitializeCore(async: true, cancellationToken ?? CancellationToken.None).AsTask();
 
-        private async ValueTask<EDataSchemaStatus> InitializeCore(bool async, CancellationToken cancellationToken)
+        private async ValueTask<DataSchemaStatus> InitializeCore(bool async, CancellationToken cancellationToken)
         {
-            if (Status != EDataSchemaStatus.NotInitialized)
+            if (Status != DataSchemaStatus.NotInitialized)
                 return Status;
             BuildSchema();
             if (!await _store.Catalog.DatabaseExistsAsync(async, cancellationToken))
@@ -56,14 +56,14 @@ namespace TFM.Nucleus.Data.Schema
                 if (_store.ReadOnlySchema)
                 {
                     _logger?.LogError("Database does not exist and the schema is read-only. Cannot initialize.");
-                    Status = EDataSchemaStatus.DatasourceNotFound;
+                    Status = DataSchemaStatus.DatasourceNotFound;
                     return Status;
                 }
                 _logger?.LogInformation("Database does not exist. Creating database...");
                 await _store.Catalog.CreateDatabaseAsync(async, cancellationToken);
             }
             Status = await CheckCore(async, cancellationToken);
-            if (Status == EDataSchemaStatus.NotCurrent && !_store.ReadOnlySchema)
+            if (Status == DataSchemaStatus.NotCurrent && !_store.ReadOnlySchema)
                 Status = await UpdateCore(async, cancellationToken);
             return Status;
         }
@@ -212,11 +212,11 @@ namespace TFM.Nucleus.Data.Schema
         public IEnumerable<TableSchema> GetTables() => Initialized ? TableCache.Values : BuildSchema();
 
         /// <summary>Compares the expected schema to the database without modifying anything.</summary>
-        public EDataSchemaStatus CheckSchema() => CheckCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
-        public Task<EDataSchemaStatus> CheckSchemaAsync(CancellationToken cancellationToken = default) =>
+        public DataSchemaStatus CheckSchema() => CheckCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
+        public Task<DataSchemaStatus> CheckSchemaAsync(CancellationToken cancellationToken = default) =>
             CheckCore(async: true, cancellationToken).AsTask();
 
-        private async ValueTask<EDataSchemaStatus> CheckCore(bool async, CancellationToken cancellationToken)
+        private async ValueTask<DataSchemaStatus> CheckCore(bool async, CancellationToken cancellationToken)
         {
             try
             {
@@ -227,7 +227,7 @@ namespace TFM.Nucleus.Data.Schema
                 if (!tablesCurrent)
                 {
                     _logger?.LogWarning("Database schema is not current.");
-                    return EDataSchemaStatus.NotCurrent;
+                    return DataSchemaStatus.NotCurrent;
                 }
 
                 var indexesMatch = true;
@@ -250,21 +250,21 @@ namespace TFM.Nucleus.Data.Schema
                 }
                 if (Dialect.Extras is { } extras && !await extras.AreCurrentAsync(tables, async, cancellationToken))
                     indexesMatch = false;
-                return indexesMatch ? EDataSchemaStatus.Ok : EDataSchemaStatus.NotCurrent;
+                return indexesMatch ? DataSchemaStatus.Ok : DataSchemaStatus.NotCurrent;
             }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Error checking the data schema. {error}", ex.Message);
-                return EDataSchemaStatus.Error;
+                return DataSchemaStatus.Error;
             }
         }
 
-        public EDataSchemaStatus Update() => UpdateCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
-        public Task<EDataSchemaStatus> UpdateAsync(CancellationToken cancellationToken = default) =>
+        public DataSchemaStatus Update() => UpdateCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
+        public Task<DataSchemaStatus> UpdateAsync(CancellationToken cancellationToken = default) =>
             UpdateCore(async: true, cancellationToken).AsTask();
 
         // Only call after checking the schema is not current.
-        private async ValueTask<EDataSchemaStatus> UpdateCore(bool async, CancellationToken cancellationToken)
+        private async ValueTask<DataSchemaStatus> UpdateCore(bool async, CancellationToken cancellationToken)
         {
             ISchemaTransaction transaction;
             try
@@ -274,7 +274,7 @@ namespace TFM.Nucleus.Data.Schema
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Error updating the data schema");
-                return EDataSchemaStatus.Error;
+                return DataSchemaStatus.Error;
             }
             var disposed = false;
             try
@@ -301,13 +301,13 @@ namespace TFM.Nucleus.Data.Schema
                 await SyncColumnIndexes(tables, async, cancellationToken);
                 if (Dialect.Extras is { } extras)
                     await extras.SyncAsync(tables, async, cancellationToken);
-                return EDataSchemaStatus.Ok;
+                return DataSchemaStatus.Ok;
             }
             catch (Exception ex)
             {
                 transaction.Rollback();
                 _logger?.LogError(ex, "Error updating the data schema");
-                return EDataSchemaStatus.Error;
+                return DataSchemaStatus.Error;
             }
             finally
             {

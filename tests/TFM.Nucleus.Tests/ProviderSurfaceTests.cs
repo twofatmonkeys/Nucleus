@@ -18,6 +18,7 @@ namespace TFM.Nucleus.Tests
             ["TFM.Nucleus.Data.SQL"] = (typeof(SQLConfiguration).Assembly,
             [
                 "Microsoft.Extensions.DependencyInjection.ServiceExtensions",
+                "Microsoft.Extensions.DependencyInjection.NucleusSqlServerServiceExtensions",
                 "TFM.Nucleus.Data.SQL.SQLConfiguration",
                 "TFM.Nucleus.Data.SQL.SqlDataProviderException",
                 "TFM.Nucleus.Data.SQL.SqlDataProviderExceptionType",

@@ -49,7 +49,7 @@ namespace TFM.Nucleus.Data.Providers
         /// single statement over it, which splitting cannot divide.
         /// </remarks>
         public static bool CanUseBulkPath(Query query) =>
-            (query.Type == QueryType.INSERT || query.Type == QueryType.UPDATE)
+            (query.Type == QueryKind.Insert || query.Type == QueryKind.Update)
             && query.TableSchema is TableSchema;
 
         /// <summary>A SET term evaluated by the server rather than bound, such as the timestamp.</summary>
@@ -76,11 +76,11 @@ namespace TFM.Nucleus.Data.Providers
             {
                 foreach (var operationGroup in tableGroup.GroupBy(q => q.Type))
                 {
-                    if (operationGroup.Key is not (QueryType.INSERT or QueryType.UPDATE))
+                    if (operationGroup.Key is not (QueryKind.Insert or QueryKind.Update))
                         throw new InvalidOperationException(
                             $"A bulk batch for table '{tableGroup.Key}' holds a {operationGroup.Key} query; only inserts and updates can be bulk written.");
                     var queries = operationGroup.ToList();
-                    writes.Add(new BulkTableWrite((TableSchema)queries[0].TableSchema!, tableGroup.Key, operationGroup.Key == QueryType.UPDATE, queries));
+                    writes.Add(new BulkTableWrite((TableSchema)queries[0].TableSchema!, tableGroup.Key, operationGroup.Key == QueryKind.Update, queries));
                 }
             }
             return writes;

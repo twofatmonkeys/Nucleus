@@ -22,7 +22,7 @@ namespace TFM.Nucleus.Tests
             {
                 case "Save": manager.Save(obj); break;
                 case "SaveAsync": await manager.SaveAsync(obj, CancellationToken.None); break;
-                default: manager.BulkSave([obj]); break;
+                default: manager.Save((IEnumerable<ICoreObject?>)[obj]); break;
             }
         }
 

@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Data.SQL
 
                     var outputs = BulkWritePlanner.ScanOutputs(group, write.Schema);
                     var baseSql = BuildBulkInsertSql(write.TableName, tempTable, dataColumns, serverFunctionColumns, outputs);
-                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "INSERT", outputs, token);
+                    await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkBatchSize, "INSERT", outputs, token);
                 }
                 finally
                 {
@@ -162,7 +162,7 @@ namespace TFM.Nucleus.Data.SQL
                 var outputs = BulkWritePlanner.ScanOutputs(write.Queries, write.Schema);
                 var baseSql = BuildBitmaskUpdateSql(
                     write.TableName, tempTable, dataColumns, whereColumns, serverFunctionColumns, outputs);
-                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkCopyBatchSize, "UPDATE", outputs, token);
+                await ExecuteInBatchesAsync(baseSql, dt.Rows.Count, SqlConfig.BulkBatchSize, "UPDATE", outputs, token);
             }
             finally
             {
@@ -264,7 +264,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             using var bulkCopy = new SqlBulkCopy(SqlConnection!, SqlBulkCopyOptions.Default, SqlTransaction);
             bulkCopy.DestinationTableName = tempTable;
-            bulkCopy.BulkCopyTimeout = SqlConfig.BulkCopyTimeoutSeconds;
+            bulkCopy.BulkCopyTimeout = SqlConfig.BulkTimeoutSeconds;
             // Map only data columns - _rowid is IDENTITY and auto-populated
             foreach (DataColumn col in dt.Columns)
                 bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
@@ -329,7 +329,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             var command = SqlCommand;
             command.Parameters.Clear();
-            command.CommandTimeout = SqlConfig.BulkCopyTimeoutSeconds;
+            command.CommandTimeout = SqlConfig.BulkTimeoutSeconds;
             command.CommandText = commandText;
             if (outputs.IsEmpty)
             {

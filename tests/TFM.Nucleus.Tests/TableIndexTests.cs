@@ -13,7 +13,7 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn]
         public string? Code { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? Notes { get => GetValue<string>(); set => SetValue(value); }
     }
 
@@ -31,7 +31,7 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn(Unique = true)]
         public string? Code { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? Notes { get => GetValue<string>(); set => SetValue(value); }
     }
 
@@ -45,7 +45,7 @@ namespace TFM.Nucleus.Tests
     [TableIndex("Bad", nameof(Notes))]
     public class TestBadIndexLongKey : CoreObject<TestBadIndexLongKey>
     {
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? Notes { get => GetValue<string>(); set => SetValue(value); }
     }
 

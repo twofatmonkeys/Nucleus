@@ -624,7 +624,7 @@ namespace TFM.Nucleus.Tests
         {
             var (manager, _, _) = Install();
 
-            Assert.Throws<ArgumentException>(() => manager.Load<CmLazyOwner>(System.Linq.Expressions.Expression.Constant(true), ["Lines"], ["Lines"]));
+            Assert.Throws<ArgumentException>(() => manager.Load<CmLazyOwner>(null, new LoadOptions { Exclude = ["Lines"], Include = ["Lines"] }));
         }
     }
 

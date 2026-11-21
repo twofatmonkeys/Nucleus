@@ -7,9 +7,9 @@
     /// </summary>
     public enum ColumnTypeIntent
     {
-        /// <summary>A string declared without <see cref="DataType.Unicode"/>.</summary>
+        /// <summary>A string declared without <see cref="ColumnDataType.Unicode"/>.</summary>
         AnsiString,
-        /// <summary>A string declared with <see cref="DataType.Unicode"/>.</summary>
+        /// <summary>A string declared with <see cref="ColumnDataType.Unicode"/>.</summary>
         UnicodeString,
         Int32,
         Int64,
@@ -17,7 +17,7 @@
         Boolean,
         DateTime,
         DateTimeOffset,
-        /// <summary>A date without a time of day, declared with <see cref="DataType.Date"/>.</summary>
+        /// <summary>A date without a time of day, declared with <see cref="ColumnDataType.Date"/>.</summary>
         Date,
         Guid,
         Binary,

@@ -8,6 +8,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerCrudIntegrationTests(SqlServerFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerManagerLoadIntegrationTests(SqlServerFixture fixture) : ManagerLoadIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerChildCollectionLoadIntegrationTests(SqlServerFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

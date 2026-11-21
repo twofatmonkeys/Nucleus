@@ -38,7 +38,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         public override DataProviderCapabilities Capabilities => new()
         {
             ParameterPrefix = "@",
-            MaxParametersPerCommand = Config.MaxParametersPerQuery,
+            MaxParametersPerCommand = Config.MaxParametersPerCommand,
             SupportsBulkOperations = true,
             SupportsChangeNotifications = true,
             SupportsOffsetPaging = true,

@@ -147,7 +147,7 @@ namespace TFM.Nucleus.Tests
             var (alpha, fallback, data) = NewData();
 
 #pragma warning disable CS0618 // The obsolete member is the subject of the test.
-            Assert.Same(fallback, data.DataProvider);
+            Assert.Same(fallback, ((ObjectDataManager)data).DataProvider);
 #pragma warning restore CS0618
             await using var context = await data.CreateContextAsync<AlphaWidget>();
 

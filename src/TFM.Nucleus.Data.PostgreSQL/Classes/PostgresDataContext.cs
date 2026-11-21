@@ -14,7 +14,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
     /// A PostgreSQL data context: the shared relational context over an NpgsqlConnection, with
     /// values bound as the types their columns store, values read back as the types their
     /// properties expect, transient opening failures retried, and the COPY bulk engine for
-    /// oversized writes. ContextOptions.UseDependency has no meaning here: change notifications
+    /// oversized writes. ContextOptions.WatchForChanges has no meaning here: change notifications
     /// are subscriptions (IDataProvider.SubscribeToChangesAsync), not a per-command option.
     /// </summary>
     internal sealed partial class PostgresDataContext : DbDataContext<PostgresDataContext>
@@ -48,11 +48,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection(useTransaction);
 
         protected override Task<PostgresDataContext> CreateChildContextAsync(CancellationToken token) =>
-            CreateAsync(_pgProvider, this, HasTransaction, HasDependency, token);
+            CreateAsync(_pgProvider, this, HasTransaction, WatchesForChanges, token);
 
         protected override bool IsTransientOpenFailure(Exception exception) => PostgresErrors.IsTransient(exception);
 
-        protected override int OpenAttempts => Math.Max(1, Config.ConnectRetryCount);
+        protected override int OpenAttempts => Math.Max(1, Config.ConnectAttempts);
 
         protected override DbParameter CreateParameter(DbCommand command, string name, object? value, IQueryParameter source)
         {

@@ -8,6 +8,39 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
+### API surface review, what is left (November 2026)
+
+A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
+"Fixed"). Still open:
+
+- **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
+  aligning the relationship attributes.
+- **`ConnectAttempts` is PostgreSQL's alone.** SQL Server and SQLite open once. It was not lifted
+  to the shared options, because that would switch a retry on for engines whose transient
+  failures nobody has classified.
+- **A test stack does not publish the ambient runtime.** `NucleusRuntime.Current` is one per
+  process and several stacks share a test process, so the static `CoreObject` API under a test
+  stack uses whichever runtime was published last, if any. Tests use the stack's manager.
+- **The test stack's start methods take no cancellation token**, because
+  `IDataProvider.InitializeAsync` takes none.
+- **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
+  `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
+  consumer calls them, and an overload beside them would make a call without arguments ambiguous.
+  Left until a major version.
+- **`[LinkWhenLogging]` is parsed and not applied.** It is to attach the linked object's type and
+  ID to the log entry's linked objects. The implementation did not come across from the library
+  Nucleus grew out of and is to be restored. `GetLinkedIDsForLogging` is its unused half and
+  stays. Listed in the guide's known limits.
+- **The synchronous save never reaches the bulk engine.** `DbDataContext.ExecuteSQL` splits an
+  oversized write into commands; only `ExecuteSQLAsync` hands it to the bulk engine. Listed in the
+  guide's known limits.
+- **`IDataProvider.Initialize(IEnumerable<IObjectSchema>?)` ignores its argument**, like the
+  schema methods that were replaced. It is the only synchronous initialise on the interface, and
+  a call without arguments already reads correctly, so it was left.
+- **A load on the manager for every row of a `[Cacheable]` type does not use the cache.**
+  `LoadAsync<T>()` with no predicate reads the table; `Load<T>()` on the concrete manager and
+  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill.
+
 ### Save, load and schema audit (November 2026)
 
 An audit of the save, load and schema paths against the "ask the schema first" rule in AGENTS.md,
@@ -100,27 +133,25 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
 - **A save through a caller-owned context commits in memory before the caller commits.**
   `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
   removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
-  saved and have forgotten their removals. Long-standing; listed in the README's known limits.
-- **The `[LinkedChildCollection]` surface is obsolete, not removed.** The attribute,
-  `IPropertySchema.IsLinkedChildCollection`, `IObjectSchema.HasLinkedChildObjects`,
-  `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` and
-  `CoreObject.AllowDeletions` remain as obsolete aliases or no-ops. Remove them at the next major
-  version.
-- **A linked, not owned, collection was not built; it now is** (November 2026, for the Wellspring
-  marketing run's vouchers): `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
+  saved and have forgotten their removals. Long-standing; listed in the guide's known limits.
+- **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
+  `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
+  clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
+- **A linked, not owned, collection was not built; it now is** (November 2026):
+  `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
   declares and `[LinkedBy]` names, loaded on the first read of a member or included, its new and
   changed members saved with the one, a removed stored member deleted when its type is
   `[Deletable]`, and a delete of a one with members refused. What changed from the note that stood
-  here: the members are saved with the one, because the run records a campaign and its vouchers in
-  one transaction; and a delete is always refused, with no cascade, since vouchers are never
-  deleted. Open, and in the README's known limits: the refusal is a check in the delete's
+  here: the members are saved with the one, because a one and its members are recorded in
+  one transaction; and a delete is always refused, with no cascade, since the members outlive
+  any one use of them. Open, and in the guide's known limits: the refusal is a check in the delete's
   transaction, not a foreign key, so a member inserted concurrently is not seen; and the one must be
   a root, because a parent's cascade deletes children without loading them. Cover:
   `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
 
 ### Found with the linked object read, fixed (November 2026)
 
-Found while designing linked collections for the Wellspring marketing run, by an integration test
+Found while designing linked collections, by an integration test
 that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
 
 - **A loaded `[LinkedObject]` could not be read.** A load stored the referenced entity's ID, and
@@ -139,7 +170,7 @@ that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, Pos
   before the fix.
 
 Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
-same reference without `Include` each load their own instance. Listed in the README's known limits.
+same reference without `Include` each load their own instance. Listed in the guide's known limits.
 
 ### SQL Server deadlocks under concurrent saves, fixed (November 2026)
 
@@ -183,7 +214,7 @@ database removes that wait; Nucleus does not set it.
 
 ### Found with links to child types, fixed (November 2026)
 
-Raised by a consumer that needed a voucher to refer to a campaign's recipient, a child type.
+Raised by a consumer that needed a root to refer to another root's child, a child type.
 Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
 
 - **A child loaded on its own could not read its parent.** A child loaded by a link, by `LoadByID`
@@ -294,8 +325,7 @@ safe to call, but removing it is a public API change and was left for a major ve
 
 ### Commented-out code
 
-Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs`, `SQLConfiguration.cs`
-and `DBColumn.cs`.
+Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs` and `DBColumn.cs`.
 
 ### Saving a parent rewrites every loaded child
 
@@ -338,6 +368,129 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### Names that could only be changed by breaking (November 2026)
+
+The last part of the same review, and the one deliberate break: it shipped on the v2 line, and
+the exception is written into the rule in `AGENTS.md`. The README's behaviour changes carry the
+table a consumer migrates by.
+
+- **Two enums held one list.** `eServerFunction` (what `[DatabaseColumn(SetValueOverride = ...)]`
+  took) and `ServerFunctionKind` (what the query model carries) were the same values, and the
+  first lacked `UtcNow` and `NewGuid`, so a column could not be stamped with either. They are one
+  enum, `ServerFunctionKind`, with `None`.
+- **Enum names carried prefixes and capitals**: `eServerFunction`, `EDataSchemaStatus`,
+  `QueryType.SELECT`, `OrderByType.ASCENDING`. They are `ServerFunctionKind`, `DataSchemaStatus`,
+  `QueryKind.Select`, `SortDirection.Ascending`. A second, unused `DataSchemaStatus` in the Data
+  assembly was deleted to free the name.
+- **`DataType` collided with `System.ComponentModel.DataAnnotations.DataType`,** which the
+  attribute's own file imports. It is `ColumnDataType`.
+- **`WhereCollection.Type` shadowed `System.Type`** inside the class. It is `NodeKind`.
+- **Ten attributes had no `Attribute` suffix** while seven had it. A second class under the
+  suffixed name would have made `[LinkedObject]` ambiguous (CS1614), so the classes were renamed.
+  Attribute usage compiles unchanged; an assembly compiled against the old names does not find
+  them, so every entity and store package is rebuilt with this release. `[SuppressDB]` is
+  `[NotStored]`.
+- **`AddNucleus` was the one registration outside `Microsoft.Extensions.DependencyInjection`.** A
+  forwarding copy would have made every call ambiguous in a file importing both namespaces, so it
+  was moved.
+- **Everything obsolete before the review was removed**: the SQL Server names on
+  `[DatabaseColumn]` and the server functions, `[LinkedChildCollection]` and the `LinkedChild*`
+  schema members, `CoreObject.AllowDeletions` and `IObjectDataManager.DataProvider`. The neutral
+  interface members that defaulted to them are now required of an implementer.
+
+The SQL goldens did not change, and every test passed under the new names without a change of
+behaviour; the six tests of the removed aliases went with them.
+
+### API surface alignment (November 2026)
+
+The same review, the names. All additive: the old name of each is obsolete and forwards.
+
+- **SQL Server was spelled three ways** (`SQLConfiguration`, `SqlDataProviderException`,
+  `SqlServerTestDatabase`). The registration is `AddNucleusSqlServerDataProvider`, in
+  `NucleusSqlServerServiceExtensions`; the old class was named `ServiceExtensions`, which any other
+  library's class of that name in the same namespace would have collided with. The type
+  `SQLConfiguration` keeps its name: options are bound by type, so an alias type would not bind.
+- **One value had two names**: `MaxParametersPerQuery` on the options and
+  `MaxParametersPerCommand` on the capabilities. The options take the second.
+- **Options named after a SQL Server feature** are named for what they do: `BulkTimeoutSeconds`,
+  `BulkBatchSize`, `PacketSize`, `Query.AllowDirtyRead`, `ContextOptions.WatchForChanges`.
+- **`ConnectRetryCount` counted attempts.** It is `ConnectAttempts`. PostgreSQL's fixed 15 second
+  connect timeout is `ConnectTimeoutSeconds`, as SQL Server's became.
+- **The exceptions shared no base.** They derive from `NucleusException`.
+  `SqlDataProviderException.Type` and its enum duplicated `Kind` value for value and are obsolete.
+- **Child and linked collections named the same things differently.** Both interfaces answer to
+  `Owner`, `ItemType`, `Items` and `RemovedItems`; `INucleusChildCollection` has `LoadAsync`, which
+  only the class had; `IObjectDataAdaptor` has `Include`, which only the class had.
+- **`LoadObjectWhere` loaded every match to return the first.** `LoadFirstWhere` asks for one
+  row. The static API also gains `LoadByIDAsync` and `LoadAllAsync`.
+- **`TryGetChildCollectionProperty` returned its result** instead of a bool and an out value. It
+  has an overload in the usual shape.
+- **Public types nothing uses** are obsolete: `ITFMHasChanges`, `DataProviderConnectionStatus`,
+  `IInitializeWithString<T>`, `IPropertySchema.SkipOnDbRead`, and `Parameter.columnSchema`, which
+  differed from `ColumnSchema` only by case. The helper classes that are public only so the other
+  Nucleus assemblies can reach them (`StringExtensions`, `TypeExtensions`, `ChildGraphBinder` and
+  the like) are hidden from completion.
+
+Cover: `ApiAlignmentTests`, and the first-match, runtime and rollback tests in
+`ManagerLoadIntegrationTests`.
+
+### API surface traps (November 2026)
+
+Found by reading the whole public surface, not by a failure. Each replaced member still works and
+is marked obsolete, naming its replacement. Cover: `ManagerLoadIntegrationTests` on every provider,
+and `ApiTrapTests`.
+
+- **An untyped predicate had to be passed as its body.** `Load<T>(Expression)` and its siblings on
+  the manager, the runtime and a context took a predicate's `Body`. The lambda itself compiled,
+  since an `Expression<Func<T, bool>>` is an `Expression`, and then failed in
+  `ExpressionParser.Normalize`, which unwrapped a Where chain but not a lambda. It unwraps both
+  now, and `IDataContext` has typed overloads.
+- **Two lists of names sat side by side.** `LoadByID(id, excluded, included)` and five more took
+  two `IReadOnlyCollection<string>` in a row; swapped, they compiled and inverted the load. They
+  are obsolete in favour of `LoadOptions`.
+- **The interface DI registers could not load.** `IObjectDataManager` had `Get<T>()` and
+  `Rows<T>()`; load by ID, paged loads and streamed loads were on the concrete class, which the
+  modelling rules forbid a store to use, and the README pointed at them anyway. They are on the
+  interface now.
+- **Soft-deleted rows could not be read.** `IncludeDeleted` existed on the query model and
+  nowhere a consumer could reach. It is on `LoadOptions` and on a query (`IncludeDeleted()`).
+- **`BulkSave` was a second save in name only.** Both it and `Save` run the statements
+  `CreateSaveQueries` builds, and `DbDataContext.ExecuteSQLAsync` sends an oversized table group
+  to the bulk engine whichever built it. `BulkSave` only added a batch of mixed types. That is
+  now `Save(IEnumerable<ICoreObject?>)` and `BulkSave` is obsolete. The manager's batch save
+  used to exist only on the synchronous path; it has an asynchronous form now, which is the one
+  that reaches the bulk engine.
+- **`CommandTimeoutSeconds` was the wait for a free context.** Its own comment said so. It is
+  `PoolWaitTimeoutSeconds`. The wait ignored the cancellation token and a full pool threw a bare
+  `Exception`; it now observes the token and throws `DataContextException` with `PoolExhausted`.
+- **The provider's schema methods ignored their arguments.** `CheckSchemaIsCurrent(schemas)`,
+  `UpdateSchema(schemas)` and `UpdateSchemaAsync(schema)` always worked on every table.
+  Overloads without the argument replace them.
+- **`DataProviderStatus` on the manager was one provider's status**, while
+  `InitializeDataProviderAsync` returned the worst of all of them. `Status` reports the worst.
+  `DataProvider` was obsolete on the interface only; it is now obsolete on the concrete manager
+  and on `INucleusServiceProvider` too.
+- **Five overridable members of `CoreObject` did nothing.** `AllowCaching`, `DisableLogging`,
+  `CacheRefreshInterval` and `CacheLifetime` were read by nothing, and `OnAfterInitializeDB` was
+  never called. Obsolete. The README documented the last as a working hook.
+- **`DataSet.Bind` and `BindRows` skipped the load hook.** Four ways to bind a data set, one of
+  which ran `OnAfterLoadFromDB`. The two public ones that did not are obsolete. They were not
+  given the hook: `ChildGraphBinder` binds rows the same way and runs the hook itself, later,
+  once the children are attached.
+- **SQL Server and PostgreSQL threw a bare `Exception` for a missing connection setting**, where
+  SQLite threw its provider exception. All three now throw theirs, with `NotConfigured`.
+- **`AddNucleus(options)` left `AppName` unset**, and `ConfigureAppName` then threw "AppName must
+  be set in NucleusOptions" when a provider started. The README called the overload "the same,
+  with explicit options". Registration now fills an unset `AppName` or `AppVersion` from the entry
+  assembly on both overloads.
+- **`AppVersion` was set and never read.** The README said it was recorded with audit entries.
+  `NucleusLogEntry` now carries `AppName` and `AppVersion`.
+
+Documentation found wrong in the same review and corrected: the install text (a provider package
+does not pull `TFM.Nucleus`), a quick start that could not build its schema or run its delete, a
+testing snippet that did not compile, and "every column is created NULL" (the soft-delete flag
+is `NOT NULL` with a default).
 
 ### Save validation, PreSave, the parent index and the commit order (November 2026)
 
@@ -636,7 +789,7 @@ Found on the way:
 
 ### A table with a keyword column could never be rebuilt on SQL Server (November 2026)
 
-Found by the RedPoint website: adding a column to an entity with a property named `By` stopped the
+Found by a consumer: adding a column to an entity with a property named `By` stopped the
 provider starting with "Incorrect syntax near the keyword 'By'", and the rebuild rolled back. CREATE
 TABLE brackets every column name, so such a table is created without trouble, but the rebuild's row
 copy (`SqlServerSchemaDialect.CopyTableDataSql`) joined the names bare. Every table with a column
@@ -725,7 +878,7 @@ show each change, and the named tests rather than `RegressionTests.cs`.
 - **A raw statement kept the previous statement's parameters.** The schema rebuild ran its rename
   scripts on one command without clearing parameters. SQL Server ignored the extras; a stricter
   driver would not. Every statement now clears them.
-- **S3Library sniffed for SQL Server.** It recognised a unique violation by reflecting on a type
+- **A store sniffed for SQL Server.** It recognised a unique violation by reflecting on a type
   named `SqlException` and reading the index name out of its message, so it could not work on any
   other engine. Providers now report `UniqueViolationException`, and the store matches its entity
   and column.
@@ -733,10 +886,10 @@ show each change, and the named tests rather than `RegressionTests.cs`.
   a caller catching `OperationCanceledException` missed it (on SQL Server it depended on where
   SqlClient happened to throw). Cancellation now propagates as thrown, after a transactional
   context is marked for rollback.
-- **TFM.Stencil's round-trip case could not pass on PostgreSQL.** `Save_ThenGet_RoundTripsEveryField`
-  compared `CreatedUtc` and `UpdatedUtc` to the tick, and `timestamptz` keeps microseconds, so the
-  case failed by the 100 ns a value carries below a microsecond. TFM.Stencil 1.26.304.1 compares
-  them as the same instant to the microsecond; the Stencil pins moved to it together.
+- **A store's round-trip test could not pass on PostgreSQL.** It
+  compared two stored instants to the tick, and `timestamptz` keeps microseconds, so the
+  case failed by the 100 ns a value carries below a microsecond. The store's test now compares
+  them as the same instant to the microsecond.
 
 ### The predicate parser dropped terms it could not place
 

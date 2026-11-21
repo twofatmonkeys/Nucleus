@@ -13,7 +13,7 @@
         public async Task Subscription_FiresOnInsertUpdateAndDelete()
         {
             var manager = fixture.RequireManager();
-            await using var subscription = await manager.DataProvider.SubscribeToChangesAsync<IntHardItem>(Ct);
+            await using var subscription = await manager.Providers.AllProviders[0].SubscribeToChangesAsync<IntHardItem>(Ct);
             var changes = System.Threading.Channels.Channel.CreateUnbounded<Type>();
             subscription.Changed += (_, e) => changes.Writer.TryWrite(e.EntityType);
 

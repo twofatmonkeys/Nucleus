@@ -11,7 +11,11 @@ namespace TFM.Nucleus.Data
     public class OutputParameter : Parameter, IQueryOutputParameter
     {
         #region IQueryOutputParameter Implementation
+[Obsolete("Use AsOutputParameter.")]
         public new IQueryOutputParameter castAsOutputParameter() => this;
+
+        /// <inheritdoc cref="IQueryParameter.AsOutputParameter"/>
+        public override IQueryOutputParameter AsOutputParameter() => this;
         #endregion
 
         /// <summary>The value the server returned, once the write has run.</summary>

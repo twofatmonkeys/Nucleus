@@ -50,7 +50,7 @@ namespace TFM.Nucleus
         /// a server value read back.
         /// </summary>
         [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
-            SetValueOverride = eServerFunction.CurrentDateTimeOffset)]
+            SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
         public DateTimeOffset Timestamp
         {
             get { return GetValue<DateTimeOffset>(); }
@@ -524,12 +524,14 @@ namespace TFM.Nucleus
 
 
         //Overwrite these properties in child classes to change behaviour
-        protected internal virtual bool DisableLogging => false; //Setting true disables logging of actions within the Save() method of the object instance.
-        protected internal virtual bool AllowCaching => true; //Setting true allows the object collection to be stored in the cache, false forces retrieval from the DB in every case
-        [Obsolete("Has no effect. Deletion is declared with [Deletable] on the type, a child collection property or an owner.")]
-        protected internal virtual bool AllowDeletions => false;
-        protected internal virtual int CacheRefreshInterval => 120; //Cache refresh interval in seconds
-        protected internal virtual int CacheLifetime => 900; //Cache lifetime interval in seconds
+        [Obsolete("Has no effect. Suppress an entity's audit entries with [SuppressLogging] on the type.")]
+        protected internal virtual bool DisableLogging => false;
+        [Obsolete("Has no effect. A type is cached when it is marked [Cacheable], and only then.")]
+        protected internal virtual bool AllowCaching => true;
+        [Obsolete("Has no effect. Set the interval on the attribute: [Cacheable(refreshInterval, cacheLifetime)].")]
+        protected internal virtual int CacheRefreshInterval => 120;
+        [Obsolete("Has no effect. Set the lifetime on the attribute: [Cacheable(refreshInterval, cacheLifetime)].")]
+        protected internal virtual int CacheLifetime => 900;
 
         /// <summary>True when <paramref name="t"/> is a concrete Nucleus entity type.</summary>
         public static bool IsDerivedClass(Type t)
@@ -635,6 +637,7 @@ namespace TFM.Nucleus
         }
 
         void ICoreObject.OnAfterLoadFromDB() => OnAfterLoadFromDB();
+        [Obsolete("Never called: schema initialisation has no instance to call it on. Run start-up work after InitializeDataProviderAsync.")]
         protected internal virtual void OnAfterInitializeDB()
         {
 
@@ -736,7 +739,7 @@ namespace TFM.Nucleus
 
         public virtual Task SaveAsync() => SaveAsync(CancellationToken.None);
 
-        /// <inheritdoc cref="Save"/>
+        /// <inheritdoc cref="Save()"/>
         public virtual Task SaveAsync(CancellationToken token) => NucleusRuntime.Current.SaveAsync(this, token);
 
         /// <summary>
@@ -766,8 +769,21 @@ namespace TFM.Nucleus
 
 
 
+        [Obsolete("Use Save. A batch too large for ordinary statements is written by the bulk engine automatically.")]
+        [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
         public static void BulkSave<TObject>(IEnumerable<TObject> objs) where TObject : CoreObject, new() =>
-            NucleusRuntime.Current.BulkSave(objs);
+            NucleusRuntime.Current.Save(objs);
+
+        /// <summary>
+        /// Saves objects of any types, each routed to the provider that stores it, in one
+        /// transaction per provider. Nulls are skipped. A batch too large for ordinary statements
+        /// is written by the provider's bulk engine on the asynchronous path.
+        /// </summary>
+        public static void Save(IEnumerable<ICoreObject?> objs) => NucleusRuntime.Current.Save(objs);
+
+        /// <summary>The asynchronous form of the batch save, which lets the bulk engine take a large batch.</summary>
+        public static Task SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken = default) =>
+            NucleusRuntime.Current.SaveAsync(objs, cancellationToken);
 
         /// <summary>Deletes this object (and its loaded child collections); the type must be [Deletable].</summary>
         public void Delete()
@@ -813,11 +829,28 @@ namespace TFM.Nucleus
             return obj != null;
         }
 
+        /// <summary>Loads by primary key on the asynchronous path, or null when there is no such row.</summary>
+        public static Task<T?> LoadByIDAsync<T>(Guid id, CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadByIDAsync<T>(id, null, cancellationToken);
+
+        [Obsolete("Use LoadFirstWhere. This loads every matching row to return the first.")]
         public static T? LoadObjectWhere<T>(Expression<Func<T, bool>> expression) where T : CoreObject<T>, new() =>
             LoadWhere(expression).FirstOrDefault();
 
+        /// <summary>The first row the predicate matches, or null. One row is read, however many match.</summary>
+        public static T? LoadFirstWhere<T>(Expression<Func<T, bool>> predicate) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadFirst(predicate);
+
+        /// <inheritdoc cref="LoadFirstWhere{T}(Expression{Func{T, bool}})"/>
+        public static Task<T?> LoadFirstWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadFirstAsync(predicate, null, cancellationToken);
+
         public static NucleusCollection<T> LoadAll<T>() where T : CoreObject<T>, new() =>
             NucleusRuntime.Current.LoadAll<T>();
+
+        /// <summary>Loads every row on the asynchronous path. A [Cacheable] type answers from its cache.</summary>
+        public static Task<NucleusCollection<T>> LoadAllAsync<T>(CancellationToken cancellationToken = default) where T : CoreObject<T>, new() =>
+            NucleusRuntime.Current.LoadAllAsync<T>(cancellationToken);
 
         public static NucleusCollection<T> LoadWhere<T>(Expression<Func<T, bool>> expression) where T : CoreObject<T>, new() =>
             NucleusRuntime.Current.LoadWhere<T>(expression.Body);
@@ -973,7 +1006,7 @@ namespace TFM.Nucleus
     }
 
 
-    public class CoreObjectException : Exception
+    public class CoreObjectException : TFM.Nucleus.NucleusException
     {
         public CoreObjectExceptionType ErrorType;
         public CoreObjectException(CoreObjectExceptionType type) : base($"{type}")

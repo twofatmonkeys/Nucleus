@@ -22,8 +22,20 @@ namespace TFM.Nucleus.Data
                     $"Exclude applies to Nucleus queries only; this source is a {source.GetType().Name}.");
 
         /// <summary>
+        /// Also returns the soft-deleted rows of a Nucleus query, so
+        /// <c>.Where(..).IncludeDeleted()</c> works as well as <c>.IncludeDeleted().Where(..)</c>.
+        /// Only queries from IObjectDataAdaptor support it.
+        /// </summary>
+        public static IQueryable<TSource> IncludeDeleted<TSource>(this IQueryable<TSource> source)
+            where TSource : ICoreObject<TSource>, new() =>
+            source is ObjectDataAdaptor<TSource> adaptor
+                ? adaptor.IncludeDeleted()
+                : throw new InvalidOperationException(
+                    $"IncludeDeleted applies to Nucleus queries only; this source is a {source.GetType().Name}.");
+
+        /// <summary>
         /// Loads a lazy ([RetrieveOnDemand]) child collection with a Nucleus query's rows, so
-        /// <c>.Where(..).Include(c =&gt; c.Recipients)</c> works as well as <c>.Include(..).Where(..)</c>.
+        /// <c>.Where(..).Include(m =&gt; m.Naps)</c> works as well as <c>.Include(..).Where(..)</c>.
         /// Only queries from IObjectDataAdaptor support it.
         /// </summary>
         public static IQueryable<TSource> Include<TSource>(this IQueryable<TSource> source,
@@ -36,7 +48,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Loads the entities a <c>[LinkedObject]</c> property refers to with a Nucleus query's
-        /// rows, so <c>.Where(..).Include(v =&gt; v.Recipient)</c> works as well as
+        /// rows, so <c>.Where(..).Include(m =&gt; m.Keeper)</c> works as well as
         /// <c>.Include(..).Where(..)</c>. Only queries from IObjectDataAdaptor support it.
         /// </summary>
         public static IQueryable<TSource> Include<TSource>(this IQueryable<TSource> source,
@@ -49,7 +61,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Loads a linked collection's members with a Nucleus query's rows, so
-        /// <c>.Where(..).Include(c =&gt; c.Vouchers)</c> works as well as <c>.Include(..).Where(..)</c>.
+        /// <c>.Where(..).Include(t =&gt; t.Monkeys)</c> works as well as <c>.Include(..).Where(..)</c>.
         /// Only queries from IObjectDataAdaptor support it.
         /// </summary>
         public static IQueryable<TSource> Include<TSource>(this IQueryable<TSource> source,

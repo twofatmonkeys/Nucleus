@@ -121,7 +121,7 @@ namespace TFM.Nucleus.Tests
                 " AND ", " OR ", "WHERE ", " FROM ", "ORDER BY", " ASC", " DESC", "LIKE", "ROWLOCK", "NOLOCK",
                 "@@ROWCOUNT", "COUNT_BIG", "ROW_NUMBER", "COLLATE", "CONTAINS(", "OFFSET ", "LIMIT ", "RETURNING",
                 "CREATE ", "DROP ", "ALTER ", "VALUES", "pg_", "information_schema", "INFORMATION_SCHEMA", "sys.", "::",
-                "SqlException", "SqlClient", "PostgresException", "Npgsql", "AddNucleusSQLDataProvider", "AddNucleusPostgres",
+                "SqlException", "SqlClient", "PostgresException", "Npgsql", "AddNucleusSQLDataProvider", "AddNucleusSqlServer", "AddNucleusPostgres",
                 "sqlite_schema", "sqlite_master", "PRAGMA", "pragma_", "SqliteException", "Microsoft.Data.Sqlite", "AddNucleusSqlite", "nucleus_like",
             ];
 

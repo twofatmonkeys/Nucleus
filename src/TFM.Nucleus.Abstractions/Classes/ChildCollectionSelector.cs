@@ -18,17 +18,17 @@ namespace TFM.Nucleus
 
         /// <summary>
         /// The name of the <c>[LinkedObject]</c> property a selector reads, as in
-        /// <c>v =&gt; v.Recipient</c>, for including the referenced entities in a load.
+        /// <c>m =&gt; m.Keeper</c>, for including the referenced entities in a load.
         /// </summary>
         public static string PropertyName<T>(Expression<Func<T, ICoreObject?>> selector) =>
-            MemberName(selector, $"A linked object selector must read one [LinkedObject] property of {typeof(T).Name}, as in x => x.Recipient");
+            MemberName(selector, $"A linked object selector must read one [LinkedObject] property of {typeof(T).Name}, as in x => x.Keeper");
 
         /// <summary>
         /// The name of the linked collection property a selector reads, as in
-        /// <c>c =&gt; c.Vouchers</c>, for including the members in a load.
+        /// <c>t =&gt; t.Monkeys</c>, for including the members in a load.
         /// </summary>
         public static string PropertyName<T>(Expression<Func<T, INucleusLinkedCollection>> selector) =>
-            MemberName(selector, $"A linked collection selector must read one NucleusLinkedCollection property of {typeof(T).Name}, as in x => x.Vouchers");
+            MemberName(selector, $"A linked collection selector must read one NucleusLinkedCollection property of {typeof(T).Name}, as in x => x.Monkeys");
 
         private static string MemberName(LambdaExpression selector, string requirement)
         {

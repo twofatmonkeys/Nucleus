@@ -29,6 +29,18 @@ namespace TFM.Nucleus.Data
 
         public bool UseTransaction { get; init; }
         public IDataContext? Parent { get; init; }
-        public bool UseDependency { get; init; }
+        /// <summary>
+        /// Open the context so that what it reads can be watched for changes, on an engine whose
+        /// change notifications are registered by the reading connection. Other engines ignore it.
+        /// </summary>
+        public bool WatchForChanges { get; init; }
+
+        /// <summary>The old name of <see cref="WatchForChanges"/>.</summary>
+        [Obsolete("Use WatchForChanges.")]
+        public bool UseDependency
+        {
+            get => WatchForChanges;
+            init => WatchForChanges = value;
+        }
     }
 }

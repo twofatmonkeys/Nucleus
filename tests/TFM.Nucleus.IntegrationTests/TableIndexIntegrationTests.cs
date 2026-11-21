@@ -51,7 +51,7 @@
             using var schema = await Fixture.SchemaLockAsync();
 
             Assert.Equal(ExpectedIndexColumns, await ScalarAsync(IndexColumnsSql(Table, Index)));
-            Assert.Equal(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
+            Assert.Equal(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent());
         }
 
         [Fact]
@@ -62,13 +62,13 @@
             await ExecuteAsync(DropIndexSql(Table, Index));
             try
             {
-                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
+                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent());
 
                 using var stack = await Fixture.StartStackAsync(_ => { });
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.Equal(ExpectedIndexColumns, await ScalarAsync(IndexColumnsSql(Table, Index)));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
             }
             finally
             {
@@ -96,14 +96,14 @@
             await ExecuteAsync(DropIndexSql(ChildTable, ParentIndex));
             try
             {
-                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
+                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent());
 
                 // An existing database gains the index in place at its next start, with no rebuild.
                 using var stack = await Fixture.StartStackAsync(_ => { });
 
                 Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
                 Assert.Equal("Parent", await ScalarAsync(IndexColumnsSql(ChildTable, ParentIndex)));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
             }
             finally
             {
@@ -156,13 +156,13 @@
             try
             {
                 // The check a read-only schema stops at: it reports the difference and changes nothing.
-                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent(null));
+                Assert.NotEqual(DataProviderStatus.Ok, Fixture.Provider!.CheckSchemaIsCurrent());
                 Assert.Equal(0, await PathIndexUniqueAsync());
 
                 using var stack = await Fixture.StartStackAsync(_ => { });
 
                 Assert.Equal(1, await PathIndexUniqueAsync());
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
             }
             finally
             {

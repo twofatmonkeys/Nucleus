@@ -11,7 +11,7 @@ namespace TFM.Nucleus
 {
     /// <summary>
     /// The many side of a one-to-many relationship between two root types, held on the one, as in
-    /// <c>Campaign.Vouchers</c>: the stored <typeparamref name="TMany"/> rows whose key property
+    /// <c>Troop.Monkeys</c>: the stored <typeparamref name="TMany"/> rows whose key property
     /// (named by <c>[LinkedBy]</c> on the collection property) holds the one's ID. A member is a
     /// root of its own, loaded, saved and deleted on its own as well as through the one.
     /// </summary>
@@ -22,7 +22,7 @@ namespace TFM.Nucleus
     /// <c>Clear</c>, <c>Insert</c>, <c>CopyTo</c>), on the synchronous path, once however many
     /// threads read it. <see cref="LoadAsync"/> loads them without blocking a thread. Reading the
     /// property alone loads nothing, and neither does <see cref="Add"/>. A listing includes the
-    /// collection instead (<c>Include(c =&gt; c.Vouchers)</c>), which loads every row's members in
+    /// collection instead (<c>Include(t =&gt; t.Monkeys)</c>), which loads every row's members in
     /// the same round trip. The members of a new one are all the ones added, so it starts loaded.
     /// </para>
     /// <para>

@@ -106,11 +106,18 @@ namespace TFM.Nucleus
                 return new NucleusCollection<T>();
             if (DataTableSchema == null)
                 throw new InvalidOperationException("DataSet does not have a DataTableSchema associated with it.");
-            return [.. BindRows<T>()];
+            return [.. BindRowsCore<T>()];
 
         }
 
-        public IEnumerable<T> BindRows<T>() where T : ICoreObject<T>, new()
+        /// <summary>
+        /// One object per row, bound and nothing more: no child collection is attached and the
+        /// load hook does not run.
+        /// </summary>
+        [Obsolete("Binds rows without attaching children or running OnAfterLoadFromDB. Load through IObjectDataManager, or use CoreObject<T>.BindDataSet for a flat bind that runs the load hook.")]
+        public IEnumerable<T> BindRows<T>() where T : ICoreObject<T>, new() => BindRowsCore<T>();
+
+        internal IEnumerable<T> BindRowsCore<T>() where T : ICoreObject<T>, new()
         {
             if (RowCount == 0)
                 return [];
@@ -129,6 +136,8 @@ namespace TFM.Nucleus
             return objList;
         }
 
+        /// <inheritdoc cref="BindRows{T}"/>
+        [Obsolete("Binds rows without attaching children or running OnAfterLoadFromDB. Load through IObjectDataManager, or use CoreObject<T>.BindDataSet for a flat bind that runs the load hook.")]
         public IEnumerable<T> Bind<T>() where T : ICoreObject<T>, new()
         {
             if (RowCount == 0)

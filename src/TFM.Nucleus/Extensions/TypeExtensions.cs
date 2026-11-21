@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 namespace TFM.Nucleus
 { 
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static class TypeExtensions
     {
         public static bool IsCacheable(this Type t)

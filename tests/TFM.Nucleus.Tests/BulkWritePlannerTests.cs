@@ -32,13 +32,13 @@ namespace TFM.Nucleus.Tests
                 {
                     Assert.False(insert.IsUpdate);
                     Assert.Equal(inserts.Length, insert.Queries.Count);
-                    Assert.All(insert.Queries, q => Assert.Equal(QueryType.INSERT, q.Type));
+                    Assert.All(insert.Queries, q => Assert.Equal(QueryKind.Insert, q.Type));
                 },
                 update =>
                 {
                     Assert.True(update.IsUpdate);
                     Assert.Equal(updates.Length, update.Queries.Count);
-                    Assert.All(update.Queries, q => Assert.Equal(QueryType.UPDATE, q.Type));
+                    Assert.All(update.Queries, q => Assert.Equal(QueryKind.Update, q.Type));
                 });
         }
     }
