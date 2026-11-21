@@ -199,8 +199,15 @@ by its parameter count, never by the caller. The synchronous path has no bulk en
 one walk of the dependents (a flag keeps `base.Validate()` from walking them a second time).
 `CoreObject`'s own saves do not validate, because they route through the manager or a context;
 validating there too would run the rules twice. The manager marks objects saved and evicts the
-cache only after disposing the context, which is what commits it, so a failed commit leaves them
-unsaved. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+cache only after its context has committed and been disposed, so a failed commit leaves them
+unsaved. A save through a context's own `Save`/`SaveAsync` (and `CoreObject.SaveAsync(IDataContext)`)
+marks its objects saved as the writes run, through `ICoreObject.CommitChangesInTransaction`, which
+records what each object's commit changed in the root context's `CommitUndoLog` (Abstractions);
+`DbDataContext.EndTransaction` clears the log when the commit returns and reverts it after a
+rollback or a failed commit, which leaves each object as it was before its first save in the
+transaction with later changes still pending. The manager's mixed-type batch save, its one save
+through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
+the audit logger, stays the one place its objects are marked. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
 the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour.
 

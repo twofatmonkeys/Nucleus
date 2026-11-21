@@ -96,11 +96,13 @@ namespace TFM.Nucleus.Data
         /// work that must share one transaction across several types on that provider. The
         /// caller owns the outcome, and the manager's guarantees do not apply inside it:
         /// <list type="bullet">
-        /// <item>Disposing a transactional context commits it unless <see cref="IDataContext.Rollback"/>
-        /// or <see cref="IDataContext.TryRollback"/> was called. A failed statement does not roll
-        /// it back by itself, so catch, roll back and rethrow.</item>
-        /// <item>An object saved through it is marked saved as soon as its writes run, before the
-        /// commit; after a rollback, reload it.</item>
+        /// <item>Commit a transactional context with <see cref="IDataContext.CommitAsync"/>. A
+        /// failure of anything it runs marks it for rollback; until v3, one disposed without a
+        /// commit or a rollback still commits, unless the provider's <c>RequireCommit</c> is set.</item>
+        /// <item>An object saved through it is marked saved as its writes run. If the transaction
+        /// rolls back or its commit fails, the object is put back as it was before its first save
+        /// in that transaction, with any change made since still pending, so it can be saved
+        /// again without being reloaded.</item>
         /// <item>No <c>[Cacheable]</c> cache is evicted.</item>
         /// </list>
         /// Prefer <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/> when the objects
@@ -901,6 +903,7 @@ namespace TFM.Nucleus.Data
                 // saved only once it has committed.
                 using (var context = providerGroup.Key.CreateContext(ContextOptions.Transactional))
                 {
+                    LeaveSavedObjectsToManager(context);
                     try
                     {
                         context.Save(list);
@@ -925,6 +928,7 @@ namespace TFM.Nucleus.Data
                 var list = providerGroup.ToList();
                 await using (var context = await providerGroup.Key.CreateContextAsync(ContextOptions.Transactional, cancellationToken))
                 {
+                    LeaveSavedObjectsToManager(context);
                     try
                     {
                         await context.SaveAsync(list, cancellationToken);
@@ -938,6 +942,17 @@ namespace TFM.Nucleus.Data
                 }
                 MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
+        }
+
+        /// <summary>
+        /// A context marks the objects it saves as saved itself, without the audit logger. The
+        /// batch save of mixed types saves through one, so it turns that off and marks them in
+        /// <see cref="MarkSaved"/> once the context has committed, as every other manager save does.
+        /// </summary>
+        private static void LeaveSavedObjectsToManager(IDataContext context)
+        {
+            if (context is ISaveAcceptance acceptance)
+                acceptance.AcceptsSavedObjects = false;
         }
 
         /// <summary>

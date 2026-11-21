@@ -11,6 +11,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteTransactionCommitIntegrationTests(SqliteFixture fixture) : TransactionCommitIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteContextSaveIntegrationTests(SqliteFixture fixture) : ContextSaveIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteManagerLoadIntegrationTests(SqliteFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]

@@ -132,6 +132,16 @@ namespace TFM.Nucleus
 
         void INucleusLinkedCollection.AcknowledgeRemovals() => _removed.Clear();
 
+        void INucleusLinkedCollection.RestoreRemovals(IEnumerable<ICoreObject> removed)
+        {
+            ArgumentNullException.ThrowIfNull(removed);
+            foreach (var obj in removed)
+                if (obj is TMany member
+                    && !_inner.Any(m => ReferenceEquals(m, member))
+                    && !_removed.Any(m => ReferenceEquals(m, member)))
+                    _removed.Add(member);
+        }
+
         /// <summary>Points the member's key at the one.</summary>
         private void Link(TMany member)
         {

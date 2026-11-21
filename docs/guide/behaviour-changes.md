@@ -3,6 +3,29 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A context save follows its transaction in memory
+
+- **An object saved through a caller-owned context is put back if the transaction does not
+  commit.** `CoreObject.SaveAsync(IDataContext, ...)` used to mark the object, its children and its
+  removals saved for good as soon as the writes ran, so after a rollback the object said it was
+  saved and had forgotten its removals, and the caller had to reload it. Now a rollback, a failure
+  that dooms the transaction, or a failed commit puts each object back as it was before its first
+  save in that transaction: a new object is new again, a loaded one has its written changes
+  pending again, and removed children and linked collection members are pending deletion again.
+  Changes made after the save are kept as pending changes. Save the objects again, through the
+  manager or a new context, without reloading them.
+- **`IDataContext.Save` and `SaveAsync` mark the objects saved.** For one object or a batch, they
+  used to leave the objects as they were, so after a commit a new object was still new and its
+  next save inserted it again. They now behave as `CoreObject.SaveAsync(IDataContext, ...)` does.
+  Remove any `CommitChanges()` call you made after a context save to work around it; it is now
+  redundant.
+- **While the transaction is open, the objects match it.** Saving the same object twice in one
+  context updates it the second time instead of inserting it again. A context without a
+  transaction marks the objects saved at once, because each write has already committed.
+- **Unchanged.** The manager's own saves mark their objects saved only once their transaction has
+  committed, and audit them as before. A save through a context is still not audited and still
+  evicts no `[Cacheable]` cache.
+
 ## Unchanged children are not written
 
 - **A save writes only the rows that changed below the object saved.** Saving a parent used to

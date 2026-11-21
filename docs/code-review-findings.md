@@ -130,10 +130,8 @@ rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
 
 ### Found with the child model (November 2026)
 
-- **A save through a caller-owned context commits in memory before the caller commits.**
-  `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
-  removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
-  saved and have forgotten their removals. Long-standing; listed in the guide's known limits.
+- **A save through a caller-owned context committed in memory before the caller committed.**
+  Fixed (November 2026); see "A context save did not follow its transaction in memory" under Fixed.
 - **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
   `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
   clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
@@ -350,8 +348,8 @@ The staged fix, part one (v2):
 Still open until v3 makes `RequireCommit` the only behaviour, which changes every caller-owned
 context and so needs a coordinated release. Until then a consumer commits explicitly and turns
 `RequireCommit` on. A save or delete through such a context also evicts no `[Cacheable]` cache,
-because eviction is the manager's job, and it marks the objects saved before the commit (the
-README known limit). Cover: `TransactionCommitIntegrationTests`, on every provider.
+because eviction is the manager's job. Cover: `TransactionCommitIntegrationTests`, on every
+provider.
 
 ### An asynchronous execute drops a query without a table schema (November 2026)
 
@@ -377,6 +375,32 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### A context save did not follow its transaction in memory (November 2026)
+
+Two defects with one cause: what an object saved through a caller-owned `IDataContext` held in
+memory did not follow that context's transaction.
+
+- **`CoreObject.SaveAsync(IDataContext, ...)` committed in memory before the caller committed.** It
+  called `CommitChanges` as soon as the writes ran, so a caller who then rolled back kept objects
+  that said they were saved and had forgotten their removals, and had to reload them.
+- **`IDataContext.Save` and `SaveAsync` never committed in memory at all**, for one object or a
+  batch. After the transaction committed, a new object was still new, so its next save inserted it
+  again and failed on the primary key. The guide's store sample saved this way, and the integration
+  tests hid it by calling `CommitChanges()` by hand after the context save.
+
+Now the context commits each object it saves as the writes run, so the objects match the open
+transaction (a second save of a new object updates it), and records what the commit changed in
+the root's `CommitUndoLog`. `DbDataContext.EndTransaction`, the one place a root's transaction
+ends, clears the log when the commit returns and reverts it otherwise: after a rollback, a doomed
+commit or a failed commit, each object is as it was before its first save in the transaction,
+with every change made since still pending, and its removals are pending again. Committing first
+and reverting on failure was chosen over holding the commit back until the transaction commits,
+because held back, a new object saved twice in one context would be inserted twice. The
+manager's batch save of mixed types, its one save through a context's own save, turns this off
+(`ISaveAcceptance`) and keeps marking its objects saved after the commit, with the audit logger.
+Cover: `CommitUndoTests` (in memory) and `ContextSaveIntegrationTests` (every context save path,
+on every provider).
 
 ### Found with the explicit commit (November 2026)
 

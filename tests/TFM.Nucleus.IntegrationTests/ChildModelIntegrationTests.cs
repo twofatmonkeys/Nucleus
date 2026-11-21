@@ -41,10 +41,8 @@ namespace TFM.Nucleus.IntegrationTests
             if (path == SavePath.ContextSaveAsync)
                 await roster.SaveAsync(context, Ct);
             else
-            {
                 await context.SaveAsync((IEnumerable<ICoreObject?>)[roster], Ct);
-                ((ICoreObject)roster).CommitChanges();
-            }
+            await context.CommitAsync(Ct);
         }
 
         private static async Task<IntRoster> SavedRosterAsync(ObjectDataManager manager, string name, params string[] codes)

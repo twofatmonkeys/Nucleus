@@ -26,7 +26,7 @@ namespace TFM.Nucleus.Data.Providers
     /// engine needs.
     /// </summary>
     /// <typeparam name="TSelf">The provider's context type; each type keeps its own pool of open contexts.</typeparam>
-    public abstract class DbDataContext<TSelf> : IDataContext, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
+    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
     {
         private static readonly ConcurrentDictionary<Guid, TSelf> _contextCache = new();
         private readonly ConcurrentDictionary<Guid, TSelf> _childContexts = new();
@@ -48,6 +48,11 @@ namespace TFM.Nucleus.Data.Providers
         // The root of a child's tree, whose connection and transaction it uses; null on a root.
         private TSelf? _root;
         private DbConnection? _connection;
+        // On a root, what the tree's saves committed in memory, put back if the transaction does
+        // not commit. Created by the first save.
+        private CommitUndoLog? _undo;
+        // False on a context whose caller marks the saved objects itself, after the commit.
+        private bool _acceptsSavedObjects = true;
 
         /// <summary>Identifies this context in the pool and in diagnostics.</summary>
         protected Guid ContextId { get; } = Guid.NewGuid();
@@ -320,6 +325,7 @@ namespace TFM.Nucleus.Data.Providers
         {
             foreach (var query in BuildSaveQueries(obj))
                 ExecuteSQL(query);
+            Accept([obj]);
         }
         void IDataContext.Delete(ICoreObject obj) => ExecuteSQL(BuildDeleteQuery(obj));
 
@@ -330,6 +336,41 @@ namespace TFM.Nucleus.Data.Providers
         {
             foreach (var query in BuildSaveQueries(obj))
                 await ExecuteSQLAsync(query, token);
+            Accept([obj]);
+        }
+
+        /// <summary>
+        /// Marks the objects a save has written as saved. Without a transaction each write has
+        /// already committed. With one, the root's <see cref="CommitUndoLog"/> records what this
+        /// changed, and <see cref="EndTransaction"/> forgets it when the transaction commits or puts
+        /// it back when it does not, so a rollback leaves the objects as they were before their
+        /// first save in it, with any change made since still pending.
+        /// </summary>
+        private void Accept(IEnumerable<ICoreObject?> objs)
+        {
+            if (!_acceptsSavedObjects)
+                return;
+            try
+            {
+                if (!HasTransaction)
+                {
+                    foreach (var obj in objs)
+                        obj?.CommitChanges();
+                    return;
+                }
+                var undo = Root._undo ??= new CommitUndoLog();
+                foreach (var obj in objs)
+                    obj?.CommitChangesInTransaction(undo);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
+        }
+
+        bool ISaveAcceptance.AcceptsSavedObjects
+        {
+            set => _acceptsSavedObjects = value;
         }
         Task IDataContext.DeleteAsync(ICoreObject obj) => ExecuteSQLAsync(BuildDeleteQuery(obj), CancellationToken.None);
         Task IDataContext.DeleteAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildDeleteQuery(obj), token);
@@ -441,16 +482,22 @@ namespace TFM.Nucleus.Data.Providers
 
         private void SaveBatch(IEnumerable<ICoreObject?>? objects)
         {
-            foreach (var query in BuildBatchSaveQueries(objects))
+            var list = objects as IList<ICoreObject?> ?? objects?.ToList();
+            foreach (var query in BuildBatchSaveQueries(list))
                 ExecuteSQL(query);
+            if (list != null)
+                Accept(list);
         }
 
         private async Task SaveBatchAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
         {
+            var list = objects as IList<ICoreObject?> ?? objects?.ToList();
             // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine. Each
             // type's inserts and updates are separate chains, which is the shape it batches by.
-            foreach (var query in BuildBatchSaveQueries(objects))
+            foreach (var query in BuildBatchSaveQueries(list))
                 await ExecuteSQLAsync(query, token);
+            if (list != null)
+                Accept(list);
         }
 
         /// <summary>
@@ -619,14 +666,35 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>
         /// Commits or rolls back a root's transaction and marks it ended, so nothing runs on the
         /// tree after it. Ended even when the commit or rollback throws: the transaction cannot be
-        /// used again, and disposing it lets the server roll back whatever it still holds.
+        /// used again, and disposing it lets the server roll back whatever it still holds. The
+        /// objects the tree's saves marked saved stay saved only if the commit returned; after a
+        /// rollback or a failed commit they are put back before the failure propagates.
         /// </summary>
         private async ValueTask EndTransaction(bool commit, bool async)
         {
             _completed = true;
             var transaction = _transaction;
-            if (transaction == null)
-                return;
+            var committed = false;
+            try
+            {
+                if (transaction == null)
+                    return;
+                await CommitOrRollBack(transaction, commit, async).ConfigureAwait(false);
+                committed = commit;
+            }
+            finally
+            {
+                var undo = _undo;
+                _undo = null;
+                if (committed)
+                    undo?.Clear();
+                else
+                    undo?.Revert();
+            }
+        }
+
+        private async ValueTask CommitOrRollBack(DbTransaction transaction, bool commit, bool async)
+        {
             try
             {
                 if (commit)

@@ -5,9 +5,6 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Saving
 
-- **A save through a caller-owned context commits in memory before the caller commits.**
-  `SaveAsync(IDataContext, ...)` marks the object, its children and its removals saved as soon as
-  the writes run. A caller who then rolls back must reload the objects.
 - **A caller-owned context disposed without a commit still commits, until v3.** Commit it with
   `Commit` or `CommitAsync`. A failure of anything it runs (a statement, a validation rule, a
   cancellation) marks it for rollback, but an exception in your own code between two saves does

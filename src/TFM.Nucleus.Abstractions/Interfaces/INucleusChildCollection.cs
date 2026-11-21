@@ -72,6 +72,16 @@ namespace TFM.Nucleus.Abstractions.Interfaces
         {
         }
 
+        /// <summary>
+        /// Puts back removals that <see cref="AcknowledgeRemovals"/> forgot, because the
+        /// transaction that deleted them rolled back. A child added to the collection again since
+        /// is left where it is.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void RestoreRemovals(IEnumerable<ICoreObject> removed)
+        {
+        }
+
         /// <summary>The object that owns the collection.</summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
         public ICoreObject ParentObject =>

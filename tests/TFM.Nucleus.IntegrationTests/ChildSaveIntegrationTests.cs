@@ -88,7 +88,6 @@ namespace TFM.Nucleus.IntegrationTests
                 }
                 await context.CommitAsync(Ct);
             }
-            ((ICoreObject)roster).CommitChanges();
         }
 
         /// <summary>A stored roster of two lines, each with one break, loaded back.</summary>

@@ -23,6 +23,16 @@ namespace TFM.Nucleus
         public void CommitChanges(ILogger? logger = null);
 
         /// <summary>
+        /// Commits as <see cref="CommitChanges"/> does, for a save inside a transaction that has
+        /// not committed yet, recording in <paramref name="undo"/> what the commit changed so it
+        /// can be put back if the transaction rolls back. A data context calls this after each
+        /// save's writes run; application code does not call it.
+        /// </summary>
+        /// <remarks>An implementation that predates this member commits without recording anything.</remarks>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public void CommitChangesInTransaction(CommitUndoLog undo, ILogger? logger = null) => CommitChanges(logger);
+
+        /// <summary>
         /// Checks the object before a save and gets it ready to write: its rules, and those of the
         /// new and changed children and forceSave links the save reaches, then its save hooks.
         /// Throws to reject the save. Nucleus calls this once per object being saved, on every save

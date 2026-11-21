@@ -51,10 +51,19 @@ namespace TFM.Nucleus.Data
 
         IAsyncEnumerable<StreamingRow> StreamAsync(IQuery query, CancellationToken ct);
 
+        /// <summary>
+        /// Saves the object, with the graph it reaches, in this context (and its transaction, if
+        /// it has one), validating it first. The object is marked saved as the writes run. If the
+        /// transaction rolls back or its commit fails, the object is put back as it was before its
+        /// first save in that transaction, with any change made since still pending, so it can be
+        /// saved again without being reloaded.
+        /// </summary>
         public void Save(ICoreObject obj);
         public void Delete(ICoreObject obj);
 
+        /// <inheritdoc cref="Save(ICoreObject)"/>
         public Task SaveAsync(ICoreObject obj);
+        /// <inheritdoc cref="Save(ICoreObject)"/>
         public Task SaveAsync(ICoreObject obj, CancellationToken token);
         public Task DeleteAsync(ICoreObject obj);
         public Task DeleteAsync(ICoreObject obj, CancellationToken token);
@@ -77,7 +86,8 @@ namespace TFM.Nucleus.Data
         /// Saves objects of any types this context's provider stores, in this context (and its
         /// transaction, if it has one). Each object is validated first; nulls are skipped. A
         /// batch too large for ordinary statements is written by the provider's bulk engine on
-        /// the asynchronous path; the caller does not choose.
+        /// the asynchronous path; the caller does not choose. The objects are marked saved, and put
+        /// back if the transaction does not commit, as <see cref="Save(ICoreObject)"/> describes.
         /// </summary>
         /// <remarks>An implementation that predates this member is served by its batch save under the old name.</remarks>
         public void Save(IEnumerable<ICoreObject?> objs) =>
