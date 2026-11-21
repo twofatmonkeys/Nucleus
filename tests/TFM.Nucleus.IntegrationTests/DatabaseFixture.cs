@@ -25,6 +25,9 @@ namespace TFM.Nucleus.IntegrationTests
         /// </summary>
         public ObjectDataManager? Manager => (ObjectDataManager?)_stack?.Manager;
 
+        /// <summary>The warnings and errors the shared stack has logged.</summary>
+        public CapturingLoggerProvider? Log => _stack?.Log;
+
         /// <summary>The provider, in skip messages and lock names.</summary>
         public string ProviderName => Database.ProviderName;
 

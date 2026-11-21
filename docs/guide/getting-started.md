@@ -217,7 +217,7 @@ store takes. Do not cast it to `ObjectDataManager`. Every call on it:
 | `DeleteWhereAsync<T>(predicate, token)` | Deletes by predicate without loading. |
 | `LoadChildCollectionAsync(collection, token)` | Loads an excluded or lazy collection. |
 | `SubscribeToChangesAsync<T>(token)` | Change notifications from the provider that owns `T`. |
-| `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types. See the known limits: it commits on dispose unless rolled back, and the manager's eviction does not apply. |
+| `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types, committed by `CommitAsync`. See the known limits: until v3 one disposed without a commit still commits unless the provider sets `RequireCommit`, and the manager's eviction does not apply. |
 | `InitializeDataProviderAsync()` | Creates or migrates every registered provider's schema. |
 | `Status` | The worst status among the registered providers; `Ok` only when every one is. |
 
@@ -243,8 +243,8 @@ await firstOrder.Lines.LoadAsync(ct);
 ```
 
 A store built on the interface looks like this. A batch of one type is one call and one
-transaction. Several types in one transaction use a caller-owned context, which commits when it is
-disposed unless it was rolled back:
+transaction. Several types in one transaction use a caller-owned context, which the caller commits
+with `CommitAsync` when the work is done:
 
 <!-- sample: store -->
 ```csharp
@@ -257,20 +257,13 @@ public sealed class KeeperDesk(IObjectDataManager data)
     public Task SaveAllAsync(IReadOnlyList<Monkey> monkeys, CancellationToken ct) =>
         data.SaveAsync(monkeys, ct);                   // one transaction
 
-    // Two types in one transaction. Disposing the context commits, so roll back on failure.
+    // Two types in one transaction, committed when the work is done. A failed save rolls it all back.
     public async Task WeighAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
     {
         await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
-        try
-        {
-            await context.SaveAsync(monkey, ct);       // validates, then writes
-            await context.SaveAsync(weighIn, ct);
-        }
-        catch
-        {
-            await context.RollbackAsync(ct);
-            throw;
-        }
+        await context.SaveAsync(monkey, ct);           // validates, then writes
+        await context.SaveAsync(weighIn, ct);
+        await context.CommitAsync(ct);
     }
 }
 ```

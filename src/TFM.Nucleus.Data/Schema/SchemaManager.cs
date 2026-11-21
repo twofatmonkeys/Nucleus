@@ -295,7 +295,8 @@ namespace TFM.Nucleus.Data.Schema
                         throw new Exception($"Error updating schema for table: {table.TableName}", ex);
                     }
                 }
-                // Disposing commits the rebuilds; indexes and extras are synced outside the transaction.
+                // Indexes and extras are synced outside the transaction.
+                await transaction.CommitAsync(async, cancellationToken);
                 disposed = true;
                 await Dispose(transaction, async);
                 await SyncColumnIndexes(tables, async, cancellationToken);

@@ -137,7 +137,7 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>A missing table is renamed from its full-name form when a table under that name exists.</summary>
         bool RenameFullNameTables => false;
 
-        /// <summary>A transaction for table rebuilds, which commits on dispose unless rolled back.</summary>
+        /// <summary>A transaction for table rebuilds, committed by <see cref="ISchemaTransaction.CommitAsync"/>.</summary>
         ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken);
     }
 
@@ -148,6 +148,11 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>The columns of one table as this transaction sees them.</summary>
         ValueTask<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(string tableName, bool async, CancellationToken cancellationToken);
+
+        /// <summary>Commits the rebuilds. Disposing without a commit commits only while the provider does not require one.</summary>
+        /// <remarks>An implementation that predates this member does not support it.</remarks>
+        ValueTask CommitAsync(bool async, CancellationToken cancellationToken) =>
+            throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
 
         void Rollback();
     }

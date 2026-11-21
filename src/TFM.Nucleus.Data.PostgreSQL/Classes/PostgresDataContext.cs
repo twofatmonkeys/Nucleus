@@ -47,9 +47,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection(useTransaction);
 
-        protected override Task<PostgresDataContext> CreateChildContextAsync(CancellationToken token) =>
-            CreateAsync(_pgProvider, this, HasTransaction, WatchesForChanges, token);
-
         protected override bool IsTransientOpenFailure(Exception exception) => PostgresErrors.IsTransient(exception);
 
         protected override int OpenAttempts => Math.Max(1, Config.ConnectAttempts);

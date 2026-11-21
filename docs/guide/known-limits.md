@@ -11,10 +11,19 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 - **A save through a caller-owned context commits in memory before the caller commits.**
   `SaveAsync(IDataContext, ...)` marks the object, its children and its removals saved as soon as
   the writes run. A caller who then rolls back must reload the objects.
-- **A caller-owned context commits when it is disposed** unless `Rollback()` or `TryRollback()`
-  was called. A failed statement does not roll it back by itself, so wrap the work in a try/catch
-  that rolls back and rethrows. Work done through it evicts no `[Cacheable]` cache. A single type's
-  batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
+- **A caller-owned context disposed without a commit still commits, until v3.** Commit it with
+  `Commit` or `CommitAsync`. A failure of anything it runs (a statement, a validation rule, a
+  cancellation) marks it for rollback, but an exception in your own code between two saves does
+  not, so disposing it commits the first and logs a warning. Set `RequireCommit` on the provider's
+  options and a context disposed without a commit rolls back instead; v3 makes that the only
+  behaviour. Work done through a caller-owned context evicts no `[Cacheable]` cache. A single
+  type's batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
+- **A child context shares its root's connection.** A context opened with `ContextOptions.Parent`
+  runs on its root's connection and transaction, so the tree commits or rolls back as one. Use one
+  context of a tree at a time; they cannot run commands concurrently.
+- **An asynchronous execute skips a hand-built query without a table schema.**
+  `ExecuteQueryAsync` runs nothing for a query whose table schema is not set, and does not say so;
+  `ExecuteQuery` runs it. Every query Nucleus builds has one.
 - **The synchronous save never uses the bulk engine.** A synchronous batch over the provider's
   parameter limit runs as several commands. `SaveAsync` is the path that hands a large batch to
   the bulk engine.

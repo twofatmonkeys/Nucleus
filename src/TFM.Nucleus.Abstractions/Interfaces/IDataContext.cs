@@ -101,6 +101,21 @@ namespace TFM.Nucleus.Data
         [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token);
 
+        /// <summary>
+        /// Commits the context's transaction. On a root context it commits at once, and throws if
+        /// a failure marked the transaction for rollback, in which case it rolls back instead. On a
+        /// context opened with a parent it marks this part of the work complete, and the root
+        /// commits the whole. A context without a transaction has nothing to commit. Nothing may
+        /// run on a context after it commits.
+        /// </summary>
+        /// <remarks>An implementation that predates this member does not support it.</remarks>
+        public void Commit() =>
+            throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
+
+        /// <inheritdoc cref="Commit"/>
+        public Task CommitAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
+
         public void Rollback();
 
         /// <summary>

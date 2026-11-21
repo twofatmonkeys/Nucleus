@@ -272,6 +272,7 @@ on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCL
   bulk engine fanned out to child contexts, each on its own connection and transaction; under
   SQLite each child waits on its parent's write lock until it times out. Data now lets a context
   say so (`DbDataContext.AllowsConcurrentWriters`), and the parts run in order on its own context.
+  Since the explicit commit the parts run in order on every engine, and the flag is obsolete.
 - **A large multi-statement command is quadratic in Microsoft.Data.Sqlite.** The driver binds each
   statement by searching every parameter of the command, so a command of N single-row statements
   over P parameters costs about N x P. At 30000 parameters an oversized save held the write lock for
@@ -341,16 +342,35 @@ timestamp. `SaveGraph` now works out whether anything below an object is new, ch
 ### A caller-owned context commits on dispose and evicts no cache (November 2026)
 
 A transactional `IDataContext` that the caller opens (`IObjectDataManager.CreateContextAsync<T>`,
-or `IDataProvider.CreateContextAsync`) commits when it is disposed unless `Rollback()` or
-`TryRollback()` was called first (`DbDataContext.FinallyDispose`). A statement that fails does not
-mark the context for rollback, so `await using var context = ...` followed by an exception between
-two writes commits the first. The manager's own operations catch, roll back and rethrow, so they
-are not affected. A save or delete through such a context also evicts no `[Cacheable]` cache,
+or `IDataProvider.CreateContextAsync`) commits when it is disposed unless something marked it for
+rollback. That is the v1 transaction tree, unchanged since the first SQL Server provider: every
+failure the context caught around a command marked the tree, and the root committed or rolled back
+when disposed. `Dispose` cannot tell that an exception is in flight, so a failure the context does
+not see, such as an exception in the caller's code between two saves, commits the first.
+
+When this was first recorded it said a failed statement does not roll the context back. That was
+wrong: `DbDataContext.Failure` marks it. What did not mark it was a failure before any command ran
+(a validation rule, a query that could not be built, a refused delete).
+
+The staged fix, part one (v2):
+- `Commit` and `CommitAsync` on `IDataContext`, which the manager and the schema update now call;
+- any failure of a context's own operation marks it for rollback;
+- `RequireCommit` on the provider options, under which a context disposed without a commit rolls
+  back; without it, dispose still commits and logs a warning.
+
+Still open until v3 makes `RequireCommit` the only behaviour, which changes every caller-owned
+context and so needs a coordinated release. Until then a consumer commits explicitly and turns
+`RequireCommit` on. A save or delete through such a context also evicts no `[Cacheable]` cache,
 because eviction is the manager's job, and it marks the objects saved before the commit (the
-README known limit). The fix is an explicit commit (a context that rolls back on dispose unless
-committed), which changes every caller-owned context and so needs a coordinated release. Until
-then, callers wrap the work in a try/catch that rolls back and rethrows. Verified by reading the
-code.
+README known limit). Cover: `TransactionCommitIntegrationTests`, on every provider.
+
+### An asynchronous execute drops a query without a table schema (November 2026)
+
+`DbDataContext.ExecuteSQLAsync` groups a query chain with `Query.GroupByTableSchema`, which skips
+every query whose `TableSchema` is null, so none of them runs and nothing says so. The synchronous
+`ExecuteSQL` splits the chain without grouping and runs them. Nothing Nucleus builds lacks a table
+schema, so only a hand-built query passed to `ExecuteQueryAsync` is affected. Verified by reading
+the code; no test reaches it.
 
 ### A provider holds two connection pools of MaxConnectionPoolSize each (November 2026)
 
@@ -368,6 +388,31 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### Found with the explicit commit (November 2026)
+
+- **A read ended a transactional context's transaction.** `GetDataSet` read with
+  `CommandBehavior.CloseConnection`, so the connection closed with the reader and took the
+  transaction with it. A save after a load on the same transactional context failed, and
+  disposing the context threw "This SqlTransaction has completed" (or the Npgsql equivalent).
+  Reads now leave the connection open; the context closes it when disposed. Confirmed failing on
+  all three engines before the fix. Cover: `AReadInATransaction_LeavesItOpenForTheWritesAfterIt`.
+- **A context tree was not atomic.** A child context (`ContextOptions.Parent`, and the parallel
+  write path) opened a connection and a transaction of its own, and the root committed each child's
+  in turn before its own, so a failure between two commits left part of the tree committed. A
+  child also could not see its root's uncommitted rows. A child now runs on its root's connection
+  and transaction. Cover: `AChild_RunsInItsRootsTransaction`, `ATree_CommitsWhole_WhenItsRootCommits`.
+- **The parallel write path is gone.** An oversized write the bulk engine could not take fanned out
+  to child contexts. No write Nucleus builds reached it: `GroupByTableSchema` keeps only queries with
+  a table schema, every save groups by insert or update, and those go to the bulk engine on SQL
+  Server and PostgreSQL, while SQLite never fanned out. Its parts now run in order on the context,
+  as SQLite's did. Checked by making the old branch throw: the whole integration suite and every
+  provider's save benchmarks ran on it without reaching it. Timed back to back against the code
+  before the change on one machine, reads (SQLite) and saves (PostgreSQL) were within run-to-run
+  spread, and every benchmark passed its allocation gate.
+- **A failure before any command left the transaction unmarked.** See the open entry on
+  caller-owned contexts. Cover: `AFailedValidation_DoomsTheTransaction_SoTheEarlierWriteIsRolledBack`,
+  `AFailureInAChild_DoomsTheWholeTree`.
 
 ### Names that could only be changed by breaking (November 2026)
 

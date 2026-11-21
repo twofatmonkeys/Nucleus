@@ -87,10 +87,18 @@ SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalP
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
 over System.Data.Common; `ProviderRegistration` is the registration every provider's `Add...`
-extensions share, so a provider's extensions only name its types. An engine that lets one
-connection write at a time sets `DbDataContext.AllowsConcurrentWriters` false, and an oversized
-write the bulk engine cannot take then runs its parts in order on its own context instead of
-fanning out to child contexts, which would wait on its write lock. A dialect whose indexes carry no
+extensions share, so a provider's extensions only name its types. A transactional context is
+committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
+operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
+through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A context
+disposed without a commit rolls back under `RelationalProviderOptions.RequireCommit` and
+otherwise still commits with a warning (until v3, which makes rolling back the only behaviour).
+Every Nucleus caller commits explicitly. A child (`ContextOptions.Parent`) runs on its root's
+connection and transaction, so a tree is one transaction; it only votes with its own commit. An
+oversized write the bulk engine cannot take runs its parts in order on its own context, on every
+engine: there is no parallel write path, because parts on connections of their own could not
+commit as one. A read leaves the connection open, because closing it with the reader ended the
+transaction. A dialect whose indexes carry no
 included columns sets `ISchemaDialect.SupportsIncludedColumns` false: its `[TableIndex]` indexes
 are created and compared by their keys alone. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
@@ -374,8 +382,10 @@ warning or an analyzer warning in new code fails CI.
 - Listings that do not need children use `Exclude(...)`; do not split a parent and its children
   into two queries and join them in memory.
 - Take `IObjectDataManager`, never the concrete `ObjectDataManager`, and never reach through its
-  `DataProvider`. A transaction across several types is `CreateContextAsync<T>`, wrapped in a
-  try/catch that rolls back, because disposing the context commits. If a store needs something the
+  `DataProvider`. A transaction across several types is `CreateContextAsync<T>`, ended with
+  `await context.CommitAsync(ct)`. Never rely on dispose to commit: it does only until v3, or until
+  the provider sets `RequireCommit`, and it commits work a failure in your own code should have
+  stopped. If a store needs something the
   interface lacks, that is a Nucleus defect: add it to the interface rather than casting.
 - When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
   record it in `docs/code-review-findings.md` and in `docs/guide/known-limits.md`) rather than

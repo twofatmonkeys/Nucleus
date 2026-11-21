@@ -25,6 +25,7 @@ namespace TFM.Nucleus.Tests
         public List<(LogLevel Level, string Message)> Logged { get; } = [];
         public CatalogSnapshot Snapshot { get; }
         public bool RolledBack { get; private set; }
+        public bool Committed { get; private set; }
 
         /// <summary>
         /// The columns the schema transaction reads back for a table. By default a table the store
@@ -88,6 +89,12 @@ namespace TFM.Nucleus.Tests
 
             public ValueTask<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(string tableName, bool async, CancellationToken cancellationToken) =>
                 ValueTask.FromResult((store.ColumnsInTransaction ?? store.DefaultColumns)(tableName));
+
+            public ValueTask CommitAsync(bool async, CancellationToken cancellationToken)
+            {
+                store.Committed = true;
+                return ValueTask.CompletedTask;
+            }
 
             public void Rollback() => store.RolledBack = true;
             public void Dispose() { }

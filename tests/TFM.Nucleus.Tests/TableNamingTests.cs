@@ -408,6 +408,7 @@ namespace TFM.Nucleus.Tests
             Assert.Empty(store.InTransaction);
             Assert.Empty(store.OutsideTransaction);
             Assert.True(store.RolledBack);
+            Assert.False(store.Committed);
             Assert.Contains(store.Logged, l => l.Level == LogLevel.Error &&
                 l.Message.Contains("tbl_OldNamingWidget, tbl_OlderNamingWidget") && l.Message.Contains("does not merge"));
         }

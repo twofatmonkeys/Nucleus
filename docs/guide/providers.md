@@ -161,7 +161,7 @@ Each table below lists what its provider accepts.
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
 | `PacketSize` | `1500` | Network packet size. |
-| `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
+| `MaxThreadsForLargeQuery` | `12` | Obsolete and ignored. An oversized write the bulk engine cannot take runs its commands one after another on its own transaction. |
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `10` | How long opening a context on the asynchronous path waits for a free slot under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a command timeout: queries and saves use the driver's default of 30 seconds. `CommandTimeoutSeconds` is its obsolete name. |
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
@@ -170,6 +170,7 @@ Each table below lists what its provider accepts.
 | `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails. A busy server can take longer than 3 seconds to finish a login, and the open then fails with a connection timeout that is not retried; raise it for a server under load. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
 | `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](schema.md#table-names). |
 | `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](schema.md#table-names). |
+| `RequireCommit` | `false` | Roll back a transactional context disposed without `Commit` or `CommitAsync`. When off, such a context commits and logs a warning. v3 makes rolling back the only behaviour. See the known limits. |
 
 Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and
 `ConnectTimeoutSeconds` is one of the shared ones.
@@ -192,13 +193,14 @@ that times out.
 | `ConnectAttempts` | `3` | Attempts at opening a connection when the failure is transient, the first included, with an exponential back-off. `ConnectRetryCount` is its obsolete name. |
 | `ConnectTimeoutSeconds` | `15` | How long opening a connection waits before it fails. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
-| `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
+| `MaxThreadsForLargeQuery` | `12` | As for SQL Server: obsolete and ignored. |
 | `MaxParametersPerCommand` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
+| `RequireCommit` | `false` | As for SQL Server. |
 
 ### SqliteConfiguration
 
@@ -216,6 +218,7 @@ that times out.
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
+| `RequireCommit` | `false` | As for SQL Server. |
 
 ## Stores for other libraries
 

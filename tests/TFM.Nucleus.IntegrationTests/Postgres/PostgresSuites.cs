@@ -8,6 +8,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresCrudIntegrationTests(PostgresFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresTransactionCommitIntegrationTests(PostgresFixture fixture) : TransactionCommitIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresManagerLoadIntegrationTests(PostgresFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

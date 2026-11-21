@@ -21,10 +21,10 @@ namespace TFM.Nucleus.Tests
         public Exception? ExecuteFailure { get; set; }
 
         /// <summary>
-        /// When set, disposing a context throws it, as a transactional context does when its
+        /// When set, committing a context throws it, as a transactional context does when its
         /// commit fails: the statements ran, the commit did not.
         /// </summary>
-        public Exception? DisposeFailure { get; set; }
+        public Exception? CommitFailure { get; set; }
 
         public Guid ConnectionIdentifier { get; } = Guid.NewGuid();
         public DataProviderStatus Status => DataProviderStatus.Ok;
@@ -269,6 +269,24 @@ namespace TFM.Nucleus.Tests
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => Task.CompletedTask;
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => Task.CompletedTask;
 
+        /// <summary>How the context was committed: null if it was not, else true for CommitAsync.</summary>
+        public bool? CommittedAsync { get; private set; }
+
+        public void Commit()
+        {
+            if (provider.CommitFailure is { } failure)
+                throw failure;
+            CommittedAsync = false;
+        }
+
+        public Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            if (provider.CommitFailure is { } failure)
+                throw failure;
+            CommittedAsync = true;
+            return Task.CompletedTask;
+        }
+
         public void Rollback() => RolledBack = true;
         public void TryRollback() => RolledBack = true;
         public Task TryRollbackAsync() { RolledBack = true; return Task.CompletedTask; }
@@ -277,18 +295,11 @@ namespace TFM.Nucleus.Tests
         /// <summary>How the context was disposed: null while open, else true for DisposeAsync.</summary>
         public bool? DisposedAsync { get; private set; }
 
-        public void Dispose()
-        {
-            DisposedAsync ??= false;
-            if (provider.DisposeFailure is { } failure)
-                throw failure;
-        }
+        public void Dispose() => DisposedAsync ??= false;
 
         public ValueTask DisposeAsync()
         {
             DisposedAsync ??= true;
-            if (provider.DisposeFailure is { } failure)
-                throw failure;
             return ValueTask.CompletedTask;
         }
     }
