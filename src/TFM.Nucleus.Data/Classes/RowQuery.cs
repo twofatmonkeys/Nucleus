@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using TFM.Nucleus.Data.Providers;
 using TFM.Nucleus.Data.Queries;
 
 namespace TFM.Nucleus.Data
@@ -105,8 +106,21 @@ namespace TFM.Nucleus.Data
                 yield break;
             var query = Build();
             var names = ResultRow.IndexOf(query.ResultColumns!);
-            await using var context = await _provider.CreateContextAsync(token: cancellationToken).ConfigureAwait(false);
-            await foreach (var row in context.StreamAsync(query, cancellationToken).ConfigureAwait(false))
+            // Opening and the first row are attempted again as the provider's policy says; a read
+            // that has handed out a row is not.
+            await foreach (var row in OperationRetry.StreamAsync(_provider, (provider: _provider, query, names), static async (s, ct) =>
+            {
+                var context = await s.provider.CreateContextAsync(token: ct).ConfigureAwait(false);
+                return new OpenedStream<ResultRow>(context, Rows(context.StreamAsync(s.query, ct), s.names, ct).GetAsyncEnumerator(ct));
+            }, cancellationToken).ConfigureAwait(false))
+                yield return row;
+        }
+
+        /// <summary>Each streamed row as a row of its own, to keep.</summary>
+        private static async IAsyncEnumerable<ResultRow> Rows(IAsyncEnumerable<StreamingRow> rows, IReadOnlyDictionary<string, int> names,
+            [EnumeratorCancellation] CancellationToken token)
+        {
+            await foreach (var row in rows.WithCancellation(token).ConfigureAwait(false))
                 yield return new ResultRow(names, [.. row.Values]);
         }
 
@@ -129,12 +143,15 @@ namespace TFM.Nucleus.Data
             query.Take = take;
             query.WithTotalCount = true;
             var names = ResultRow.IndexOf(query.ResultColumns!);
-            await using var context = await _provider.CreateContextAsync(token: cancellationToken).ConfigureAwait(false);
-            using var dataSet = await context.GetDataSetAsync(query, cancellationToken).ConfigureAwait(false);
-            var rows = new List<ResultRow>(dataSet.RowCount);
-            for (var i = 0; i < dataSet.RowCount; i++)
-                rows.Add(new ResultRow(names, [.. dataSet[i]]));
-            return new RowPage(rows, dataSet.TotalRowCount ?? rows.Count, skip, take);
+            return await OperationRetry.RunAsync(_provider, (provider: _provider, query, names, skip, take), static async (s, ct) =>
+            {
+                await using var context = await s.provider.CreateContextAsync(token: ct).ConfigureAwait(false);
+                using var dataSet = await context.GetDataSetAsync(s.query, ct).ConfigureAwait(false);
+                var rows = new List<ResultRow>(dataSet.RowCount);
+                for (var i = 0; i < dataSet.RowCount; i++)
+                    rows.Add(new ResultRow(s.names, [.. dataSet[i]]));
+                return new RowPage(rows, dataSet.TotalRowCount ?? rows.Count, s.skip, s.take);
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>How many rows match, counted in the database. Ignores any columns, order or groups asked for.</summary>

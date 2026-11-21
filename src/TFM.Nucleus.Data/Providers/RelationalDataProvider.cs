@@ -59,6 +59,9 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The engine, for log and error messages.</summary>
         protected abstract string EngineName { get; }
 
+        /// <summary><see cref="EngineName"/>, for the messages of this provider's contexts.</summary>
+        internal string EngineDisplayName => EngineName;
+
         /// <summary>The dialect and database access the schema manager uses.</summary>
         protected abstract ISchemaStore SchemaStore { get; }
 
@@ -76,6 +79,15 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         protected abstract bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName);
 
+        /// <summary>
+        /// What the engine's failure is, read from the driver's exception anywhere in the chain:
+        /// its kind, and whether it can pass on another attempt. It also decides which failures
+        /// opening a connection retries (<see cref="RelationalProviderOptions.ConnectAttempts"/>).
+        /// The default knows only timeouts and the driver's own transient flag
+        /// (<see cref="DatabaseFailures.ClassifyDefault"/>); a provider names its engine's errors.
+        /// </summary>
+        protected internal virtual DatabaseErrorClass ClassifyFailure(Exception exception) => DatabaseFailures.ClassifyDefault(exception);
+
         /// <summary>The provider's exception for a failure of the given kind.</summary>
         protected abstract Exception ProviderException(DataProviderErrorKind kind, string? message = null);
 
@@ -90,6 +102,9 @@ namespace TFM.Nucleus.Data.Providers
         public Guid ConnectionIdentifier => Options.ID;
 
         public Type? RootType { get; set; }
+
+        /// <inheritdoc cref="RelationalProviderOptions.RetryAttempts"/>
+        public int RetryAttempts => Math.Max(1, Options.RetryAttempts);
 
         #region Initialisation
 
@@ -380,23 +395,42 @@ namespace TFM.Nucleus.Data.Providers
         #region Failures
 
         /// <summary>
-        /// Wraps a database failure with a message: a unique violation becomes a
-        /// <see cref="UniqueViolationException"/> naming the entity and the column or [TableIndex]
-        /// of a Nucleus index, anything else a plain exception. The original is the inner exception
-        /// either way.
+        /// The exception for a database failure of an operation not recorded, which may have
+        /// been applied. See <see cref="TranslateFailure(string, Exception, DatabaseOperation, bool, int)"/>.
         /// </summary>
-        public Exception TranslateFailure(string message, Exception exception)
+        public Exception TranslateFailure(string message, Exception exception) =>
+            TranslateFailure(message, exception, DatabaseOperation.Unknown, mayHaveBeenApplied: true);
+
+        /// <summary>
+        /// The exception for a failure of <paramref name="operation"/>, with the original as its
+        /// inner exception: the provider's explanation of an engine failure that needs one, a
+        /// <see cref="UniqueViolationException"/> naming the entity and the column or [TableIndex]
+        /// of a Nucleus index, or else a <see cref="DatabaseException"/> classified by
+        /// <see cref="ClassifyFailure"/>. A failure that is not the database's
+        /// (<see cref="DatabaseFailures.IsDatabaseFailure"/>) is returned as it is, for the caller
+        /// to rethrow. <paramref name="mayHaveBeenApplied"/> says whether the operation may have
+        /// left writes behind; a commit and an open decide it themselves (<see cref="DatabaseFailures.Resolve"/>).
+        /// </summary>
+        public Exception TranslateFailure(string message, Exception exception, DatabaseOperation operation, bool mayHaveBeenApplied, int attempts = 1)
         {
+            ArgumentNullException.ThrowIfNull(exception);
             if (TranslateEngineFailure(message, exception) is { } translated)
                 return translated;
+            if (!DatabaseFailures.IsDatabaseFailure(exception))
+                return exception;
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
-                return new Exception(message, exception);
+                return DatabaseFailures.Create(message, exception, ClassifyFailure(exception), operation, mayHaveBeenApplied, attempts);
+            var (_, _, applied) = DatabaseFailures.Resolve(new DatabaseErrorClass(DatabaseErrorKind.UniqueViolation, false), operation, mayHaveBeenApplied);
+            attempts = Math.Max(1, attempts);
             return UniqueIndexResolver.Resolve(Schema.TableCache.Values, SchemaStore.Dialect, physicalIndexName) switch
             {
-                null => new UniqueViolationException(message, physicalIndexName, null, null, null, exception),
+                null => new UniqueViolationException(message, physicalIndexName, null, null, null, exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
                 { DeclaredIndexName: { } declared } index =>
-                    new UniqueViolationException(message, index.IndexName, index.EntityType, declared, index.PropertyNames, index.ColumnNames, exception),
-                var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception),
+                    new UniqueViolationException(message, index.IndexName, index.EntityType, declared, index.PropertyNames, index.ColumnNames, exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
+                var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
             };
         }
 
@@ -419,13 +453,21 @@ namespace TFM.Nucleus.Data.Providers
         IDataContext IDataProvider.CreateContext(ContextOptions? options)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges);
+            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges), options);
         }
 
-        Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
+        async Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token);
+            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token), options);
+        }
+
+        /// <summary>The options a context takes once it is open: its statement time limit.</summary>
+        private static IDataContext ApplyOptions(IDataContext context, ContextOptions options)
+        {
+            if (options.StatementTimeoutSeconds is { } seconds && context is IStatementTimeout target)
+                target.StatementTimeoutSeconds = seconds;
+            return context;
         }
 
         async Task<DataProviderStatus> IDataProvider.CheckDataContextAsync()

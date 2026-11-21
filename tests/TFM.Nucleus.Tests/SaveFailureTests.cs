@@ -3,11 +3,13 @@ using TFM.Nucleus.Data.Providers;
 namespace TFM.Nucleus.Tests
 {
     /// <summary>
-    /// What a failed manager save throws. A unique violation, a cancellation, and the provider's
-    /// and the context's own exceptions reach the caller as they were thrown, as they do from the
-    /// context, so <c>catch (UniqueViolationException ex) when (ex.Is&lt;T&gt;(...))</c> works
-    /// against <c>SaveAsync</c>. Before, every failure was wrapped in "Error saving objects", and
-    /// the sync <c>Save</c> wrapped a cancellation too. Any other failure is still wrapped.
+    /// What a failed manager save throws: whatever its context threw, as it was thrown. A database
+    /// failure reaches the caller as the context's <see cref="DatabaseException"/> (a unique
+    /// violation as <see cref="UniqueViolationException"/>), so
+    /// <c>catch (DatabaseException { IsTransient: true })</c> and
+    /// <c>catch (UniqueViolationException ex) when (ex.Is&lt;T&gt;(...))</c> work against
+    /// <c>SaveAsync</c>. Before, a save wrapped every other failure in a bare "Error saving
+    /// objects" exception, which put the driver's error two levels down.
     /// </summary>
     public class SaveFailureTests
     {
@@ -63,15 +65,25 @@ namespace TFM.Nucleus.Tests
 
         [Theory]
         [MemberData(nameof(Paths))]
-        public async Task OtherFailure_IsWrapped(bool async)
+        public async Task DatabaseException_IsThrownAsItIs(bool async)
+        {
+            var failure = new DatabaseException("m", DatabaseErrorKind.Deadlock, transient: true, new Exception());
+
+            var (thrown, provider) = await SaveFailing(failure, async);
+
+            Assert.Same(failure, thrown);
+            Assert.True(Assert.Single(provider.Contexts).RolledBack);
+        }
+
+        [Theory]
+        [MemberData(nameof(Paths))]
+        public async Task OtherFailure_IsThrownAsItIs(bool async)
         {
             var failure = new InvalidOperationException("m");
 
             var (thrown, provider) = await SaveFailing(failure, async);
 
-            Assert.Equal(typeof(Exception), thrown.GetType());
-            Assert.Equal("Error saving objects", thrown.Message);
-            Assert.Same(failure, thrown.InnerException);
+            Assert.Same(failure, thrown);
             Assert.True(Assert.Single(provider.Contexts).RolledBack);
         }
 

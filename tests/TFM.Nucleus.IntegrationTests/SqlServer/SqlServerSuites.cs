@@ -14,6 +14,19 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerConnectionLimitIntegrationTests(SqlServerFixture fixture) : ConnectionLimitIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerRetryPolicyIntegrationTests(SqlServerFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.StatementTimeoutSeconds = 1;
+    }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerDatabaseFailureIntegrationTests(SqlServerFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        // Port 1 on the loopback address: nothing listens there, so the connection is refused.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.Server = "127.0.0.1:1";
+    }
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerContextSaveIntegrationTests(SqlServerFixture fixture) : ContextSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

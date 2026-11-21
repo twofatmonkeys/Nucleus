@@ -68,6 +68,8 @@ namespace TFM.Nucleus.Data.SQLite
         protected override Exception ProviderException(DataProviderErrorKind kind, string? message = null) =>
             message == null ? new SqliteDataProviderException(kind) : new SqliteDataProviderException(message, kind);
 
+        protected override DatabaseErrorClass ClassifyFailure(Exception exception) => SqliteErrors.Classify(exception);
+
         /// <summary>
         /// SQLite names the columns a unique violation broke, not the index, so the index is
         /// found from them: the column's own unique index for one column, or the unique
@@ -146,6 +148,10 @@ namespace TFM.Nucleus.Data.SQLite
         }
 
         internal SqliteDataProviderException(string message, DataProviderErrorKind kind) : base(message, kind)
+        {
+        }
+
+        internal SqliteDataProviderException(string message, DataProviderErrorKind kind, Exception innerException) : base(message, kind, innerException)
         {
         }
     }

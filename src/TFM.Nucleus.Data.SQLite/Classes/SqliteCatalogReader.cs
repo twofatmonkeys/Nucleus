@@ -73,9 +73,13 @@ namespace TFM.Nucleus.Data.SQLite
                 using var connection = Config.BuildConnection(create: true);
                 await Open(connection, async, cancellationToken);
             }
-            catch (Exception ex) when (ex is DbException or IOException or UnauthorizedAccessException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating SQLite database '{path}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating SQLite database '{path}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new SqliteDataProviderException($"Error creating SQLite database '{path}'. Error: {ex.Message}", DataProviderErrorKind.Error, ex);
             }
             await PrepareAsync(async, cancellationToken);
         }
@@ -98,7 +102,8 @@ namespace TFM.Nucleus.Data.SQLite
             {
                 var mode = await Scalar("the journal mode", "PRAGMA journal_mode = WAL", async, cancellationToken);
                 if (!string.Equals(mode as string, "wal", StringComparison.OrdinalIgnoreCase))
-                    throw new Exception($"SQLite database '{Config.FilePath}' could not be put in write-ahead log mode; it is in {mode} mode.");
+                    throw new SqliteDataProviderException($"SQLite database '{Config.FilePath}' could not be put in write-ahead log mode; it is in {mode} mode.",
+                        DataProviderErrorKind.Error);
             }
             Volatile.Write(ref _prepared, 1);
         }
@@ -141,9 +146,9 @@ namespace TFM.Nucleus.Data.SQLite
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error executing query in SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error executing query in SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -172,9 +177,9 @@ namespace TFM.Nucleus.Data.SQLite
                 command.CommandText = query;
                 return async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error reading {what} of SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error reading {what} of SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -192,9 +197,9 @@ namespace TFM.Nucleus.Data.SQLite
                     rows.Add(read(reader));
                 return rows;
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving {what} from SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving {what} from SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 

@@ -67,9 +67,9 @@ namespace TFM.Nucleus.Data.SQL
                 var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
                 return result != null && (int)result > 0;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -86,9 +86,9 @@ namespace TFM.Nucleus.Data.SQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -106,9 +106,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(TableNamesQuery, r => r.GetString(0), async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving table names from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving table names from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -118,9 +118,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(ColumnsSql, ReadColumn, async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving columns from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving columns from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -130,9 +130,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(ColumnIndexQuery, ReadColumnIndex, async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving column indexes from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving column indexes from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -151,9 +151,9 @@ namespace TFM.Nucleus.Data.SQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -165,9 +165,9 @@ namespace TFM.Nucleus.Data.SQL
                     r => new FullTextIndexColumn(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)),
                     async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving full-text indexes from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving full-text indexes from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -177,9 +177,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll("SELECT name FROM sys.fulltext_catalogs", r => r.GetString(0), async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving full-text catalogs from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving full-text catalogs from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -197,9 +197,9 @@ namespace TFM.Nucleus.Data.SQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating full-text catalog '{catalogName}' in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating full-text catalog '{catalogName}' in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -219,9 +219,9 @@ namespace TFM.Nucleus.Data.SQL
                 var count = (int)(async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar())!;
                 return count > 0;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error checking full-text index on table '{tableName}' in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error checking full-text index on table '{tableName}' in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 

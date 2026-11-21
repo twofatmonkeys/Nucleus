@@ -46,6 +46,11 @@ namespace TFM.Nucleus.Data.SQLite
 
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection();
 
+        // The driver's command timeout is how long a command waits for another connection's lock
+        // (BusyTimeoutSeconds, which the connection gives every command), not a limit on a running
+        // statement, so the statement timeout would only lengthen that wait.
+        protected override bool AppliesStatementTimeout => false;
+
         protected override DbParameter CreateParameter(DbCommand command, string name, object? value, IQueryParameter source)
         {
             var column = (source as Parameter)?.ColumnSchema as ColumnSchema;

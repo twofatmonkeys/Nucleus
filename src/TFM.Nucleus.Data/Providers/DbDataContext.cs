@@ -26,7 +26,7 @@ namespace TFM.Nucleus.Data.Providers
     /// engine needs.
     /// </summary>
     /// <typeparam name="TSelf">The provider's context type.</typeparam>
-    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
+    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IStatementTimeout, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
     {
         private readonly ConcurrentDictionary<Guid, TSelf> _childContexts = new();
         private readonly RelationalDataProvider _provider;
@@ -52,8 +52,11 @@ namespace TFM.Nucleus.Data.Providers
         // On a root, what the tree's saves committed in memory, put back if the transaction does
         // not commit. Created by the first save.
         private CommitUndoLog? _undo;
-        // False on a context whose caller marks the saved objects itself, after the commit.
-        private bool _acceptsSavedObjects = true;
+        // True on a context whose caller checks the saved objects itself, before, and marks them
+        // saved itself, after the commit.
+        private bool _callerManagesObjects;
+        // The context's own statement time limit from its ContextOptions; null takes its parent's.
+        private int? _statementTimeoutSeconds;
 
         /// <summary>Identifies this context in the pool and in diagnostics.</summary>
         protected Guid ContextId { get; } = Guid.NewGuid();
@@ -110,11 +113,19 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>A command is about to run with its text set.</summary>
         protected virtual void PrepareCommand(DbCommand command) { }
 
-        /// <summary>True when an opening failure is transient and worth another attempt.</summary>
-        protected virtual bool IsTransientOpenFailure(Exception exception) => false;
+        /// <summary>True when an opening failure is transient and worth another attempt; the default asks the provider's <see cref="RelationalDataProvider.ClassifyFailure"/>.</summary>
+        protected virtual bool IsTransientOpenFailure(Exception exception) => _provider.ClassifyFailure(exception).IsTransient;
 
-        /// <summary>How many times opening is attempted when failures are transient.</summary>
-        protected virtual int OpenAttempts => 1;
+        /// <summary>How many times opening is attempted when failures are transient; the default is <see cref="RelationalProviderOptions.ConnectAttempts"/>.</summary>
+        protected virtual int OpenAttempts => Math.Max(1, Options.ConnectAttempts);
+
+        /// <summary>
+        /// Whether the driver's command timeout limits a running statement, so that
+        /// <see cref="RelationalProviderOptions.StatementTimeoutSeconds"/> can be set as it. An
+        /// engine whose command timeout means something else, such as a wait for a lock, returns
+        /// false and its statements run with the timeout its connection gives them.
+        /// </summary>
+        protected virtual bool AppliesStatementTimeout => true;
 
         /// <summary>
         /// Binds one value of <paramref name="source"/> (one element of a multi-valued term has its
@@ -227,17 +238,18 @@ namespace TFM.Nucleus.Data.Providers
 
             _useTransaction = useTransaction;
             _useDependency = useDependency;
+            var attempts = new StrongBox<int>(1);
             try
             {
                 _connection = BuildConnection(useTransaction);
-                await OpenConnection(async, token);
+                await OpenConnection(async, attempts, token);
                 _command = _connection.CreateCommand();
                 if (HasTransaction)
                     _transaction = async ? await _connection.BeginTransactionAsync(token) : _connection.BeginTransaction();
                 if (HasTransaction)
                     _command.Transaction = _transaction;
             }
-            catch
+            catch (Exception ex)
             {
                 // A context that never opened must not keep its slot.
                 ReleaseSlot();
@@ -249,7 +261,13 @@ namespace TFM.Nucleus.Data.Providers
                         _connection.Dispose();
                     _connection = null;
                 }
-                throw;
+                if (ex is OperationCanceledException || !DatabaseFailures.IsDatabaseFailure(ex))
+                    throw;
+                if (token.IsCancellationRequested)
+                    throw new OperationCanceledException($"Opening a connection to the {_provider.EngineDisplayName} database was cancelled.", ex, token);
+                throw _provider.TranslateFailure(
+                    $"Unable to open a connection to the {_provider.EngineDisplayName} database ({Describe(attempts.Value)}). {ex.Message}",
+                    ex, DatabaseOperation.Open, mayHaveBeenApplied: false, attempts.Value);
             }
             if (_useDependency)
                 OnOpened();
@@ -260,8 +278,10 @@ namespace TFM.Nucleus.Data.Providers
 
         // Every attempt shares the connection's own connect timeout, so retries never make an open
         // wait longer than the timeout it was configured with.
-        private ValueTask OpenConnection(bool async, CancellationToken token) =>
-            ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, ConnectionOpener.TimeoutOf(_connection!), token);
+        private ValueTask OpenConnection(bool async, StrongBox<int> attempts, CancellationToken token) =>
+            ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, ConnectionOpener.TimeoutOf(_connection!), attempts, token);
+
+        private static string Describe(int attempts) => attempts == 1 ? "1 attempt" : $"{attempts} attempts";
 
         private void ReleaseSlot()
         {
@@ -356,7 +376,7 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private void Accept(IEnumerable<ICoreObject?> objs)
         {
-            if (!_acceptsSavedObjects)
+            if (_callerManagesObjects)
                 return;
             try
             {
@@ -376,10 +396,18 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        bool ISaveAcceptance.AcceptsSavedObjects
+        bool ISaveAcceptance.CallerManagesObjects
         {
-            set => _acceptsSavedObjects = value;
+            set => _callerManagesObjects = value;
         }
+
+        int IStatementTimeout.StatementTimeoutSeconds
+        {
+            set => _statementTimeoutSeconds = value;
+        }
+
+        /// <summary>The limit of each statement this context runs: its own, else its parent's, else the provider's.</summary>
+        private int StatementTimeoutSeconds => _statementTimeoutSeconds ?? _parent?.StatementTimeoutSeconds ?? Options.StatementTimeoutSeconds;
         Task IDataContext.DeleteAsync(ICoreObject obj) => ExecuteSQLAsync(BuildDeleteQuery(obj), CancellationToken.None);
         Task IDataContext.DeleteAsync(ICoreObject obj, CancellationToken token) => ExecuteSQLAsync(BuildDeleteQuery(obj), token);
 
@@ -413,7 +441,8 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var list = objects as IList<ICoreObject?> ?? objects?.ToList();
-                SaveChecks.Run(list);
+                if (!_callerManagesObjects)
+                    SaveChecks.Run(list);
                 return _provider.CreateSaveQueries(list, separateOperations: true);
             }
             catch (Exception) when (Doom())
@@ -702,6 +731,11 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
+        /// <summary>
+        /// Commits or rolls back the transaction. A commit that fails is reported as
+        /// <see cref="DatabaseErrorKind.CommitOutcomeUnknown"/>, which may have been applied, unless
+        /// the engine says it rejected the transaction; a rollback that fails applied nothing.
+        /// </summary>
         private async ValueTask CommitOrRollBack(DbTransaction transaction, bool commit, bool async)
         {
             try
@@ -721,6 +755,17 @@ namespace TFM.Nucleus.Data.Providers
                         transaction.Rollback();
                     Debug.WriteLine($"Database object {ContextId} rolled back at {DateTime.Now:H:mm:ss.ff}", "Database");
                 }
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                if (!commit)
+                    throw _provider.TranslateFailure($"The rollback failed; the transaction was not committed. {ex.Message}",
+                        ex, DatabaseOperation.Rollback, mayHaveBeenApplied: false);
+                var unknown = DatabaseFailures.Resolve(_provider.ClassifyFailure(ex), DatabaseOperation.Commit, mayHaveBeenApplied: true).MayHaveBeenApplied;
+                throw _provider.TranslateFailure(unknown
+                        ? $"The commit failed, and the database may or may not have kept the transaction. {ex.Message}"
+                        : $"The database refused the transaction at its commit and rolled it back. {ex.Message}",
+                    ex, DatabaseOperation.Commit, mayHaveBeenApplied: true);
             }
             finally
             {
@@ -819,12 +864,17 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        /// <summary>Sets the command's text and parameters for a run; deletes skip the provider's hook.</summary>
+        /// <summary>
+        /// Sets the command's text, time limit and parameters for a run; deletes skip the provider's
+        /// hook. The limit is set on every run because the command is shared: the bulk engine and
+        /// schema statements set their own on it, which must not carry over to the next statement.
+        /// </summary>
         private DbCommand Prepare(string commandText, IEnumerable<IQueryParameter?>? terms, bool hook = true)
         {
             var command = _command ?? throw new DataContextException("No active Command", DataContextErrorKind.CurrentCommandIsNull);
             command.CommandText = commandText;
             command.Parameters.Clear();
+            ApplyStatementTimeout(command);
             if (hook)
                 PrepareCommand(command);
             BindParameters(command, terms);
@@ -837,37 +887,54 @@ namespace TFM.Nucleus.Data.Providers
             var connection = Connection
                 ?? throw new DataContextException("No active Connection", DataContextErrorKind.CurrentConnectionIsNull);
             _command = connection.CreateCommand();
+            ApplyStatementTimeout(_command);
             if (HasTransaction && Transaction is { } transaction)
                 _command.Transaction = transaction;
             return _command;
         }
 
+        /// <summary>As <see cref="Failure(string, Exception, DatabaseOperation, CancellationToken)"/>, for an operation not recorded.</summary>
+        protected Exception Failure(string message, Exception exception) =>
+            Failure(message, exception, DatabaseOperation.Unknown, CancellationToken.None);
+
+        /// <summary>As <see cref="Failure(string, Exception, DatabaseOperation, CancellationToken)"/>, for an operation not recorded.</summary>
+        protected Exception Failure(string message, Exception exception, CancellationToken token) =>
+            Failure(message, exception, DatabaseOperation.Unknown, token);
+
         /// <summary>
-        /// Marks a transactional context for rollback and wraps a failure: a unique violation the
-        /// provider recognises becomes a <see cref="UniqueViolationException"/>, anything else an
-        /// exception carrying the message; the original is always the inner exception.
+        /// Marks a transactional context for rollback, then gives the exception for a failure of
+        /// <paramref name="operation"/>. A cancellation propagates as it was thrown, and so does
+        /// a failure that is not the database's (one of Nucleus's own exceptions, or a defect).
+        /// A database failure after <paramref name="token"/> was cancelled is the cancellation: an
+        /// engine can report a command it cancelled as its own error (SqlClient raises a
+        /// SqlException), so that becomes an <see cref="OperationCanceledException"/> with the
+        /// engine's error inside. Any other database failure is translated by the provider
+        /// (<see cref="RelationalDataProvider.TranslateFailure(string, Exception, DatabaseOperation, bool, int)"/>):
+        /// a write on a context with no transaction may have been applied, since each statement
+        /// commits as it runs; on a transactional context nothing commits after a failure.
         /// </summary>
-        protected Exception Failure(string message, Exception exception)
+        protected Exception Failure(string message, Exception exception, DatabaseOperation operation, CancellationToken token)
         {
             if (HasTransaction)
                 Rollback();
-            // Cancellation is the caller's own request, not a database failure: it propagates
-            // as it was thrown, on every provider, after the transaction is marked for rollback.
-            if (exception is OperationCanceledException)
+            if (exception is OperationCanceledException || !DatabaseFailures.IsDatabaseFailure(exception))
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
-            return _provider.TranslateFailure(message, exception);
+            if (token.IsCancellationRequested)
+                return new OperationCanceledException(message, exception, token);
+            var mayHaveBeenApplied = !HasTransaction && operation is not (DatabaseOperation.Read or DatabaseOperation.Open or DatabaseOperation.Rollback);
+            return _provider.TranslateFailure(message, exception, operation, mayHaveBeenApplied);
         }
 
-        /// <summary>
-        /// As <see cref="Failure(string, Exception)"/>, except that a failure after
-        /// <paramref name="token"/> was cancelled is the cancellation. An engine can report a
-        /// command it cancelled as its own error (SqlClient raises a SqlException), so that
-        /// becomes an <see cref="OperationCanceledException"/> with the engine's error inside.
-        /// </summary>
-        protected Exception Failure(string message, Exception exception, CancellationToken token) =>
-            token.IsCancellationRequested && exception is not OperationCanceledException
-                ? Failure(message, new OperationCanceledException(message, exception, token))
-                : Failure(message, exception);
+        /// <summary>The exception for a failure of a schema read or statement run on this context, as <see cref="Failure(string, Exception, DatabaseOperation, CancellationToken)"/> gives it.</summary>
+        internal Exception SchemaFailure(string message, Exception exception, CancellationToken token) =>
+            Failure(message, exception, DatabaseOperation.Schema, token);
+
+        /// <summary>Gives a command this context's statement time limit, where the engine's command timeout is one.</summary>
+        private void ApplyStatementTimeout(DbCommand command)
+        {
+            if (AppliesStatementTimeout)
+                command.CommandTimeout = StatementTimeoutSeconds;
+        }
 
         #endregion
 
@@ -914,7 +981,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Error returning Query from DB. {ex.Message}", ex);
+                throw Failure($"Error returning Query from DB. {ex.Message}", ex, DatabaseOperation.Read, token);
             }
         }
 
@@ -963,24 +1030,35 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Error streaming Query from DB. {ex.Message}", ex);
+                throw Failure($"Error streaming Query from DB. {ex.Message}", ex, DatabaseOperation.Read, cancellationToken);
             }
 
             await using (reader)
             {
-                // A failure reading a row dooms a transactional context, as a failed command does.
-                // An iterator cannot catch around a yield, so the flag is false whenever a read is
-                // under way, and true only while the caller holds a row or once all are read: a
-                // caller that stops early leaves it true.
+                // A failure reading a row dooms a transactional context, as a failed command does,
+                // and is translated as a failed read is. An iterator cannot catch around a yield,
+                // so the read is caught on its own, and the flag is false whenever a read is under
+                // way and true only while the caller holds a row or once all are read: a caller
+                // that stops early leaves it true.
                 var settled = false;
                 try
                 {
                     while (true)
                     {
                         settled = false;
-                        if (!reader.HasRows || !await reader.ReadAsync(cancellationToken))
+                        bool more;
+                        try
+                        {
+                            more = reader.HasRows && await reader.ReadAsync(cancellationToken);
+                            if (more)
+                                ReadAnyRow(reader, row.Values, dbQuery);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw Failure($"Error streaming Query from DB. {ex.Message}", ex, DatabaseOperation.Read, cancellationToken);
+                        }
+                        if (!more)
                             break;
-                        ReadAnyRow(reader, row.Values, dbQuery);
                         settled = true;
                         yield return row;
                     }
@@ -1004,6 +1082,7 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
+                command.CommandTimeout = Options.SchemaCommandTimeoutSeconds;
                 var reader = async ? await command.ExecuteReaderAsync(CommandBehavior.Default, token) : command.ExecuteReader();
                 if (!reader.HasRows)
                 {
@@ -1017,7 +1096,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Error returning Query from DB. {ex.Message}", ex);
+                throw Failure($"Error returning Query from DB. {ex.Message}", ex, DatabaseOperation.Schema, token);
             }
         }
 
@@ -1057,7 +1136,7 @@ namespace TFM.Nucleus.Data.Providers
                     }
                     catch (Exception ex)
                     {
-                        throw Failure($"Unable to execute delete on DB. {ex.Message}", ex);
+                        throw Failure($"Unable to execute delete on DB. {ex.Message}", ex, DatabaseOperation.Delete, token);
                     }
                 }
                 return affected;
@@ -1091,7 +1170,7 @@ namespace TFM.Nucleus.Data.Providers
                 }
                 catch (Exception ex)
                 {
-                    throw Failure($"Unable to check {owner}.{collection.Name} for members before deleting. {ex.Message}", ex);
+                    throw Failure($"Unable to check {owner}.{collection.Name} for members before deleting. {ex.Message}", ex, DatabaseOperation.Read, token);
                 }
                 if (found)
                     throw new InvalidOperationException(
@@ -1134,7 +1213,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Unable to get execute SQL on DB. {ex.Message}", ex);
+                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, DatabaseOperation.Write, CancellationToken.None);
             }
         }
 
@@ -1185,7 +1264,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, token);
+                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, DatabaseOperation.Write, token);
             }
         }
 
@@ -1233,7 +1312,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw Failure($"Unable to get execute SQL on DB. {ex.Message}", ex);
+                throw Failure($"Unable to execute SQL on DB. {ex.Message}", ex, DatabaseOperation.Schema, token);
             }
         }
 
@@ -1301,7 +1380,7 @@ namespace TFM.Nucleus.Data.Providers
             }
             catch (Exception ex)
             {
-                throw new Exception($"Error retrieving columns of table '{tableName}'. Error: {ex.Message}", ex);
+                throw context.SchemaFailure($"Error retrieving columns of table '{tableName}'. Error: {ex.Message}", ex, cancellationToken);
             }
         }
 

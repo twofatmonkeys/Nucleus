@@ -69,6 +69,19 @@ namespace PortlyPrimate
             #endregion
         }
 
+        public static void RetryPolicy(IServiceCollection services)
+        {
+            #region retry-policy
+            services.AddNucleusSqliteDataProvider(options =>
+            {
+                options.Database = @"C:\ProgramData\PortlyPrimate\sanctuary.db";
+                // A manager save, delete or load that fails transiently, having applied nothing, is
+                // attempted again on a new connection: up to 3 attempts in all, 200 ms then 400 ms apart.
+                options.RetryAttempts = 3;
+            });
+            #endregion
+        }
+
         public static void FromConfiguration(IServiceCollection services, IConfiguration configuration)
         {
             #region register-configuration
@@ -346,6 +359,40 @@ namespace PortlyPrimate
             }
             #endregion
             return false;
+        }
+
+        public async Task WeighWithRetryAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
+        {
+            #region transient-retry
+            // The policy never repeats work on a caller-owned context: the unit of work is the
+            // caller's to repeat, from the start, when the failure says nothing was applied.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
+                    await context.SaveAsync(monkey, ct);
+                    await context.SaveAsync(weighIn, ct);
+                    await context.CommitAsync(ct);
+                    return;
+                }
+                catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct);   // a deadlock, a dropped connection, a timeout
+                }
+            }
+            #endregion
+        }
+
+        public async Task StatementTimeoutAsync(CancellationToken ct)
+        {
+            #region statement-timeout
+            // A long job's own statements get five minutes; every other context keeps the provider's limit.
+            await using var context = await data.CreateContextAsync<WeighIn>(
+                new ContextOptions { UseTransaction = true, StatementTimeoutSeconds = 300 }, ct);
+            await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 14.7m, Notes = "after lunch" }, ct);
+            await context.CommitAsync(ct);
+            #endregion
         }
 
         public async Task<int> DeletesAsync(CancellationToken ct)
