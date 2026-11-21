@@ -8,7 +8,8 @@ screenshot. Do not invent a second domain, and never borrow names from a real ap
 or customer. One story told everywhere means a reader who has seen one library's docs already
 knows the cast when they open the next.
 
-Nothing here is real. If a name below ever collides with a real consumer's, change it here first.
+The entities below exist as code in `tests/TFM.Nucleus.DocSamples/Entities.cs`, which is where a Nucleus
+example comes from. Nothing here is real. If a name below ever collides with a real consumer's, change it here first.
 
 ## The cast
 
@@ -26,16 +27,17 @@ Email addresses always end in `.example`, which is reserved and can never be reg
 
 | Entity | Members | Use it to show |
 |---|---|---|
-| `Monkey` | `Name`, `WeightKg`, `Mood`, `TroopId`, `Keeper`, `Naps`, `WeighIns` | A root entity. An enum column (`Mood`). A unique index (`Name`). |
-| `Troop` | `Name`, `Motto`, `Monkeys` | Roots that belong to another root: a troop's monkeys, by `Monkey.TroopId`. |
-| `Keeper` | `Name`, `Email` | A reference from another entity (`Monkey.Keeper`). A unique violation (`Email`). Sign-in. |
+| `Monkey` | `Name`, `WeightKg`, `Mood` | The smallest root entity: the first example on any page. An enum column (`Mood`). A unique index (`Name`). |
+| `Resident` | `Name`, `Keeper`, `TroopId`, `Naps` | A monkey in residence, for relationships: it has a keeper, belongs to a troop and logs its naps. |
+| `Troop` | `Name`, `Motto`, `Residents` | Roots that belong to another root: a troop's residents, by `Resident.TroopId`. |
+| `Keeper` | `Name`, `Email` | A reference from another entity (`Resident.Keeper`). A unique violation (`Email`). Sign-in. |
 | `BananaVariety` | `Name`, `Curvature` | A small lookup table that is cached. |
 | `BananaOrder` | `PlacedUtc`, `Status`, `Lines` | A parent with owned rows. A transaction. A confirmation email. A payment. |
 | `BananaOrderLine` | `Variety`, `Quantity`, `Substitutions` | A child row with a rule to validate (`Quantity` above zero). |
 | `LineSubstitution` | `Variety`, `Reason` | A grandchild: owned rows two levels down. |
 | `NapLog` | `StartedUtc`, `Minutes`, `Location` | A child collection that grows large, so it is loaded on demand. Grouped and counted reads. |
-| `WeighIn` | `TakenUtc`, `WeightKg`, `Notes` | A date the server stamps. A structured (JSON) column. A PDF certificate. |
-| `MischiefReport` | `Monkey`, `ReportedBy`, `Description`, `Severity` | Soft delete. Full-text search. An audit trail. |
+| `WeighIn` | `MonkeyName`, `WeightKg`, `Notes` | Lifecycle hooks. A value worked out on load. A PDF certificate. |
+| `MischiefReport` | `Culprit`, `Description`, `Severity`, `RecordedAt` | Soft delete. Full-text search. A date the server stamps. An audit trail. |
 | `GiftShopVisit` | `SessionId`, `OccurredUtc`, `Path`, `Kind` | A high-volume activity table. Streaming. Change notifications. Marketing attribution. |
 
 ### Enum values
