@@ -133,7 +133,9 @@ namespace TFM.Nucleus.Data
                     if (collection.IsLoaded)
                         foreach (var member in collection.Members)
                             RunLoadHooks(member, linkLoader);
-            if (linkLoader is not null && (schema.HasLinkedObjects || schema.HasLinkedCollections))
+            // A child loaded on its own holds its parent's ID until the parent is read, and loads it
+            // through this loader like a link; one loaded with its parent never reads through it.
+            if (linkLoader is not null && (schema.HasLinkedObjects || schema.HasLinkedCollections || schema.HasParentObject))
                 obj.BindLinkedObjectLoader(linkLoader);
             obj.OnAfterLoadFromDB();
         }

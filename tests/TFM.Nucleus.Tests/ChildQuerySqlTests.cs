@@ -19,12 +19,24 @@ namespace TFM.Nucleus.Tests
 
         private static string ChildSql(SelectQuery child) => SqlSnapshot.Normalize(child.BuildQuery());
 
+        /// <summary>
+        /// A child query written on its own (a streamed load sends each one separately) keeps the
+        /// IDs of the parent rows <paramref name="parentRows"/> selects, then selects by those.
+        /// </summary>
+        private static void AssertSelectsByParentRows(string parentRows, string sql)
+        {
+            Assert.StartsWith(
+                "DECLARE @__parents TABLE ([ID] uniqueidentifier PRIMARY KEY); " +
+                $"INSERT INTO @__parents ([ID]) {parentRows}; ", sql);
+            Assert.EndsWith("WHERE [Parent] IN (SELECT [ID] FROM @__parents)", sql);
+        }
+
         [Fact]
         public void Child_SelectsByEveryMatchingParent()
         {
             var (parent, child) = ParentWithChild(p => p.Where.And("Name", "a"));
 
-            Assert.EndsWith($"WHERE [Parent] IN (SELECT [ID] FROM {Parent} WHERE [Name]=@p0)", ChildSql(child));
+            AssertSelectsByParentRows($"SELECT [ID] FROM {Parent} WHERE [Name]=@p0", ChildSql(child));
         }
 
         [Fact]
@@ -32,7 +44,7 @@ namespace TFM.Nucleus.Tests
         {
             var (parent, child) = ParentWithChild(p => p.Take = 5);
 
-            Assert.EndsWith($"WHERE [Parent] IN (SELECT TOP 5 [ID] FROM {Parent} ORDER BY [ID])", ChildSql(child));
+            AssertSelectsByParentRows($"SELECT TOP 5 [ID] FROM {Parent} ORDER BY [ID]", ChildSql(child));
             Assert.EndsWith("ORDER BY [ID]", SqlSnapshot.Normalize(parent.BuildQuery(includeChildQueries: false)));
         }
 
@@ -41,10 +53,18 @@ namespace TFM.Nucleus.Tests
         {
             var (_, child) = ParentWithChild(p => { p.Skip = 10; p.Take = 5; });
 
-            Assert.EndsWith(
-                $"WHERE [Parent] IN (SELECT [ID] FROM (SELECT [ID], ROW_NUMBER() OVER (ORDER BY [ID]) AS [__RowNumber] FROM {Parent}) AS [__paged] " +
-                "WHERE [__paged].[__RowNumber] > 10 AND [__paged].[__RowNumber] <= 15)",
+            AssertSelectsByParentRows(
+                $"SELECT [ID] FROM (SELECT [ID], ROW_NUMBER() OVER (ORDER BY [ID]) AS [__RowNumber] FROM {Parent}) AS [__paged] " +
+                "WHERE [__paged].[__RowNumber] > 10 AND [__paged].[__RowNumber] <= 15",
                 ChildSql(child));
+        }
+
+        [Fact]
+        public void ParentWithoutChildQueries_KeepsNoIds()
+        {
+            var (parent, _) = ParentWithChild(p => p.Where.And("Name", "a"));
+
+            Assert.DoesNotContain("@__parents", parent.BuildQuery(includeChildQueries: false));
         }
 
         [Fact]

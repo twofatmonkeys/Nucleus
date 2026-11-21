@@ -262,14 +262,16 @@ namespace TFM.Nucleus
 
         /// <summary>
         /// A stored value that is not already a <typeparamref name="T"/>: the ID a load stored for
-        /// a <c>[LinkedObject]</c>, resolved to its entity, or else the plain cast, which throws
-        /// for a value of the wrong type as it always has. Kept out of line so the common read
-        /// stays one type test.
+        /// a <c>[LinkedObject]</c>, or for the <c>[ParentObject]</c> of a child loaded on its own
+        /// (by a link to it, <c>LoadByID</c> or a query of its type), resolved to its entity; or
+        /// else the plain cast, which throws for a value of the wrong type as it always has. A
+        /// child loaded with its parent holds the parent object itself and never gets here. Kept
+        /// out of line so the common read stays one type test.
         /// </summary>
         private T? StoredValueAs<T>(string property, object value)
         {
-            if (value is Guid id && ObjectSchema.TryGetProperty(property) is { IsLinkedObject: true } link)
-                return (T?)ResolveLinkedObject(link, id);
+            if (value is Guid id && ObjectSchema.TryGetProperty(property) is { } reference && (reference.IsLinkedObject || reference.IsParentObject))
+                return (T?)ResolveLinkedObject(reference, id);
             return (T)value;
         }
 
@@ -287,10 +289,12 @@ namespace TFM.Nucleus
         }
 
         /// <summary>
-        /// Loads the entity a <c>[LinkedObject]</c> refers to, once, and keeps it as the stored
-        /// value, so the object is not made dirty and the next read runs no query. Several threads
-        /// reading it at once load it once. A row that no longer exists reads as null, and is
-        /// looked for again on the next read, since the ID is still what is stored.
+        /// Loads the entity a <c>[LinkedObject]</c>, or a standalone child's <c>[ParentObject]</c>,
+        /// refers to, once, and keeps it as the stored value, so the object is not made dirty and
+        /// the next read runs no query. Several threads reading it at once load it once. A row
+        /// that no longer exists reads as null, and is looked for again on the next read, since
+        /// the ID is still what is stored. A parent loads as <c>LoadByID</c> loads it, so its child
+        /// collection holds instances of its own, not this one.
         /// </summary>
         private ICoreObject? ResolveLinkedObject(IPropertySchema link, Guid id)
         {

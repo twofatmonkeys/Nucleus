@@ -195,16 +195,19 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
-        public void DeleteWhere_ParentWithChildren_DeletesChildrenFirstThroughTheParentCondition()
+        public void DeleteWhere_ParentWithChildren_KeepsTheMatchedIdsOnce_ThenDeletesChildrenFirstByThem()
         {
             var sql = DeleteWhereSql<TestDeletableParent>(
                 p => p.Name == "old" || p.Name == "older",
                 Tables(typeof(TestDeletableParent), typeof(TestDeletableChild)));
 
+            // The condition is evaluated once; no statement reads the parent table through the
+            // child table, which deadlocked against a save of a parent on SQL Server.
             Assert.Equal(
-                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent] IN " +
-                "(SELECT [ID] FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ((([Name]=@p0) OR ([Name]=@p1)))); " +
-                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ((([Name]=@p0) OR ([Name]=@p1))); " +
+                "DECLARE @__targets TABLE ([ID] uniqueidentifier PRIMARY KEY); " +
+                "INSERT INTO @__targets ([ID]) SELECT [ID] FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ((([Name]=@p0) OR ([Name]=@p1))); " +
+                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent] IN (SELECT [ID] FROM @__targets); " +
+                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE [ID] IN (SELECT [ID] FROM @__targets); " +
                 "SELECT @@ROWCOUNT",
                 sql);
         }
@@ -228,9 +231,10 @@ namespace TFM.Nucleus.Tests
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
             Assert.Equal(
-                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent] IN " +
-                "(SELECT [ID] FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ([ID] IN (@p0_0,@p0_1))); " +
-                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ([ID] IN (@p0_0,@p0_1)); " +
+                "DECLARE @__targets TABLE ([ID] uniqueidentifier PRIMARY KEY); " +
+                "INSERT INTO @__targets ([ID]) SELECT [ID] FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE ([ID] IN (@p0_0,@p0_1)); " +
+                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableChild WHERE [Parent] IN (SELECT [ID] FROM @__targets); " +
+                "DELETE FROM tbl_TFM_Nucleus_Tests_TestDeletableParent WHERE [ID] IN (SELECT [ID] FROM @__targets); " +
                 "SELECT @@ROWCOUNT",
                 sql);
         }

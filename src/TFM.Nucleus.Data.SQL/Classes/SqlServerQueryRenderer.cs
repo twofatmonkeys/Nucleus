@@ -27,25 +27,114 @@ namespace TFM.Nucleus.Data.SQL
 
         // ---- Select
 
+        /// <summary>
+        /// A query and, when <paramref name="includeChildQueries"/> is set, its linked queries.
+        /// Every linked query, in the root's batch or written on its own (a streamed load fetches
+        /// each child query separately, and a delete checks a linked collection for members),
+        /// selects by its parent's key values kept in a table variable (<see cref="KeptIds"/>).
+        /// </summary>
         public string Select(SelectQuery q, bool includeChildQueries)
         {
+            var sb = new StringBuilder();
+            var kept = new KeptIds(this, sb, "@__parents");
+            var keys = kept.KeysFor(q);
+            AppendSelect(sb, q, keys);
+            if (includeChildQueries)
+                AppendLinked(sb, q, kept);
+            return sb.ToString();
+        }
+
+        /// <summary>Each linked query of <paramref name="q"/> in pre-order, the order a reader meets their result sets.</summary>
+        private void AppendLinked(StringBuilder sb, SelectQuery q, KeptIds kept)
+        {
+            foreach (var link in q.LinkedQueries)
+            {
+                sb.Append($"; {Environment.NewLine}");
+                if (link is SelectQuery linked)
+                {
+                    var keys = kept.KeysFor(linked);
+                    AppendSelect(sb, linked, keys);
+                    AppendLinked(sb, linked, kept);
+                }
+                else
+                    sb.Append(link.BuildQuery());
+            }
+        }
+
+        /// <summary>Declares a table variable of IDs and fills it from <paramref name="select"/>.</summary>
+        private static string CaptureIds(string variable, string column, string select) =>
+            $"DECLARE {variable} TABLE ([{column}] uniqueidentifier PRIMARY KEY);{Environment.NewLine}" +
+            $"INSERT INTO {variable} ([{column}]) {select};{Environment.NewLine}";
+
+        /// <summary>
+        /// The key values a batch keeps, one table variable per parent query and key column,
+        /// declared where first needed. A linked query that reached its parents through a subquery
+        /// over the parent table ran from the child table when the tables were small: it held a
+        /// lock on a child row of some other parent while it read that parent's row, the opposite
+        /// order to a save of that parent, and the two deadlocked (SQL Server 2008 R2 did it a
+        /// level down too, holding a grandchild while it read the child). Here every statement
+        /// reads one table and table variables: a parent's keys are read from the parent's table
+        /// alone, by its own condition (a root) or by its parent's kept keys (a linked query).
+        /// </summary>
+        private sealed class KeptIds(SqlServerQueryRenderer renderer, StringBuilder sb, string prefix)
+        {
+            private readonly Dictionary<(SelectQuery Owner, string Column), string?> _kept = [];
+
+            /// <summary>
+            /// The variable holding the values <paramref name="q"/> matches its linked column
+            /// against; null for a root, or when the parent's keys cannot be kept.
+            /// </summary>
+            public string? KeysFor(SelectQuery q) =>
+                q.ParentSelect is { } parent ? Keys(parent, q.ParentKeyColumn ?? "ID") : null;
+
+            private string? Keys(SelectQuery owner, string column)
+            {
+                if (_kept.TryGetValue((owner, column), out var variable))
+                    return variable;
+                variable = null;
+                if (CanKeep(owner))
+                {
+                    var source = owner.IsRoot
+                        ? renderer.ParentKeySelect(owner, column)
+                        : $"SELECT [{column}] FROM {owner.TableName} {renderer.SelectWhere(owner, KeysFor(owner))}";
+                    // IDs are unique and never null; a reference column is neither.
+                    var select = column == "ID"
+                        ? source
+                        : $"SELECT DISTINCT [{column}] FROM ({source}) AS [__keys] WHERE [{column}] IS NOT NULL";
+                    variable = _kept.Count == 0 ? prefix : $"{prefix}{_kept.Count}";
+                    sb.Append(CaptureIds(variable, "ID", select));
+                }
+                _kept[(owner, column)] = variable;
+                return variable;
+            }
+
+            private static bool CanKeep(SelectQuery owner) =>
+                !owner.IsAggregate && !owner.IsEmptyProjection &&
+                (owner.IsRoot || owner.ParentSelect != null) &&
+                owner.TableSchema?.IdentityColumn?.DataType == typeof(Guid);
+        }
+
+        private void AppendSelect(StringBuilder sb, SelectQuery q, string? keys)
+        {
             if (q.IsAggregate)
-                return AggregateSelect(q);
+            {
+                sb.Append(AggregateSelect(q));
+                return;
+            }
             if (q.IsEmptyProjection)
-                return ("SELECT TOP 0 NULL");
-            var sb = q.IsPaged ? PagedSelect(q) : PlainSelect(q);
+            {
+                sb.Append("SELECT TOP 0 NULL");
+                return;
+            }
+            sb.Append(q.IsPaged ? PagedSelect(q) : PlainSelect(q, keys));
             if (q.WithTotalCount)
             {
                 // Same filter, unpaged: the count arrives as the second result set of the batch.
                 sb.Append($"; {Environment.NewLine}SELECT COUNT_BIG(*) FROM {q.TableName}{NoLock(q)}");
-                var where = SelectWhere(q);
+                var where = SelectWhere(q, keys);
                 if (where != null)
                     sb.Append(' ').Append(where);
             }
-            if (includeChildQueries)
-                foreach (var link in q.LinkedQueries)
-                    sb.Append($"; {Environment.NewLine}").Append(link.BuildQuery());
-            return sb.ToString();
         }
 
         /// <summary>
@@ -57,7 +146,7 @@ namespace TFM.Nucleus.Data.SQL
             q.EnsureAggregateShape();
             var terms = q.GroupBy.Select(c => $"[{c}]").Concat(q.Measures.Select(MeasureTerm));
             var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{NoLock(q)}");
-            if (SelectWhere(q) is { } where)
+            if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(" ,", q.GroupBy.Select(c => $"[{c}]")));
@@ -105,13 +194,13 @@ namespace TFM.Nucleus.Data.SQL
             return q.NeedsIdentityOrder ? "ORDER BY [ID]" : null;
         }
 
-        private StringBuilder PlainSelect(SelectQuery q)
+        private StringBuilder PlainSelect(SelectQuery q, string? keys)
         {
             var sb = new StringBuilder(q.Take == 0 ? $"SELECT " : $"SELECT TOP {q.Take} ");
             for (int i = 0; i < q.Columns.Count; i++)
                 sb.Append($"{(i == 0 ? "" : " ,")}[{q.Columns[i]}]");
             sb.Append($" FROM {q.TableName}{NoLock(q)}");
-            sb.Append(' ').Append(SelectWhere(q));
+            sb.Append(' ').Append(SelectWhere(q, keys));
             if (q.IsRoot && RootOrderBy(q) is { } orderBy)
                 sb.Append(' ').Append(orderBy);
             return sb;
@@ -137,7 +226,7 @@ namespace TFM.Nucleus.Data.SQL
             var sb = new StringBuilder(
                 $"(SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
                 $"FROM {q.TableName}{NoLock(q)}");
-            var where = SelectWhere(q);
+            var where = SelectWhere(q, null);
             if (where != null)
                 sb.Append(' ').Append(where);
             sb.Append($") AS [__paged] WHERE [__paged].[__RowNumber] > {q.Skip}");
@@ -150,7 +239,8 @@ namespace TFM.Nucleus.Data.SQL
         /// Selects one column (the ID, or for an included reference the reference column) of
         /// exactly the rows a parent query returns, for a linked query to select its rows by. A
         /// page or a TOP applies here too, or the rows of every matching parent would be fetched
-        /// rather than those of the parents returned.
+        /// rather than those of the parents returned. Without kept keys a linked parent reaches
+        /// its own parents through this select in turn.
         /// </summary>
         private string ParentKeySelect(SelectQuery q, string column)
         {
@@ -158,14 +248,18 @@ namespace TFM.Nucleus.Data.SQL
                 return $"SELECT [{column}] FROM {PagedWindow(q, $"[{column}]")}";
             var top = q.IsRoot && q.Take > 0;
             var sb = new StringBuilder(top ? $"SELECT TOP {q.Take} [{column}] FROM {q.TableName}" : $"SELECT [{column}] FROM {q.TableName}");
-            if (SelectWhere(q) is { } where)
+            if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (top && RootOrderBy(q) is { } orderBy)
                 sb.Append(' ').Append(orderBy);
             return sb.ToString();
         }
 
-        private StringBuilder? SelectWhere(SelectQuery q)
+        /// <summary>
+        /// A root's own condition; a linked query's match on its parent's keys, from
+        /// <paramref name="keys"/> when they are kept, else through the parent's select.
+        /// </summary>
+        private StringBuilder? SelectWhere(SelectQuery q, string? keys)
         {
             var softDeleteFilter = q.AppliesLiveRowFilter ? LiveRowFilter : null;
             if (q.IsRoot)
@@ -188,7 +282,7 @@ namespace TFM.Nucleus.Data.SQL
                 var parent = q.ParentSelect
                     ?? throw new InvalidQueryException("A child collection query must hang off a select.");
                 var sb = new StringBuilder($"WHERE [{q.LinkedColumn}] IN (")
-                    .Append(ParentKeySelect(parent, q.ParentKeyColumn ?? "ID")).Append(')');
+                    .Append(keys != null ? $"SELECT [ID] FROM {keys}" : ParentKeySelect(parent, q.ParentKeyColumn ?? "ID")).Append(')');
                 if (softDeleteFilter != null)
                     sb.Append($" AND {softDeleteFilter}");
                 return sb;
@@ -235,16 +329,60 @@ namespace TFM.Nucleus.Data.SQL
         // ---- Delete
 
         /// <summary>
-        /// The children deepest first, then the root, each through its parent's condition, then
-        /// SELECT @@ROWCOUNT straight after the root statement for the rows of the root type.
+        /// The children deepest first, then the root, then SELECT @@ROWCOUNT straight after the
+        /// root statement for the rows of the root type. A delete with children keeps the IDs of
+        /// each level it deletes from, each read from that level's table alone (the root's by the
+        /// delete's condition, once), and deletes every level by its parent's kept IDs. No
+        /// statement reads a parent's table through a child's, which deadlocked against a save of
+        /// the parent (see <see cref="KeptIds"/>), and the condition is not evaluated again per
+        /// statement.
         /// </summary>
         public string DeleteWhere(DeleteWhereQuery q)
         {
             q.EnsureHasCondition();
             var sb = new StringBuilder();
-            foreach (var target in q.TargetsChildrenFirst())
-                sb.Append(DeleteStatement(q, target)).Append(';').Append(Environment.NewLine);
-            sb.Append(DeleteStatement(q, q.Root)).Append(';').Append(Environment.NewLine);
+            var children = q.TargetsChildrenFirst().ToList();
+            var keeps = children.Count > 0 && children.Append(q.Root).All(t => t.Table.IdentityColumn?.DataType == typeof(Guid));
+            var kept = new Dictionary<DeleteTarget, string>();
+
+            // The IDs of a target's rows, kept in a table variable declared on first need.
+            string IdsOf(DeleteTarget target)
+            {
+                if (kept.TryGetValue(target, out var variable))
+                    return variable;
+                var id = target.Table.IdentityColumn!.ColumnName;
+                var select = $"SELECT [{id}] FROM {target.Table.TableName} WHERE {KeptFilter(target)}";
+                variable = kept.Count == 0 ? "@__targets" : $"@__targets{kept.Count}";
+                sb.Append(CaptureIds(variable, id, select));
+                kept[target] = variable;
+                return variable;
+            }
+
+            // A target's rows by the delete's condition (the root) or its parent's kept IDs.
+            string KeptFilter(DeleteTarget target)
+            {
+                var condition = target.Parent == null
+                    ? $"({WhereRenderer.Render(q.Where, this)})"
+                    : $"[{target.ParentColumn}] IN (SELECT [{target.Parent.Table.IdentityColumn!.ColumnName}] FROM {IdsOf(target.Parent)})";
+                return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
+            }
+
+            string Filter(DeleteTarget target)
+            {
+                if (!keeps)
+                    return DeleteFilter(q, target);
+                if (target.Parent != null)
+                    return KeptFilter(target);
+                var id = target.Table.IdentityColumn!.ColumnName;
+                var rows = $"[{id}] IN (SELECT [{id}] FROM {IdsOf(target)})";
+                return target.IsSoft ? $"{rows} AND {LiveRowFilter}" : rows;
+            }
+
+            foreach (var target in children.Append(q.Root))
+            {
+                var filter = Filter(target);
+                sb.Append(DeleteStatement(target, filter)).Append(';').Append(Environment.NewLine);
+            }
             sb.Append("SELECT @@ROWCOUNT");
             return sb.ToString();
         }
@@ -265,9 +403,9 @@ namespace TFM.Nucleus.Data.SQL
             return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
         }
 
-        private string DeleteStatement(DeleteWhereQuery q, DeleteTarget target) => target.IsSoft
-            ? $"UPDATE {target.Table.TableName} WITH (ROWLOCK) SET {string.Join(",", target.SetParameters.Select(SetCondition))} WHERE {DeleteFilter(q, target)}"
-            : $"DELETE FROM {target.Table.TableName} WHERE {DeleteFilter(q, target)}";
+        private static string DeleteStatement(DeleteTarget target, string filter) => target.IsSoft
+            ? $"UPDATE {target.Table.TableName} WITH (ROWLOCK) SET {string.Join(",", target.SetParameters.Select(SetCondition))} WHERE {filter}"
+            : $"DELETE FROM {target.Table.TableName} WHERE {filter}";
 
         // ---- Terms
 

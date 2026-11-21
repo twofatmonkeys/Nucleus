@@ -110,7 +110,9 @@ place at its next start.
 `Get<T>()` and `Rows<T>()`. A member added to it gets a default body that throws
 `NotSupportedException`, so another implementation still compiles. `DataProvider` on it is
 obsolete: it is the unrooted default provider and misroutes a rooted type. `ObjectDataAdaptor<T>`
-is a real LINQ provider; `ExpressionParser` lowers expression trees to the neutral query model,
+is a real LINQ provider; it is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so `Where` and the
+async operators (`ToListAsync` and the rest) are declared on `IObjectDataAdaptor<T>`, or .NET 10's
+`System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
 comparison still reads as a column;
 `DataProviderRegistry` routes each entity type to the provider of its nearest registered root,
@@ -130,7 +132,7 @@ never the ambient runtime, so a process with several managers reads each from it
 collection loads itself on first read, under a lock, on the synchronous path.
 
 A `[LinkedObject]` is stored, and loaded, as the referenced entity's ID. `ChildGraphBinder.Complete`
-binds every loaded object of a type with linked objects to an `ILinkedObjectLoader` (Abstractions)
+binds every loaded object of a type with linked objects, or of a child type, to an `ILinkedObjectLoader` (Abstractions)
 for the stack that loaded it: the manager itself (`LoadByID` for the type, routed and cached), or a
 data context's `ProviderLinkedObjectLoader` (Data, its own provider on a context of its own). The
 first read of the property (`CoreObject.GetValue`, off the common path) loads the entity through it
@@ -140,7 +142,11 @@ link through its property: `SaveGraph` and `GetLinkedObjects` read it as held
 included reference (`IncludeLinkedObject`) is a linked query like a child query, marked
 `LinkedObjectProperty`, whose `ParentKeyColumn` is the reference column: the renderers' parent
 subquery selects that column of exactly the parent rows returned instead of their `ID`, and the
-binder files the entities by ID and binds them into every row that holds that ID.
+binder files the entities by ID and binds them into every row that holds that ID. A link may name
+a child type. A child loaded without its parent (by a link, `LoadByID` or a query of its type)
+holds the parent's ID under `Parent`, and the first read resolves it the same way; a child loaded
+with its parent holds the parent object. `SchemaManager.BuildSchema` refuses `forceSave` on a link
+to a child type, because the save would write the child outside its parent.
 
 A `NucleusLinkedCollection<TMany, TOne>` (Abstractions) is the one-to-many between two roots: the
 many type declares the key and the one's property names it with `[LinkedBy]`. `ObjectSchema`
@@ -187,10 +193,19 @@ SqlDependency notifications. Everything but its registration, `SQLConfiguration`
 `GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
 parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
 Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
-collection rows deepest first through the parent's condition, then the root, then
+collection rows deepest first, then the root, then
 `SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
 `DbDataContext.ExecuteDelete`, never the generic execute path, whose regrouping by table would
-detach the subqueries from their parents. The soft-delete rule lives once, in `SoftDelete`.
+detach the statements from the IDs they share. The soft-delete rule lives once, in `SoftDelete`.
+No SQL Server statement reads a parent's table through a child's: a linked query (in a batch or
+written on its own, as a streamed load and the linked-members check write it) selects by its
+parent's keys kept in a table variable (`@__parents`, `@__parents1`, ...) read from the parent's
+table alone, and a delete keeps each level's IDs the same way (`@__targets`, ...). Reached through
+a subquery, SQL Server ran small tables from the child side, held another parent's child row
+while it read that parent, and deadlocked against a save of the parent, at every level of a
+graph. `SqlServerKeptIdsTests` holds every statement to one table; the opt-in
+`SqlServer\DeadlockStressTests` (`NUCLEUS_DEADLOCK_STRESS=1`, or a worker count) reproduces the
+deadlock if the shape regresses.
 
 `TFM.Nucleus.Data.PostgreSQL` is PostgreSQL's dialect over the same SDK: `PostgresQueryRenderer`,
 `PostgresSchemaDialect` with `PostgresTypes`, `PostgresCatalogReader` (information_schema and

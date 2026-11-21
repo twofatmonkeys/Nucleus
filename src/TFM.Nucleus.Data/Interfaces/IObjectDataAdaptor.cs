@@ -22,6 +22,71 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public IQueryable<TICoreObject> Where(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate);
 
+        // The async operators, declared here for the reason Where is: from .NET 10 each one called
+        // straight on Get<T>() matched both ObjectDataAdaptorQueryableExtensions and
+        // System.Linq.AsyncEnumerable and did not compile (CS0121). An instance member beats both.
+        // Each runs the extension, so the behaviour is the one a query after Where already has.
+
+        /// <summary>Runs the query and returns its rows, on the asynchronous path.</summary>
+        public Task<List<TICoreObject>> ToListAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.ToListAsync(this, cancellationToken);
+
+        /// <summary>Runs the query and returns its rows, on the asynchronous path.</summary>
+        public Task<TICoreObject[]> ToArrayAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.ToArrayAsync(this, cancellationToken);
+
+        /// <summary>The first row, or null when there is none.</summary>
+        public Task<TICoreObject?> FirstOrDefaultAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.FirstOrDefaultAsync(this, cancellationToken);
+
+        /// <summary>The first row matching the predicate, or null when there is none.</summary>
+        public Task<TICoreObject?> FirstOrDefaultAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.FirstOrDefaultAsync(this, predicate, cancellationToken);
+
+        /// <summary>The first row; throws when there is none.</summary>
+        public Task<TICoreObject> FirstAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.FirstAsync(this, cancellationToken);
+
+        /// <summary>The first row matching the predicate; throws when there is none.</summary>
+        public Task<TICoreObject> FirstAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.FirstAsync(this, predicate, cancellationToken);
+
+        /// <summary>The only row, or null when there is none; throws when there are several.</summary>
+        public Task<TICoreObject?> SingleOrDefaultAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.SingleOrDefaultAsync(this, cancellationToken);
+
+        /// <summary>The only row matching the predicate, or null when there is none; throws when there are several.</summary>
+        public Task<TICoreObject?> SingleOrDefaultAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.SingleOrDefaultAsync(this, predicate, cancellationToken);
+
+        /// <summary>The only row; throws when there is none or there are several.</summary>
+        public Task<TICoreObject> SingleAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.SingleAsync(this, cancellationToken);
+
+        /// <summary>The only row matching the predicate; throws when there is none or there are several.</summary>
+        public Task<TICoreObject> SingleAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.SingleAsync(this, predicate, cancellationToken);
+
+        /// <summary>True when the query has a row.</summary>
+        public Task<bool> AnyAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.AnyAsync(this, cancellationToken);
+
+        /// <summary>True when a row matches the predicate.</summary>
+        public Task<bool> AnyAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.AnyAsync(this, predicate, cancellationToken);
+
+        /// <summary>The number of rows the query returns.</summary>
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.CountAsync(this, cancellationToken);
+
+        /// <summary>The number of rows matching the predicate.</summary>
+        public Task<int> CountAsync(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate, CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.CountAsync(this, predicate, cancellationToken);
+
+        /// <summary>The number of rows the query returns.</summary>
+        public Task<long> LongCountAsync(CancellationToken cancellationToken = default) =>
+            ObjectDataAdaptorQueryableExtensions.LongCountAsync(this, cancellationToken);
+
         /// <summary>
         /// The same query with a child collection left out, as in <c>.Exclude(b =&gt; b.Files)</c>:
         /// its rows are neither queried nor transferred, and the collection comes back unloaded.

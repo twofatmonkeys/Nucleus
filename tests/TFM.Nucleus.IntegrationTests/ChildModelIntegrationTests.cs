@@ -651,5 +651,105 @@ namespace TFM.Nucleus.IntegrationTests
                 manager.LoadAsync<IntLinkSource>(none.Body, [], [nameof(IntLinkSource.Name)], Ct));
             Assert.Contains("[LinkedObject]", ex.Message);
         }
+
+        // ---- A [LinkedObject] to a child, and a child loaded on its own -----------------------
+
+        /// <summary>
+        /// Saves a roster with lines a and b, and a note linking to line a, runs
+        /// <paramref name="check"/>, then deletes both.
+        /// </summary>
+        private async Task WithLineNoteAsync(Func<ObjectDataManager, string, IntRoster, IntLineNote, Task> check)
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("ln");
+            var roster = new IntRoster { Name = name };
+            roster.Lines.Add(new IntRosterLine { Code = $"{name}-a", Hours = 4 });
+            roster.Lines.Add(new IntRosterLine { Code = $"{name}-b", Hours = 6 });
+            await manager.SaveAsync(roster, Ct);
+            var note = new IntLineNote { Text = name, Line = roster.Lines.Single(l => l.Hours == 4) };
+            await manager.SaveAsync(note, Ct);
+            try
+            {
+                await check(manager, name, roster, note);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLineNote>(n => n.Text == name, Ct);
+                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+            }
+        }
+
+        [Fact]
+        public async Task ALinkToAChild_LoadsTheChildOnRead_AndTheChildsParentOnItsRead()
+        {
+            await WithLineNoteAsync(async (manager, name, roster, note) =>
+            {
+                var loaded = Assert.Single(await manager.Get<IntLineNote>().Where(n => n.ID == note.ID).ToListAsync(Ct));
+
+                var line = loaded.Line;
+                Assert.NotNull(line);
+                Assert.Equal($"{name}-a", line.Code);
+                Assert.Equal(roster.ID, line.Parent.ID);
+                Assert.Equal(name, line.Parent.Name);
+                Assert.Empty(((ICoreObject)loaded).ChangedProperties);
+                Assert.Empty(((ICoreObject)line).ChangedProperties);
+            });
+        }
+
+        [Fact]
+        public async Task Include_LoadsALinkedChildInTheSameRead()
+        {
+            await WithLineNoteAsync(async (manager, name, roster, note) =>
+            {
+                var loaded = Assert.Single(await manager.Get<IntLineNote>().Include(n => n.Line).Where(n => n.ID == note.ID).ToListAsync(Ct));
+                // The parent first, while its row is there; then the rows go, so the line reads only if the load held it.
+                Assert.Equal(roster.ID, loaded.Line!.Parent.ID);
+                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+
+                Assert.Equal($"{name}-a", loaded.Line!.Code);
+            });
+        }
+
+        [Fact]
+        public async Task AChildLoadedOnItsOwn_ReadsItsParent()
+        {
+            await WithLineNoteAsync(async (manager, name, roster, note) =>
+            {
+                var queried = Assert.Single(await manager.Get<IntRosterLine>().Where(l => l.Code == $"{name}-b").ToListAsync(Ct));
+                var byId = await manager.LoadByIDAsync<IntRosterLine>(note.Line!.ID, Ct);
+
+                Assert.Equal(roster.ID, queried.Parent.ID);
+                Assert.Equal(roster.ID, byId!.Parent.ID);
+                Assert.Equal(2, byId.Parent.Lines.Count);
+            });
+        }
+
+        [Fact]
+        public async Task AChildAContextLoaded_ReadsItsParentThroughThatProvider()
+        {
+            await WithLineNoteAsync(async (manager, name, roster, note) =>
+            {
+                System.Linq.Expressions.Expression<Func<IntRosterLine, bool>> mine = l => l.Code == $"{name}-a";
+                IntRosterLine loaded;
+                using (var context = await manager.CreateContextAsync<IntRosterLine>(token: Ct))
+                    loaded = Assert.Single(await context.LoadAsync<IntRosterLine>(mine.Body));
+
+                // The context is gone; the read runs on a context of its own.
+                Assert.Equal(roster.ID, loaded.Parent.ID);
+            });
+        }
+
+        [Fact]
+        public async Task ALinkToAChildRemovedFromItsCollection_ReadsAsNull()
+        {
+            await WithLineNoteAsync(async (manager, name, roster, note) =>
+            {
+                roster.Lines.Remove(roster.Lines.Single(l => l.Hours == 4));
+                await manager.SaveAsync(roster, Ct);
+
+                var loaded = Assert.Single(await manager.Get<IntLineNote>().Where(n => n.ID == note.ID).ToListAsync(Ct));
+                Assert.Null(loaded.Line);
+            });
+        }
     }
 }
