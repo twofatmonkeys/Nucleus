@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn(Indexed = true)]
         public DateTimeOffset Touched { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, 64)]
+        [DatabaseColumn(ColumnDataType.Unicode, 64)]
         public string? Source { get => GetValue<string>(); set => SetValue(value); }
     }
 }

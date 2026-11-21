@@ -8,15 +8,15 @@ namespace TFM.Nucleus
 {
     [AttributeUsage(AttributeTargets.Class,
             Inherited = false)]
-    public class Cacheable : Attribute
+    public class CacheableAttribute : Attribute
     {
         public int RefreshInterval = 120;
         public int CacheLifetime = 900;
-        public Cacheable()
+        public CacheableAttribute()
         {
 
         }
-        public Cacheable(int refreshInterval, int cacheLifetime)
+        public CacheableAttribute(int refreshInterval, int cacheLifetime)
         {
             RefreshInterval = refreshInterval;
             CacheLifetime = cacheLifetime;
@@ -25,18 +25,18 @@ namespace TFM.Nucleus
 
     [AttributeUsage(AttributeTargets.Class,
         Inherited = false)]
-    public class SuppressDB : Attribute
+    public class NotStoredAttribute : Attribute
     { }
 
     /// <summary>
     /// Establishes the initialisation order of entity types at program load, descending.
     /// </summary>
     [AttributeUsage(AttributeTargets.Class, Inherited = false)]
-    public class InitializePriority : Attribute
+    public class InitializePriorityAttribute : Attribute
     {
         public int Priority = 0;
-        public InitializePriority() : this(0) { }
-        public InitializePriority(int priority) { Priority = priority; }
+        public InitializePriorityAttribute() : this(0) { }
+        public InitializePriorityAttribute(int priority) { Priority = priority; }
     }
 
     /// <summary>
@@ -48,17 +48,17 @@ namespace TFM.Nucleus
     /// other property.
     /// </summary>
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-    public class RetrieveOnDemand : Attribute
+    public class RetrieveOnDemandAttribute : Attribute
     { }
 
     /// <summary>Includes the linked entity's ID in the audit entry for this property.</summary>
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-    public class LinkWhenLogging : Attribute
+    public class LinkWhenLoggingAttribute : Attribute
     { }
 
     /// <summary>Records that the property changed without recording the values.</summary>
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-    public class AbbreviatedLogging : Attribute
+    public class AbbreviatedLoggingAttribute : Attribute
     { }
 
     /// <summary>
@@ -67,25 +67,25 @@ namespace TFM.Nucleus
     /// opt back in explicitly rather than start logging it by default.
     /// </summary>
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Property, Inherited = true)]
-    public class SuppressLogging : Attribute
+    public class SuppressLoggingAttribute : Attribute
     { }
 
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
-    public class LinkedObject : Attribute
+    public class LinkedObjectAttribute : Attribute
     {
         public readonly string? LinkedIDProperty;
         public readonly bool ForceSave = false;
 
-        public LinkedObject() { }
-        public LinkedObject(bool forceSave)
+        public LinkedObjectAttribute() { }
+        public LinkedObjectAttribute(bool forceSave)
         {
             ForceSave = forceSave;
         }
-        public LinkedObject(string linkedIDProperty)
+        public LinkedObjectAttribute(string linkedIDProperty)
         {
             LinkedIDProperty = linkedIDProperty;
         }
-        public LinkedObject(string linkedIDProperty, bool forceSave)
+        public LinkedObjectAttribute(string linkedIDProperty, bool forceSave)
         {
             LinkedIDProperty = linkedIDProperty;
             ForceSave = forceSave;
@@ -112,23 +112,13 @@ namespace TFM.Nucleus
         }
     }
 
-    /// <summary>
-    /// The v1 child collection marker. It has no effect on load, save or delete: a child
-    /// collection is a <c>NucleusChildCollection&lt;TChild, TParent&gt;</c> property, found by its type.
-    /// </summary>
-    [Obsolete("Has no effect. Declare the property as NucleusChildCollection<TChild, TParent>; it is found by its type.")]
-    [AttributeUsage(AttributeTargets.All,
-            Inherited = false)]
-    public class LinkedChildCollection : Attribute
-    { }
-
     [AttributeUsage(AttributeTargets.All, Inherited = false)]
-    public class ParentObject : Attribute
+    public class ParentObjectAttribute : Attribute
     {
         public readonly string? ParentIDProperty;
-        public ParentObject()
+        public ParentObjectAttribute()
         { }
-        public ParentObject(string parentIDProperty)
+        public ParentObjectAttribute(string parentIDProperty)
         {
             ParentIDProperty = parentIDProperty;
         }

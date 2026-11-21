@@ -102,15 +102,15 @@ namespace TFM.Nucleus.Data.Providers
                     _schema = null;
                 }
                 var schemaStatus = async ? await Schema.InitializeAsync(cancellationToken) : Schema.Initialize();
-                if (schemaStatus != EDataSchemaStatus.Ok)
+                if (schemaStatus != DataSchemaStatus.Ok)
                 {
                     _logger?.LogError("Error initializing the {engine} data schema.", EngineName);
                     throw schemaStatus switch
                     {
-                        EDataSchemaStatus.DatasourceNotFound => ProviderException(DataProviderErrorKind.DatabaseNonExistent, "Database not found during schema initialization."),
-                        EDataSchemaStatus.NotCurrent => ProviderException(DataProviderErrorKind.SchemaNotCurrent, "Database schema is not current."),
-                        EDataSchemaStatus.NotInitialized => ProviderException(DataProviderErrorKind.NotInitialized, "Database schema is not initialized."),
-                        EDataSchemaStatus.Error => ProviderException(DataProviderErrorKind.Error, $"Error initializing the {EngineName} data schema."),
+                        DataSchemaStatus.DatasourceNotFound => ProviderException(DataProviderErrorKind.DatabaseNonExistent, "Database not found during schema initialization."),
+                        DataSchemaStatus.NotCurrent => ProviderException(DataProviderErrorKind.SchemaNotCurrent, "Database schema is not current."),
+                        DataSchemaStatus.NotInitialized => ProviderException(DataProviderErrorKind.NotInitialized, "Database schema is not initialized."),
+                        DataSchemaStatus.Error => ProviderException(DataProviderErrorKind.Error, $"Error initializing the {EngineName} data schema."),
                         _ => ProviderException(DataProviderErrorKind.Unspecified, $"Unspecified error initializing the {EngineName} data schema."),
                     };
                 }
@@ -430,13 +430,13 @@ namespace TFM.Nucleus.Data.Providers
         Task IDataProvider.UpdateSchemaAsync(IObjectSchema objectSchema) => UpdateSchemaAsync();
         Task IDataProvider.UpdateSchemaAsync(IEnumerable<IObjectSchema> objectSchemas) => UpdateSchemaAsync();
 
-        private static DataProviderStatus MapSchemaStatus(EDataSchemaStatus status) => status switch
+        private static DataProviderStatus MapSchemaStatus(DataSchemaStatus status) => status switch
         {
-            EDataSchemaStatus.Ok => DataProviderStatus.Ok,
-            EDataSchemaStatus.NotCurrent => DataProviderStatus.IncompatibleSchema,
-            EDataSchemaStatus.NotInitialized => DataProviderStatus.Uninitialized,
-            EDataSchemaStatus.DatasourceNotFound => DataProviderStatus.NotAvailable,
-            EDataSchemaStatus.Error => DataProviderStatus.Error,
+            DataSchemaStatus.Ok => DataProviderStatus.Ok,
+            DataSchemaStatus.NotCurrent => DataProviderStatus.IncompatibleSchema,
+            DataSchemaStatus.NotInitialized => DataProviderStatus.Uninitialized,
+            DataSchemaStatus.DatasourceNotFound => DataProviderStatus.NotAvailable,
+            DataSchemaStatus.Error => DataProviderStatus.Error,
             _ => DataProviderStatus.Unknown,
         };
         #endregion

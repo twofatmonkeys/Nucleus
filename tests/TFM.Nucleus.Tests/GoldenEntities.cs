@@ -6,10 +6,10 @@
         [DatabaseColumn]
         public string? Ansi { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, 64)]
+        [DatabaseColumn(ColumnDataType.Unicode, 64)]
         public string? UnicodeSized { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? UnicodeMax { get => GetValue<string>(); set => SetValue(value); }
 
         [DatabaseColumn]
@@ -27,7 +27,7 @@
         [DatabaseColumn]
         public DateTime When { get => GetValue<DateTime>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Date)]
+        [DatabaseColumn(ColumnDataType.Date)]
         public DateTime Day { get => GetValue<DateTime>(); set => SetValue(value); }
 
         [DatabaseColumn]
@@ -103,7 +103,7 @@
         [DatabaseColumn(Indexed = true)]
         public string? Key { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? Notes { get => GetValue<string>(); set => SetValue(value); }
 
         [DatabaseColumn(Scale = 2)]
@@ -122,7 +122,7 @@
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
     }
 

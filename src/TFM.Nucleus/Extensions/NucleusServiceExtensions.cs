@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
+using TFM.Nucleus;
 
 
 namespace TFM.Nucleus
@@ -36,7 +37,15 @@ namespace TFM.Nucleus
         }
     }
 
-    public static class ServiceExtensions
+}
+
+namespace Microsoft.Extensions.DependencyInjection
+{
+    /// <summary>
+    /// Registers Nucleus. In this namespace like every other Nucleus registration, so a file that
+    /// can name <see cref="IServiceCollection"/> can call it.
+    /// </summary>
+    public static class NucleusServiceExtensions
     {
         /// <summary>
         /// Registers Nucleus with a writable schema, and the application's name and version read

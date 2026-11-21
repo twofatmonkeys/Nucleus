@@ -12,7 +12,7 @@ namespace TFM.Nucleus.Data.Queries
         public InsertQuery(IQueryRenderer renderer, string? tablename) : base(renderer)
         {
             ArgumentNullException.ThrowIfNull(tablename, nameof(tablename));
-            Type = QueryType.INSERT;
+            Type = QueryKind.Insert;
             TableName = tablename;
 
         }

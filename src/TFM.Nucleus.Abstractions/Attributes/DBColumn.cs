@@ -11,33 +11,20 @@ namespace TFM.Nucleus.Data
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false)]
     public class DatabaseColumnAttribute : Attribute, IDatabaseColumnAttribute
     {
-        public DataType DataType { get; set; }
+        public ColumnDataType DataType { get; set; }
 
         #region IDatabaseColumnAttribute implementation
-        // Either spelling of a flag sets it: the neutral fields are read together with the
-        // obsolete ones they replace, so entities written with the old names keep working.
-#pragma warning disable CS0618
-        bool IndexedFlag => Indexed || NonClusteredIndex;
-        bool FullTextSearchFlag => FullTextSearch || FullTextIndex;
-        bool IndexDescendingFlag => IndexDescending || IndexSortDESC;
-        bool ExternalStorageFlag => ExternalStorage || Filestream;
-#pragma warning restore CS0618
-
-        DataType IDatabaseColumnAttribute.DataType => DataType;
+        ColumnDataType IDatabaseColumnAttribute.DataType => DataType;
         string IDatabaseColumnAttribute.ColumnName => ColumnName;
         int? IDatabaseColumnAttribute.DataLength => DataLength;
-        bool IDatabaseColumnAttribute.Indexed => IndexedFlag;
-        bool IDatabaseColumnAttribute.FullTextSearch => FullTextSearchFlag;
-        bool IDatabaseColumnAttribute.IndexDescending => IndexDescendingFlag;
-        bool IDatabaseColumnAttribute.ExternalStorage => ExternalStorageFlag;
-        bool IDatabaseColumnAttribute.FullTextIndex => FullTextSearchFlag;
-        bool IDatabaseColumnAttribute.NonClusteredIndex => IndexedFlag;
+        bool IDatabaseColumnAttribute.Indexed => Indexed;
+        bool IDatabaseColumnAttribute.FullTextSearch => FullTextSearch;
+        bool IDatabaseColumnAttribute.IndexDescending => IndexDescending;
+        bool IDatabaseColumnAttribute.ExternalStorage => ExternalStorage;
         bool IDatabaseColumnAttribute.Unique => Unique;
-        bool IDatabaseColumnAttribute.IndexSortDESC => IndexDescendingFlag;
         bool IDatabaseColumnAttribute.PrimaryKey => PrimaryKey;
-        bool IDatabaseColumnAttribute.Filestream => ExternalStorageFlag;
         int? IDatabaseColumnAttribute.DecimalPlaces => DecimalPlaces;
-        eServerFunction IDatabaseColumnAttribute.SetValueOverride => SetValueOverride;
+        ServerFunctionKind IDatabaseColumnAttribute.SetValueOverride => SetValueOverride;
         bool IDatabaseColumnAttribute.ReturnOutputToProperty => ReturnOutputToProperty;
         #endregion
 
@@ -56,15 +43,7 @@ namespace TFM.Nucleus.Data
         /// <summary>The value is stored outside the row where the provider supports it (SQL Server FILESTREAM).</summary>
         public bool ExternalStorage = false;
 
-        [Obsolete("Use ExternalStorage.")]
-        public bool Filestream = false;
-        [Obsolete("Use FullTextSearch.")]
-        public bool FullTextIndex = false;
-        [Obsolete("Use Indexed.")]
-        public bool NonClusteredIndex = false;
         public bool Unique = false;
-        [Obsolete("Use IndexDescending.")]
-        public bool IndexSortDESC = false;
         public bool PrimaryKey = false;
         public int? DecimalPlaces = null;
 
@@ -75,22 +54,22 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public int Scale { get => DecimalPlaces ?? 0; set => DecimalPlaces = value; }
 
-        public eServerFunction SetValueOverride = eServerFunction.NULL;
+        public ServerFunctionKind SetValueOverride = ServerFunctionKind.None;
         public bool ReturnOutputToProperty = false;
         //public bool ForceTimestamp = false;
         public DatabaseColumnAttribute([CallerMemberName] string? columnName = null) : 
-            this(DataType.NotSpecified, columnName) { }
+            this(ColumnDataType.NotSpecified, columnName) { }
 
-        public DatabaseColumnAttribute(DataType datatype, [CallerMemberName] string? columnName = null) :
+        public DatabaseColumnAttribute(ColumnDataType datatype, [CallerMemberName] string? columnName = null) :
             this(datatype, null, columnName) { }
 
         public DatabaseColumnAttribute(int? datalength, [CallerMemberName] string? columnName = null) :
-            this(DataType.NotSpecified, datalength, columnName) { }
+            this(ColumnDataType.NotSpecified, datalength, columnName) { }
 
-        public DatabaseColumnAttribute(DataType datatype, int datalength, [CallerMemberName] string? columnName = null) :
+        public DatabaseColumnAttribute(ColumnDataType datatype, int datalength, [CallerMemberName] string? columnName = null) :
             this(datatype, (int?)datalength, columnName){ }
 
-        public DatabaseColumnAttribute(DataType datatype, int? datalength, [CallerMemberName] string? columnName = null)
+        public DatabaseColumnAttribute(ColumnDataType datatype, int? datalength, [CallerMemberName] string? columnName = null)
         {
             DataType = datatype;
             DataLength = datalength;
@@ -100,7 +79,7 @@ namespace TFM.Nucleus.Data
 
         //public string MSSQLDataType(Type t)
         //{
-        //    if (DataType == DataType.NotSpecified)
+        //    if (DataType == ColumnDataType.NotSpecified)
         //    {
         //        if (t == typeof(string))
         //            return "varchar";
@@ -132,11 +111,11 @@ namespace TFM.Nucleus.Data
 
         //        throw new Exception("Unknown property type '" + t.Namespace + "." + t.Name + "' unable to select a  matching sql datatype.");
         //    }
-        //    else if (DataType == DataType.Date)
+        //    else if (DataType == ColumnDataType.Date)
         //        return "date";
-        //    else if (DataType == DataType.Integer)
+        //    else if (DataType == ColumnDataType.Integer)
         //        return "int";
-        //    else if (DataType == DataType.Unicode)
+        //    else if (DataType == ColumnDataType.Unicode)
         //        return "nvarchar";
         //    throw new Exception("Unknown property type '" + DataType.ToString() + "' unable to select a  matching sql datatype.");
         //}

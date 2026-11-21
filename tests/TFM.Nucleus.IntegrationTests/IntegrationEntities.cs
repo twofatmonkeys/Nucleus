@@ -67,7 +67,7 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
 
         public NucleusChildCollection<IntStampedLine, IntStampedItem> Lines => GetChildCollection<IntStampedLine, IntStampedItem>();
@@ -79,7 +79,7 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
     }
 
@@ -90,7 +90,7 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
     }
 
@@ -101,7 +101,7 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
 
-        [DatabaseColumn(SetValueOverride = eServerFunction.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
+        [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset, ReturnOutputToProperty = true)]
         public DateTimeOffset StampedAt => GetValue<DateTimeOffset>();
     }
 
@@ -122,13 +122,13 @@ namespace TFM.Nucleus.IntegrationTests
     /// <summary>Columns named with SQL Server keywords: created bracketed, so a rebuild must copy them bracketed too.</summary>
     public class IntKeywordItem : CoreObject<IntKeywordItem>
     {
-        [DatabaseColumn(DataType.Unicode)]
+        [DatabaseColumn(ColumnDataType.Unicode)]
         public string? By { get => GetValue<string>(); set => SetValue(value); }
 
         [DatabaseColumn]
         public int Order { get => GetValue<int>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode)]
+        [DatabaseColumn(ColumnDataType.Unicode)]
         public string? Note { get => GetValue<string>(); set => SetValue(value); }
     }
 
@@ -226,7 +226,7 @@ namespace TFM.Nucleus.IntegrationTests
         [DatabaseColumn]
         public int Amount { get => GetValue<int>(); set => SetValue(value); }
 
-        [DatabaseColumn(DataType.Unicode, -1)]
+        [DatabaseColumn(ColumnDataType.Unicode, -1)]
         public string? Notes { get => GetValue<string>(); set => SetValue(value); }
     }
 }

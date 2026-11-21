@@ -159,10 +159,10 @@ namespace TFM.Nucleus.Data.Schema
             var dt = propertySchema.DatabaseColumnAttribute!.DataType;
             return dt switch
             {
-                DataType.NotSpecified => IntentOf(propertySchema.Type),
-                DataType.Date => ColumnTypeIntent.Date,
-                DataType.Integer => ColumnTypeIntent.Int32,
-                DataType.Unicode => ColumnTypeIntent.UnicodeString,
+                ColumnDataType.NotSpecified => IntentOf(propertySchema.Type),
+                ColumnDataType.Date => ColumnTypeIntent.Date,
+                ColumnDataType.Integer => ColumnTypeIntent.Int32,
+                ColumnDataType.Unicode => ColumnTypeIntent.UnicodeString,
                 _ => throw new Exception("Unknown property type '" + dt.ToString() + "' unable to select a  matching sql datatype."),
             };
         }

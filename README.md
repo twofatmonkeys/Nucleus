@@ -368,45 +368,45 @@ Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Tim
 
 `[DatabaseColumn]` marks a property as persisted. Without it, a property is in-memory only. The column name defaults to the property name through `[CallerMemberName]`, so `[DatabaseColumn]` on its own is the common case.
 
-Constructors: `()`, `(DataType)`, `(int? dataLength)`, `(DataType, int? dataLength)`, each with an optional trailing column name.
+Constructors: `()`, `(ColumnDataType)`, `(int? dataLength)`, `(ColumnDataType, int? dataLength)`, each with an optional trailing column name.
 
 | Field | Default | Meaning |
 |---|---|---|
 | `ColumnName` | property name | Physical column name, used by every statement, index name and predicate. Set it as `[DatabaseColumn("code")]` or `[DatabaseColumn(ColumnName = "code")]`. See renaming below. |
-| `DataType` | `NotSpecified` | One of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
+| `DataType` | `NotSpecified` | A `ColumnDataType`: one of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
 | `DataLength` | inferred | Column length. `-1` maps to `max`. |
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
 | `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
 | `Unique` | `false` | Adds a unique index on the column. NULLs are not constrained. See below. |
-| `Indexed` | `false` | Adds an index on the column. Neither this nor `Unique` is allowed on a `max` length or externally stored column. Replaces `NonClusteredIndex`. |
-| `IndexDescending` | `false` | Sorts that index descending. Replaces `IndexSortDESC`. |
-| `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. Replaces `FullTextIndex`. |
-| `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). Replaces `Filestream`. |
-| `SetValueOverride` | `NULL` | Has the server compute the value on every insert and update, for example `eServerFunction.CurrentDateTimeOffset` for a server timestamp. A value the client set for the property is not sent. |
+| `Indexed` | `false` | Adds an index on the column. Neither this nor `Unique` is allowed on a `max` length or externally stored column. |
+| `IndexDescending` | `false` | Sorts that index descending. |
+| `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. |
+| `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). |
+| `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
 | `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 **Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and adds it empty, so **the property reads null on every existing row**. The old column and its values stay in the table, but nothing reads them. If the same deployment also changes a column's type, the table is rebuilt instead, copying only the columns whose names the old and new tables share, and the old column's values are lost. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
 
-Each property maps to a column type by its CLR type, or by `DataType` when one is given:
+Each property maps to a column type by its CLR type, or by `ColumnDataType` when one is given:
 
 | Property | SQL Server | PostgreSQL | SQLite (declared type) |
 |---|---|---|---|
 | `string` | `varchar(255)`, or the given length; `-1` is `varchar(max)` | `varchar(255)`, or the given length; `-1` is `text` | `VARCHAR(255)`, or the given length (not enforced); `-1` is `TEXT` |
-| `string` with `DataType.Unicode` | `nvarchar(510)`, or the given length | `varchar(510)`, or the given length | `VARCHAR(510)`, or the given length |
+| `string` with `ColumnDataType.Unicode` | `nvarchar(510)`, or the given length | `varchar(510)`, or the given length | `VARCHAR(510)`, or the given length |
 | `int`, any enum (stored as its integer) | `int` | `integer` | `INTEGER` |
 | `long` | `bigint` | `bigint` | `BIGINT` |
 | `double` | `float` | `double precision` | `REAL` |
 | `bool` | `bit` | `boolean` | `BOOLEAN` (0 or 1) |
 | `decimal` | `decimal(15,5)`, or as `Scale` and `DataLength` give | `numeric(15,5)`, the same way | `DECIMAL(15,5)`, stored as a real |
 | `DateTime` | `datetime2(7)` | `timestamp` | `DATETIME` (text) |
-| `DateTime` with `DataType.Date` | `date` | `date` | `DATE` (text) |
+| `DateTime` with `ColumnDataType.Date` | `date` | `date` | `DATE` (text) |
 | `DateTimeOffset` | `datetimeoffset(7)` | `timestamptz` (UTC, microseconds) | `DATETIMEOFFSET` (UTC text, ticks) |
 | `Guid`, or an entity stored by its `ID` | `uniqueidentifier` | `uuid` | `UUID` (lower-case text) |
 | `byte[]` | `varbinary(max)` | `bytea` | `BLOB` |
 | a type named `TFMJsonString` | `json` | `jsonb` | `JSON_TEXT` |
 
-The SQL Server names `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex` and `Filestream`, and `eServerFunction.SYSDATETIME` and `SYSDATETIMEOFFSET`, still work and set the same flags as their neutral replacements, but are marked obsolete. The same holds below the attributes, for a provider author: `IPropertySchema.IsIndexed` and `IsFullTextSearch` replace `IsNonClusteredIndex` and `HasFullTextIndex`, and `ServerFunction.CurrentDateTime` and `CurrentDateTimeOffset` (with the matching `ServerFunctionKind` values) replace `SysDateTime` and `SysDateTimeOffset`. `DataType.Unicode` keeps its name: it means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string.
+The attribute and server-function vocabulary is named for what it means, not for one engine's feature. `ColumnDataType.Unicode` means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string. The older SQL Server names (`NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex`, `Filestream`, `SYSDATETIME`) are gone; see [Behaviour changes](#behaviour-changes) for the table of renames.
 
 `Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do. For a rule over several columns together, declare a unique [`[TableIndex]`](#class-level-behaviour) instead.
 
@@ -420,7 +420,7 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 | `[Deletable(DeleteBehavior.Hard)]` | Deletes physically remove rows. `[Deletable]` alone is hard. |
 | `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless the read asks for them: `LoadOptions.IncludeDeleted` on a manager load, or `.IncludeDeleted()` on a query from `Get<T>()`. |
 | `[Deletable(false)]` | On a child type: its rows are never deleted, by any route. A declaration above it that would delete them fails the schema. |
-| `[SuppressDB]` | Excludes the type from schema management entirely. |
+| `[NotStored]` | Excludes the type from schema management entirely: it has no table. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
 | `[TableIndex(name, keys..., Include = [...], Unique = true)]` | An index over several columns, named `NIX_<table>_<name>`, optionally unique over all of its keys together. Repeat it for more than one. See below. |
 | `[DatabaseTable("tbl_Name")]` | The table name, used as written in place of the one the naming policy would give. Not inherited. See [Table names](#table-names). |
@@ -487,7 +487,6 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](#lazy-collections). |
 | `[LinkedBy(keyProperty)]` | a `NucleusLinkedCollection` property | Names the many type's key, the property holding the one's ID. See [Linked collections](#linked-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
-| `[LinkedChildCollection]` | a collection property | Obsolete, and has no effect: a child collection is a `NucleusChildCollection` property, found by its type. It was the v1 marker. |
 
 ### Logging and auditing
 
@@ -834,9 +833,9 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 
 | Method | Package | Purpose |
 |---|---|---|
-| `AddNucleus()` | `TFM.Nucleus` | Registers the schema provider and derives `AppName` and `AppVersion` from the entry assembly. Note this overload sets `ReadOnlySchema` to `false`, which enables automatic schema creation and migration. |
-| `AddNucleus(Action<NucleusOptions>)` | `TFM.Nucleus` | The same, with explicit options. `ReadOnlySchema` defaults to `true` here. An `AppName` or `AppVersion` the options leave unset is read from the entry assembly. |
-| `AddNucleusLogging()` | `TFM.Nucleus` | Opt-in. Persists host log entries into the `NucleusLogEntry` table. |
+| `AddNucleus()` | `TFM.Nucleus` (package) | Registers the schema provider and derives `AppName` and `AppVersion` from the entry assembly. Note this overload sets `ReadOnlySchema` to `false`, which enables automatic schema creation and migration. |
+| `AddNucleus(Action<NucleusOptions>)` | `TFM.Nucleus` (package) | The same, with explicit options. `ReadOnlySchema` defaults to `true` here. An `AppName` or `AppVersion` the options leave unset is read from the entry assembly. |
+| `AddNucleusLogging()` | `TFM.Nucleus` (package) | Opt-in. Persists host log entries into the `NucleusLogEntry` table. |
 | `AddNucleusData()` | `TFM.Nucleus.Data` | Registers the provider registry and the object data manager, and publishes the ambient runtime that the static API uses. |
 | `AddNucleusSqlServerDataProvider()` | `TFM.Nucleus.Data.SQL` | Configures from the `SQL_SERVER`, `SQL_DATABASE`, `SQL_USERNAME` and `SQL_PASSWORD` environment variables. |
 | `AddNucleusSqlServerDataProvider(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Configures explicitly. |
@@ -990,6 +989,48 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
 - **A row read sees live rows only.** `Rows<T>()` has no counterpart to `IncludeDeleted`.
 
 ## Behaviour changes
+
+These came in with the naming clean-up, and they break a build. They are the one set of breaking
+changes made without a major version; `AGENTS.md` records why. Rebuild every package that holds
+entities or a store against this version: an assembly compiled against the old attribute names
+loses its attributes without an error.
+
+- **Renamed.** Find and replace each in your code.
+
+  | Was | Is |
+  |---|---|
+  | `DataType` (in `[DatabaseColumn(DataType.Unicode, 50)]`) | `ColumnDataType`. The old name collided with `System.ComponentModel.DataAnnotations.DataType`. |
+  | `eServerFunction` | `ServerFunctionKind`. `NULL` is `None`. The two enums were one list kept twice, and a column can now be stamped with `UtcNow` or `NewGuid`. |
+  | `EDataSchemaStatus` | `DataSchemaStatus` |
+  | `QueryType.SELECT`, `INSERT`, `UPDATE`, `DELETE` | `QueryKind.Select`, `Insert`, `Update`, `Delete` |
+  | `OrderByType.ASCENDING`, `DESCENDING` | `SortDirection.Ascending`, `Descending` |
+  | `WhereCollection.Type` | `WhereCollection.NodeKind` |
+  | `[SuppressDB]` | `[NotStored]` |
+  | `TFM.Nucleus.ServiceExtensions` (`AddNucleus`, `AddNucleusLogging`) | `Microsoft.Extensions.DependencyInjection.NucleusServiceExtensions`. Calls are unchanged; a file that had only `using TFM.Nucleus;` for them now needs `using Microsoft.Extensions.DependencyInjection;`. |
+- **The attributes carry the `Attribute` suffix.** `Cacheable`, `RetrieveOnDemand`, `LinkedObject`,
+  `ParentObject`, `SuppressLogging`, `AbbreviatedLogging`, `LinkWhenLogging` and
+  `InitializePriority` are now `CacheableAttribute` and so on. `[LinkedObject]` on an entity
+  compiles as it did. What changes is code that names the class: `typeof(LinkedObject)` becomes
+  `typeof(LinkedObjectAttribute)`.
+- **Removed.** Each was already obsolete.
+
+  | Removed | Use |
+  |---|---|
+  | `NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex`, `Filestream` on `[DatabaseColumn]` | `Indexed`, `IndexDescending`, `FullTextSearch`, `ExternalStorage` |
+  | `SYSDATETIME`, `SYSDATETIMEOFFSET`, `ServerFunction.SysDateTime`, `SysDateTimeOffset` | `CurrentDateTime`, `CurrentDateTimeOffset` |
+  | `[LinkedChildCollection]`, `IPropertySchema.IsLinkedChildCollection` | A `NucleusChildCollection` property, found by its type; `IPropertySchema.ChildType` |
+  | `IObjectSchema.HasLinkedChildObjects`, `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` | `HasNucleusChildCollections`, `NucleusChildCollectionProperties` and each property's `ChildSchema`, `ICoreObject.NucleusChildCollections` |
+  | `IPropertySchema.IsNonClusteredIndex`, `HasFullTextIndex` | `IsIndexed`, `IsFullTextSearch` |
+  | `CoreObject.AllowDeletions` | `[Deletable]` |
+  | `IObjectDataManager.DataProvider` | The routed members: `CreateContextAsync<T>`, `SubscribeToChangesAsync<T>`, `Rows<T>` |
+  | `TFM.Nucleus.Data.DataSchemaStatus` (`Current`, `OutOfDate`, `Error`) | Nothing: it was used by nothing, and the name now belongs to the schema status enum |
+- **An implementation of a Nucleus interface must supply the neutral members.**
+  `IDatabaseColumnAttribute.Indexed`, `FullTextSearch`, `IndexDescending` and `ExternalStorage`,
+  and `IPropertySchema.IsIndexed` and `IsFullTextSearch`, defaulted to the removed members and
+  are now required. `IObjectDataManager.Rows<T>` defaulted to the removed `DataProvider` and now
+  throws unless implemented.
+- **`IPropertySchema.Create` always throws,** and it and `PropertySchema.PropertyCreator` are
+  obsolete: they made the v1 child collection of a `[LinkedChildCollection]` property.
 
 These came in with the API surface review. Nothing was removed: each replaced member still works
 and is marked obsolete, so a build that treats warnings as errors will stop on them.
@@ -1196,7 +1237,7 @@ forceSave and lazy collections.
 - **`[LinkedChildCollection]` and the `LinkedChild*` schema members are obsolete.** The attribute
   only fed validation and notification, so a `NucleusChildCollection` without it was never
   validated and raised `PropertyChanged` with no property name; both now follow the collection.
-  The members answer for child collections and go at the next major version.
+  The attribute and the members have since been removed.
 - **A parent with two collections of one child type fails when the schema is built.** It used to
   fail with a bare `ArgumentException` from a dictionary.
 - **A child entity can hold a child collection.** `GetChildCollection` required the parent to be a

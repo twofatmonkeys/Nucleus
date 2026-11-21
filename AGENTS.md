@@ -419,7 +419,9 @@ warning or an analyzer warning in new code fails CI.
   does too, and reports what failed through a `Kind` where it has several causes.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
-  SQL Server names stay, obsolete, because entities in production use them.
+  SQL Server names were removed in the November 2026 naming clean-up.
+- **A new attribute class is named with the `Attribute` suffix, and a new enum with no prefix
+  and PascalCase members.** `NotStoredAttribute`, `QueryKind.Select`.
 - **Change the SQL Server goldens or the API snapshot deliberately.** `SqlServerGoldens.cs` and
   `PublicApiSnapshot.cs` are written only by their accept tests, with `NUCLEUS_ACCEPT_GOLDENS=1`;
   the diff is the review.
@@ -444,6 +446,13 @@ warning or an analyzer warning in new code fails CI.
 - **Evolve the public surface additively.** Two production sites already consume these packages,
   and `CoreObject` is the base class of every entity in them. A breaking change to the entity base,
   an attribute, or a registration method is a major version and a coordinated release.
+  Exception, November 2026: the naming clean-up (enum names, the `Attribute` suffix, `DataType`
+  to `ColumnDataType`, `AddNucleus` moved to the dependency injection namespace, removal of the
+  members obsolete before it) shipped on the v2 line. Reason: the API surface was being
+  straightened out ahead of publication, while every consumer (two sites and the four store
+  packages) was released by the same team in one coordinated release. This was a one-off. The
+  rule stands for everything after it; the repo is public and the packages will be published to
+  nuget.org once the surface is settled, which limits future breaking changes further.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete

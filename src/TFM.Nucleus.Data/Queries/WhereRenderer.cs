@@ -18,11 +18,11 @@ namespace TFM.Nucleus.Data.Queries
             ArgumentNullException.ThrowIfNull(writer);
             return where.ExpressionType switch
             {
-                WhereCollection.Type.Parameter => writer.Term(where.Term!),
-                WhereCollection.Type.And => string.Join(writer.And, where.Terms.Select(c =>
-                    c.ExpressionType == WhereCollection.Type.Or ? writer.Group(Render(c, writer)) : Render(c, writer))),
-                WhereCollection.Type.Or => string.Join(writer.Or, where.Terms.Select(c => writer.Group(Render(c, writer)))),
-                WhereCollection.Type.Empty => "",
+                WhereCollection.NodeKind.Parameter => writer.Term(where.Term!),
+                WhereCollection.NodeKind.And => string.Join(writer.And, where.Terms.Select(c =>
+                    c.ExpressionType == WhereCollection.NodeKind.Or ? writer.Group(Render(c, writer)) : Render(c, writer))),
+                WhereCollection.NodeKind.Or => string.Join(writer.Or, where.Terms.Select(c => writer.Group(Render(c, writer)))),
+                WhereCollection.NodeKind.Empty => "",
                 _ => throw new InvalidOperationException("Bad WhereParameter"),
             };
         }

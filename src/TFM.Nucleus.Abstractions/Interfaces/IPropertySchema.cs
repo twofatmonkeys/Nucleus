@@ -16,6 +16,7 @@ namespace TFM.Nucleus
         public IDatabaseColumnAttribute? DatabaseColumnAttribute { get; }
         public MethodInfo? Getter { get; }
         public MethodInfo? Setter { get; }
+        [Obsolete("Created the v1 child collection of a [LinkedChildCollection] property, which no longer exists. It always throws.")]
         public object? Create(object? thisObj);
         //internal Func<object, object> privateGetter { get; }
         //internal Action<object, object> privateSetter { get; }
@@ -31,10 +32,6 @@ namespace TFM.Nucleus
 
         public bool IsLinkedObject { get; }
         public bool ForceLinkedSave { get; }
-
-        /// <summary>True when the property carries the obsolete [LinkedChildCollection], which has no effect.</summary>
-        [Obsolete("[LinkedChildCollection] has no effect. A child collection is a NucleusChildCollection property; test ChildType.")]
-        public bool IsLinkedChildCollection { get; }
 
         /// <summary>The child type of a NucleusChildCollection property; null for any other property.</summary>
         public Type? ChildType { get; }
@@ -74,24 +71,16 @@ namespace TFM.Nucleus
         public string Name { get; }
 
 
-        [Obsolete("Use IsFullTextSearch.")]
-        public bool HasFullTextIndex { get; }
         public bool IsDBColumn { get; }
         [Obsolete("Set for a [ParentObject] property and read by nothing.")]
         public bool SkipOnDbRead { get; }
         public bool IsOverridden { get; }
-        [Obsolete("Use IsIndexed.")]
-        public bool IsNonClusteredIndex { get; }
 
-        // The neutral names forward to the obsolete ones by default, so an implementation written
-        // against the old names still compiles.
-#pragma warning disable CS0618
         /// <summary>The column's text is indexed for full-text search where the provider supports it.</summary>
-        public bool IsFullTextSearch => HasFullTextIndex;
+        public bool IsFullTextSearch { get; }
 
         /// <summary>The column gets an index of its own.</summary>
-        public bool IsIndexed => IsNonClusteredIndex;
-#pragma warning restore CS0618
+        public bool IsIndexed { get; }
         public bool IsUnique { get; }
         public IObjectSchema? ChildSchema { get; }
         public IObjectSchema? ObjectSchema { get; }

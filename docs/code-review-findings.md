@@ -13,10 +13,6 @@ noted otherwise. Everything under "Open" is still true of the code.
 A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
 "Fixed"). Still open:
 
-- **`AddNucleus` is the one registration outside `Microsoft.Extensions.DependencyInjection`.** It
-  is in `TFM.Nucleus`, so it needs a using the provider registrations do not. A forwarding copy in
-  the other namespace would make every call ambiguous in a file that imports both, so it can only
-  be moved, which breaks callers; it goes with the other breaking renames.
 - **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
   aligning the relationship attributes.
 - **`ConnectAttempts` is PostgreSQL's alone.** SQL Server and SQLite open once. It was not lifted
@@ -27,10 +23,6 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
   stack uses whichever runtime was published last, if any. Tests use the stack's manager.
 - **The test stack's start methods take no cancellation token**, because
   `IDataProvider.InitializeAsync` takes none.
-- **Names that cannot be aligned additively.** `eServerFunction`, `EDataSchemaStatus`, the
-  all-caps members of `QueryType` and `OrderByType`, the `DataType` enum (it collides with
-  `System.ComponentModel.DataAnnotations.DataType`) and the attributes without the `Attribute`
-  suffix. Renaming them breaks consumers at compile time, so they go together in one release.
 - **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
   `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
   consumer calls them, and an overload beside them would make a call without arguments ambiguous.
@@ -142,11 +134,9 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
   removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
   saved and have forgotten their removals. Long-standing; listed in the README's known limits.
-- **The `[LinkedChildCollection]` surface is obsolete, not removed.** The attribute,
-  `IPropertySchema.IsLinkedChildCollection`, `IObjectSchema.HasLinkedChildObjects`,
-  `LinkedChildObjectProperties`, `LinkedChildObjectSchemas`, `GetLinkedChildObjects` and
-  `CoreObject.AllowDeletions` remain as obsolete aliases or no-ops. Remove them at the next major
-  version.
+- **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
+  `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
+  clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
 - **A linked, not owned, collection was not built; it now is** (November 2026):
   `NucleusLinkedCollection<TMany, TOne>`, kept by a key the many type
   declares and `[LinkedBy]` names, loaded on the first read of a member or included, its new and
@@ -378,6 +368,39 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### Names that could only be changed by breaking (November 2026)
+
+The last part of the same review, and the one deliberate break: it shipped on the v2 line, and
+the exception is written into the rule in `AGENTS.md`. The README's behaviour changes carry the
+table a consumer migrates by.
+
+- **Two enums held one list.** `eServerFunction` (what `[DatabaseColumn(SetValueOverride = ...)]`
+  took) and `ServerFunctionKind` (what the query model carries) were the same values, and the
+  first lacked `UtcNow` and `NewGuid`, so a column could not be stamped with either. They are one
+  enum, `ServerFunctionKind`, with `None`.
+- **Enum names carried prefixes and capitals**: `eServerFunction`, `EDataSchemaStatus`,
+  `QueryType.SELECT`, `OrderByType.ASCENDING`. They are `ServerFunctionKind`, `DataSchemaStatus`,
+  `QueryKind.Select`, `SortDirection.Ascending`. A second, unused `DataSchemaStatus` in the Data
+  assembly was deleted to free the name.
+- **`DataType` collided with `System.ComponentModel.DataAnnotations.DataType`,** which the
+  attribute's own file imports. It is `ColumnDataType`.
+- **`WhereCollection.Type` shadowed `System.Type`** inside the class. It is `NodeKind`.
+- **Ten attributes had no `Attribute` suffix** while seven had it. A second class under the
+  suffixed name would have made `[LinkedObject]` ambiguous (CS1614), so the classes were renamed.
+  Attribute usage compiles unchanged; an assembly compiled against the old names does not find
+  them, so every entity and store package is rebuilt with this release. `[SuppressDB]` is
+  `[NotStored]`.
+- **`AddNucleus` was the one registration outside `Microsoft.Extensions.DependencyInjection`.** A
+  forwarding copy would have made every call ambiguous in a file importing both namespaces, so it
+  was moved.
+- **Everything obsolete before the review was removed**: the SQL Server names on
+  `[DatabaseColumn]` and the server functions, `[LinkedChildCollection]` and the `LinkedChild*`
+  schema members, `CoreObject.AllowDeletions` and `IObjectDataManager.DataProvider`. The neutral
+  interface members that defaulted to them are now required of an implementer.
+
+The SQL goldens did not change, and every test passed under the new names without a change of
+behaviour; the six tests of the removed aliases went with them.
 
 ### API surface alignment (November 2026)
 

@@ -50,7 +50,7 @@ namespace TFM.Nucleus
         /// a server value read back.
         /// </summary>
         [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
-            SetValueOverride = eServerFunction.CurrentDateTimeOffset)]
+            SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
         public DateTimeOffset Timestamp
         {
             get { return GetValue<DateTimeOffset>(); }
@@ -528,8 +528,6 @@ namespace TFM.Nucleus
         protected internal virtual bool DisableLogging => false;
         [Obsolete("Has no effect. A type is cached when it is marked [Cacheable], and only then.")]
         protected internal virtual bool AllowCaching => true;
-        [Obsolete("Has no effect. Deletion is declared with [Deletable] on the type, a child collection property or an owner.")]
-        protected internal virtual bool AllowDeletions => false;
         [Obsolete("Has no effect. Set the interval on the attribute: [Cacheable(refreshInterval, cacheLifetime)].")]
         protected internal virtual int CacheRefreshInterval => 120;
         [Obsolete("Has no effect. Set the lifetime on the attribute: [Cacheable(refreshInterval, cacheLifetime)].")]

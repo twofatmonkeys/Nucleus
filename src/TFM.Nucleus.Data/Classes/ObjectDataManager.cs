@@ -26,14 +26,6 @@ namespace TFM.Nucleus.Data
     /// </summary>
     public interface IObjectDataManager
     {
-        /// <summary>
-        /// The unrooted default provider. It is not the provider of a type registered under a
-        /// rooted provider, so reaching through it misroutes that type, and anything written
-        /// through it skips the manager's cache eviction.
-        /// </summary>
-        [Obsolete("DataProvider is the unrooted default provider and misroutes types registered under a rooted provider. " +
-            "Use the routed members instead: CreateContextAsync<T>, SubscribeToChangesAsync<T>, Rows<T>, SaveAsync and DeleteAsync.")]
-        IDataProvider DataProvider { get; }
         IObjectSchemaProvider ObjectSchema { get; }
 
         /// <summary>The status of the unrooted default provider only.</summary>
@@ -185,9 +177,7 @@ namespace TFM.Nucleus.Data
         /// counts, minimums, maximums and totals worked out there. See <see cref="RowQuery{T}"/>.
         /// </summary>
         RowQuery<T> Rows<T>(Expression<Func<T, bool>>? predicate = null) where T : ICoreObject<T>, new() =>
-#pragma warning disable CS0618 // Kept for implementers that predate the routed members; ObjectDataManager overrides it.
-            new(DataProvider, predicate);
-#pragma warning restore CS0618
+            throw new NotSupportedException($"{GetType().Name} does not support row reads.");
     }
 
 
@@ -294,7 +284,11 @@ namespace TFM.Nucleus.Data
             }
         }
 
-        /// <inheritdoc cref="IObjectDataManager.DataProvider"/>
+        /// <summary>
+        /// The unrooted default provider. It is not the provider of a type registered under a
+        /// rooted provider, so reaching through it misroutes that type, and anything written
+        /// through it skips the manager's cache eviction.
+        /// </summary>
         [Obsolete("DataProvider is the unrooted default provider and misroutes types registered under a rooted provider. " +
             "Use the routed members instead: CreateContextAsync<T>, SubscribeToChangesAsync<T>, Rows<T>, SaveAsync and DeleteAsync.")]
         public IDataProvider DataProvider => DefaultProvider;
@@ -1235,10 +1229,4 @@ namespace TFM.Nucleus.Data
         }
     }
 
-    public enum DataSchemaStatus
-    {
-        Current,
-        OutOfDate,
-        Error
-    }
 }
