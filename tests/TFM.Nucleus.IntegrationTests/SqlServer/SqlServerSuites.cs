@@ -11,6 +11,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerTransactionCommitIntegrationTests(SqlServerFixture fixture) : TransactionCommitIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerConnectionLimitIntegrationTests(SqlServerFixture fixture) : ConnectionLimitIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerContextSaveIntegrationTests(SqlServerFixture fixture) : ContextSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

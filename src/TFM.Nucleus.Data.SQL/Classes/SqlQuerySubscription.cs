@@ -33,9 +33,21 @@ namespace TFM.Nucleus.Data.SQL
             var columns = string.Join(", ", tableSchema.Columns.Select(c => $"[{c.ColumnName}]"));
             var selectText = $"SELECT {columns} FROM [dbo].[{tableSchema.TableName}]";
 
-            var connection = provider.SqlConfig.BuildNewSQLConnection(false);
-            QueryNotificationHost.Acquire(connection.ConnectionString);
-            var subscription = new SqlQuerySubscription<T>(selectText, connection);
+            // The watcher connection is one of the provider's MaxConnectionPoolSize: taken first,
+            // so a full budget fails as PoolExhausted instead of waiting on the driver's pool.
+            var slot = await provider.ConnectionSlots.AcquireAsync(token);
+            SqlConnection connection;
+            try
+            {
+                connection = provider.SqlConfig.BuildNewSQLConnection();
+                QueryNotificationHost.Acquire(connection.ConnectionString);
+            }
+            catch
+            {
+                slot.Dispose();
+                throw;
+            }
+            var subscription = new SqlQuerySubscription<T>(selectText, connection) { Slot = slot };
             try
             {
                 await connection.OpenAsync(token);
@@ -56,6 +68,7 @@ namespace TFM.Nucleus.Data.SQL
                 // No half-open state: tear down everything acquired above before rethrowing.
                 await connection.DisposeAsync();
                 QueryNotificationHost.Release(subscription._connectionString);
+                slot.Dispose();
                 throw new Exception($"Unable to register a query-notification subscription for {typeof(T).FullName}. {ex.Message}", ex);
             }
         }

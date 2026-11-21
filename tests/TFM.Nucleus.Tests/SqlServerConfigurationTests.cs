@@ -21,11 +21,10 @@ namespace TFM.Nucleus.Tests
             var options = Configuration();
 
             Assert.Equal(3, options.ConnectTimeoutSeconds);
-            Assert.Equal(3, options.BuildNewSQLConnection(useTransaction: true).ConnectionTimeout);
+            Assert.Equal(3, options.BuildNewSQLConnection().ConnectionTimeout);
 
             options.ConnectTimeoutSeconds = 20;
-            Assert.Equal(20, options.BuildNewSQLConnection(useTransaction: true).ConnectionTimeout);
-            Assert.Equal(20, options.BuildNewSQLConnection(useTransaction: false).ConnectionTimeout);
+            Assert.Equal(20, options.BuildNewSQLConnection().ConnectionTimeout);
             Assert.Equal(20, options.BuildSystemSQLConnection().ConnectionTimeout);
         }
 
@@ -35,7 +34,7 @@ namespace TFM.Nucleus.Tests
             var options = Configuration();
 
             options.ConnectTimeoutSeconds = 0;
-            Assert.Equal(0, options.BuildNewSQLConnection(useTransaction: true).ConnectionTimeout);
+            Assert.Equal(0, options.BuildNewSQLConnection().ConnectionTimeout);
             Assert.Throws<ArgumentOutOfRangeException>(() => options.ConnectTimeoutSeconds = -1);
         }
     }

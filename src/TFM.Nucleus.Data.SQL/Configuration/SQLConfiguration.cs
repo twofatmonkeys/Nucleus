@@ -70,26 +70,41 @@ namespace TFM.Nucleus.Data.SQL
         }
         private int _connectTimeoutSeconds = 3;
 
-        internal SqlConnection BuildNewSQLConnection(bool useTransaction)
+        /// <summary>
+        /// A connection to the database. Every one, transactional or not, has the same connection
+        /// string, so the driver keeps one pool of <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>.
+        /// </summary>
+        internal SqlConnection BuildNewSQLConnection()
         {
-            if (ConnectionString != null)
-                return BuildFromRawConnectionString(ConnectionString, useTransaction);
-            var builder = BuildConnectionStringBuilder();
-            builder.InitialCatalog = Database ?? throw new SqlDataProviderException("SQL database name is missing", DataProviderErrorKind.NotConfigured);
-            return useTransaction ? new SqlConnection($"{builder.ConnectionString}") :
-                new SqlConnection($"{builder.ConnectionString}; Enlist = false");
+            var builder = ConnectionString != null ? new SqlConnectionStringBuilder(ConnectionString) : BuildConnectionStringBuilder();
+            if (ConnectionString == null)
+                builder.InitialCatalog = Database ?? throw new SqlDataProviderException("SQL database name is missing", DataProviderErrorKind.NotConfigured);
+            ApplyPoolRules(builder);
+            return new SqlConnection(builder.ConnectionString);
         }
-        /// <summary>A connection to master, for creating and finding the database.</summary>
+
+        /// <summary>
+        /// A connection to master, for creating and finding the database. Not pooled: it is used
+        /// at initialise only, and a pooled one would stay open, outside the limit, after it.
+        /// </summary>
         internal SqlConnection BuildSystemSQLConnection()
         {
-            if (ConnectionString != null)
-            {
-                var raw = new SqlConnectionStringBuilder(ConnectionString) { InitialCatalog = "master" };
-                return BuildFromRawConnectionString(raw.ConnectionString, useTransaction: false);
-            }
-            var builder = BuildConnectionStringBuilder();
+            var builder = ConnectionString != null ? new SqlConnectionStringBuilder(ConnectionString) : BuildConnectionStringBuilder();
             builder.InitialCatalog = "master";
-            return new SqlConnection($"{builder.ConnectionString}; Enlist = false");
+            ApplyPoolRules(builder);
+            builder.Pooling = false;
+            return new SqlConnection(builder.ConnectionString);
+        }
+
+        /// <summary>
+        /// No connection enlists in an ambient transaction (a context runs its own), and the pool
+        /// is <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>, whatever a raw
+        /// connection string says.
+        /// </summary>
+        private void ApplyPoolRules(SqlConnectionStringBuilder builder)
+        {
+            builder.Enlist = false;
+            builder.MaxPoolSize = MaxConnectionPoolSize;
         }
 
         /// <summary>Shared builder for the SQL-auth / integrated-auth paths.</summary>
@@ -122,16 +137,7 @@ namespace TFM.Nucleus.Data.SQL
             builder.MultipleActiveResultSets = true;
             builder.IPAddressPreference = SqlConnectionIPAddressPreference.UsePlatformDefault;
             builder.PacketSize = PacketSize;
-            builder.MaxPoolSize = MaxConnectionPoolSize;
             return builder;
-        }
-
-        private static SqlConnection BuildFromRawConnectionString(string connectionString, bool useTransaction)
-        {
-            var builder = new SqlConnectionStringBuilder(connectionString);
-            if (!useTransaction)
-                builder.Enlist = false;
-            return new SqlConnection(builder.ConnectionString);
         }
     }
 }
