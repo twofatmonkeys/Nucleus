@@ -2,6 +2,22 @@ using TFM.Nucleus.Abstractions.Interfaces;
 
 namespace TFM.Nucleus.Tests
 {
+    /// <summary>A root whose link names a child type.</summary>
+    public class LrChildRef : CoreObject<LrChildRef>
+    {
+        [LinkedObject]
+        [DatabaseColumn]
+        public CmTypeLine? Line { get => GetValue<CmTypeLine>(); set => SetValue(value); }
+    }
+
+    /// <summary>A forceSave link to a child type, which the schema build refuses.</summary>
+    public class LrForcedChildRef : CoreObject<LrForcedChildRef>
+    {
+        [LinkedObject(forceSave: true)]
+        [DatabaseColumn]
+        public CmTypeLine? Line { get => GetValue<CmTypeLine>(); set => SetValue(value); }
+    }
+
     /// <summary>
     /// The read of a loaded [LinkedObject]: a load stores only the referenced entity's ID, and the
     /// first read of the property loads the entity through the loader the load bound, once,
@@ -132,6 +148,105 @@ namespace TFM.Nucleus.Tests
 
             Assert.Throws<InvalidCastException>(() => widget.Name);
         }
+
+        // ---- Links to a child, and a child loaded on its own -----------------------------------
+
+        private static CmTypeOwner StoredOwner(Guid id) =>
+            ObjectSchema<CmTypeOwner>.BuildObjectViaReflection(new Dictionary<string, object?> { ["ID"] = id, ["Name"] = "owner" });
+
+        /// <summary>A child as a load of its own type leaves it: its parent column holds the parent's ID.</summary>
+        private static CmTypeLine StandaloneLine(Guid ownerId, ILinkedObjectLoader? loader)
+        {
+            var line = ObjectSchema<CmTypeLine>.BuildObjectViaReflection(
+                new Dictionary<string, object?> { ["ID"] = Guid.NewGuid(), ["Sequence"] = 3, ["Parent"] = ownerId });
+            if (loader is not null)
+                ((ICoreObject)line).BindLinkedObjectLoader(loader);
+            return line;
+        }
+
+        [Fact]
+        public void AChildLoadedOnItsOwn_LoadsItsParentOnTheFirstRead_AndStaysUnchanged()
+        {
+            var ownerId = Guid.NewGuid();
+            var loader = new CountingLoader((type, id) => type == typeof(CmTypeOwner) ? StoredOwner(id) : null);
+            var line = StandaloneLine(ownerId, loader);
+
+            var first = line.Parent;
+            var second = line.Parent;
+
+            Assert.Equal(ownerId, first.ID);
+            Assert.Same(first, second);
+            Assert.Equal(1, loader.Calls);
+            Assert.Empty(((ICoreObject)line).ChangedProperties);
+        }
+
+        [Fact]
+        public void AChildWhoseParentIsGone_ThrowsNotBound()
+        {
+            var line = StandaloneLine(Guid.NewGuid(), new CountingLoader((_, _) => null));
+
+            var ex = Assert.Throws<InvalidOperationException>(() => line.Parent);
+            Assert.Contains("not bound", ex.Message);
+        }
+
+        [Fact]
+        public void AChildLoadedWithItsParent_NeverReadsThroughTheLoader()
+        {
+            var owner = StoredOwner(Guid.NewGuid());
+            var line = StandaloneLine(owner.ID, Refusing());
+            ((ICoreChildObject<CmTypeOwner>)line).BindLoadedParent(owner);
+
+            Assert.Same(owner, line.Parent);
+        }
+
+        [Fact]
+        public void ALinkToAChild_LoadsTheChild_WhoseParentThenLoadsThroughTheSameLoader()
+        {
+            var ownerId = Guid.NewGuid();
+            var lineId = Guid.NewGuid();
+            CountingLoader? loader = null;
+            loader = new CountingLoader((type, id) =>
+                type == typeof(CmTypeOwner) ? StoredOwner(id)
+                : type == typeof(CmTypeLine) ? StandaloneLine(ownerId, loader) : null);
+            var reference = ObjectSchema<LrChildRef>.BuildObjectViaReflection(
+                new Dictionary<string, object?> { ["ID"] = Guid.NewGuid(), ["Line"] = lineId });
+            ((ICoreObject)reference).BindLinkedObjectLoader(loader);
+
+            Assert.Equal(3, reference.Line!.Sequence);
+            Assert.Equal(ownerId, reference.Line.Parent.ID);
+            Assert.Equal(2, loader.Calls);
+            Assert.Empty(((ICoreObject)reference).ChangedProperties);
+        }
+
+        [Fact]
+        public void AQueryOfAChildType_BindsTheManagerSoTheParentLoadsFromIt()
+        {
+            var ownerId = Guid.NewGuid();
+            var provider = new FakeDataProvider();
+            provider.SetupRows<CmTypeLine>(new Dictionary<string, object?> { ["ID"] = Guid.NewGuid(), ["Sequence"] = 1, ["Parent"] = ownerId });
+            provider.SetupRows<CmTypeOwner>(new Dictionary<string, object?> { ["ID"] = ownerId, ["Name"] = "owner" });
+            var manager = new ObjectDataManager(provider, new ObjectSchemaProvider(), null);
+
+            var line = Assert.Single(manager.Get<CmTypeLine>().ToList());
+
+            Assert.Equal("owner", line.Parent.Name);
+        }
+
+        [Fact]
+        public void AForceSaveLinkToAChild_FailsAtSchemaBuild()
+        {
+            var store = new RecordingSchemaStore(new CatalogSnapshot([], [], []), typeof(LrForcedChildRef), typeof(CmTypeOwner), typeof(CmTypeLine));
+
+            var ex = Assert.Throws<InvalidOperationException>(() => store.Manager().BuildSchema());
+
+            Assert.Contains($"{nameof(LrForcedChildRef)}.{nameof(LrForcedChildRef.Line)}", ex.Message);
+            Assert.Contains("forceSave", ex.Message);
+        }
+
+        [Fact]
+        public void APlainLinkToAChild_BuildsAtSchemaBuild() =>
+            Assert.Equal(3, new RecordingSchemaStore(new CatalogSnapshot([], [], []), typeof(LrChildRef), typeof(CmTypeOwner), typeof(CmTypeLine))
+                .Manager().BuildSchema().Count);
 
         // ---- Include ------------------------------------------------------------------------------
 

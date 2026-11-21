@@ -85,7 +85,28 @@ namespace TFM.Nucleus.Data.Schema
             List<TableSchema> tables = [.. TableCache.Values];
             EnsureTableNamesAreDistinct(tables);
             EnsureLinkedCollectionsAreStoredTogether(tables);
+            EnsureForceSaveLinksAreRoots(tables);
             return tables;
+        }
+
+        /// <summary>
+        /// Refuses a <c>[LinkedObject(forceSave: true)]</c> typed as a child: the save would write
+        /// the child as a root, outside the parent that owns it. A plain link to a child is fine;
+        /// the child is saved through its parent.
+        /// </summary>
+        private static void EnsureForceSaveLinksAreRoots(IReadOnlyList<TableSchema> tables)
+        {
+            foreach (var table in tables)
+            {
+                var schema = table.ObjectSchema;
+                if (!schema.HasLinkedObjects)
+                    continue;
+                foreach (var link in schema.LinkedObjectProperties!)
+                    if (link.ForceLinkedSave && link.ObjectSchema is { HasParentObject: true } target)
+                        throw new InvalidOperationException(
+                            $"{schema.Name}.{link.Name} is a [LinkedObject(forceSave: true)] that holds a {target.Name}, which is a child: " +
+                            $"it is saved through its parent's collection, never on its own. Drop forceSave and save the parent.");
+            }
         }
 
         /// <summary>

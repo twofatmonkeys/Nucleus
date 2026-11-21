@@ -685,6 +685,19 @@ referenced type must be stored by the same provider as the rows; including one s
 throws rather than leaving every row to load its own. A referenced entity included this way is
 loaded with its own child collections and runs its load hook.
 
+A `[LinkedObject]` can name a child type, such as a voucher's `MarketingRecipient` that belongs to
+a campaign. The child loads like any referenced entity, and its `Parent` holds the parent's ID
+until it is first read, which loads the parent the same way. The same goes for a child loaded on
+its own by `LoadByID` or a query of its type. The parent loads as `LoadByID` loads it, so its child
+collection holds instances of its own, not the one that read it. A child is saved through its
+parent, so `forceSave` on a link to one fails the schema; removing the child from its collection
+deletes it, and the link then reads `null`.
+
+```csharp
+var recipient = voucher.Recipient;           // the child
+var campaign  = recipient!.Parent;           // its parent, one query the first time
+```
+
 ## Linked collections
 
 A `NucleusLinkedCollection<TMany, TOne>` is the many side of a one-to-many relationship between two
@@ -758,7 +771,7 @@ Override these on an entity to run logic at defined points:
 
 ## Async query operators
 
-`ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. To choose columns, order, page or group in the database, use a [row read](#row-reads); otherwise order, page and project in memory, or use `ToPagedResultAsync`. `Where` is declared on the adaptor itself rather than coming from `Queryable`, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>` and .NET 10 would otherwise make an unqualified call ambiguous. The async operators live in `TFM.Nucleus.Data`: `ToListAsync`, `FirstOrDefaultAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync`, `LongCountAsync`, each with an optional predicate and cancellation token, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
+`ObjectDataAdaptor<T>` is a LINQ provider that translates `Where`: every `Where` in a chain applies, combined with AND, and any other operator before a `Where` (`OrderBy`, `Select` and so on) throws `NotSupportedException` rather than being ignored. To choose columns, order, page or group in the database, use a [row read](#row-reads); otherwise order, page and project in memory, or use `ToPagedResultAsync`. `Where` and the async operators are declared on the adaptor itself, because the adaptor is both an `IQueryable<T>` and an `IAsyncEnumerable<T>`, and from .NET 10 `System.Linq.AsyncEnumerable` declares the same names: called straight on `Get<T>()`, each would be ambiguous and not compile. The async operators are `ToListAsync`, `ToArrayAsync`, `FirstAsync`, `FirstOrDefaultAsync`, `SingleAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync` and `LongCountAsync`, each with an optional predicate (except the list, array and long count) and cancellation token; the same operators after a `Where` come from `TFM.Nucleus.Data`'s extensions on `IQueryable<T>`, plus `ToPagedResultAsync(skip, take, cancellationToken)` which returns rows and the total count in a single round trip. An enum column compares directly in a predicate, including a nullable one and an `IN` over a collection of enum values, and is bound as the underlying integer the column stores.
 
 An entity reference (a child's `Parent`, a `[LinkedObject]`) is stored as the referenced entity's ID, and a predicate compares it by that ID. `x => x.Parent.ID == id`, `x => x.Parent == order`, `x => ids.Contains(x.Parent.ID)` and `x => orders.Contains(x.Parent)` all translate to the reference's column, in a load, a paged load, a [row read](#row-reads), a count or a `DeleteWhere`. Only the ID translates: `x => x.Parent.Name == "a"` would need a join, and throws `NotSupportedException` naming the term, as does any other member read through a column (`x.Name.Length`) and a comparison of two columns. A comparison may be written either way round: `3 < x.Quantity` is `x.Quantity > 3`.
 
@@ -842,10 +855,11 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
+| `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails. A busy server can take longer than 3 seconds to finish a login, and the open then fails with a connection timeout that is not retried; raise it for a server under load. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
 | `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](#table-names). |
 | `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](#table-names). |
 
-Every option except `UseIntegratedSecurity`, `SQLPacketSize` and `BulkCopyBatchSize` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled, a 3 second connect timeout and 4 connect retries.
+Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize` and `ConnectTimeoutSeconds` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The driver's connect retries reconnect a connection that broke while idle; they do not retry an open that times out.
 
 ### PostgresConfiguration
 
@@ -927,12 +941,40 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   Transactional and other connections differ by `Enlist`, so the driver keeps a pool of that size
   for each. Size the server's connection limit for twice the setting per process, or lower the
   setting.
+- **On SQL Server, reads wait behind saves.** Under the default locking read committed, a load
+  whose condition has no index scans its table and waits for any row a concurrent save holds,
+  until that save commits. It no longer deadlocks, but it waits. Index the columns you filter by,
+  or turn on `READ_COMMITTED_SNAPSHOT` for the database; Nucleus does not set it.
 - **A caller-owned context commits when it is disposed** unless `Rollback()` or `TryRollback()`
   was called. A failed statement does not roll it back by itself, so wrap the work in a try/catch
   that rolls back and rethrows. Work done through it evicts no `[Cacheable]` cache. A single type's
   batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
 
 ## Behaviour changes
+
+These came in with the SQL Server deadlock fix.
+
+- **SQL Server reads and deletes a graph one table per statement.** A child collection, included
+  reference or linked collection query reached its parents through a subquery over the parent's
+  table. On small tables SQL Server ran it from the child table, holding a child row of some other
+  parent while it read that parent's row: the opposite order to a save of the parent, and the two
+  deadlocked (error 1205) under concurrent saves, on loads as well as on deletes. Each level's keys
+  are now kept in a table variable read from that level's table alone, and the next level selects
+  by them. A delete also evaluates its condition once instead of once per level. Anything that
+  matches the generated SQL text sees `DECLARE @__parents` / `@__targets` statements in the batch.
+- **`SQLConfiguration.ConnectTimeoutSeconds`.** The SQL Server connect timeout was a fixed 3
+  seconds; it is now a setting, still 3 seconds by default.
+
+These came in with links to child types.
+
+- **A child loaded on its own reads its parent.** A child loaded by a `[LinkedObject]`, `LoadByID`
+  or a query of its type held its parent's ID, and reading `Parent` threw `InvalidCastException`.
+  The first read now loads the parent through the stack that loaded the child.
+- **`forceSave` on a link to a child type fails the schema.** The save wrote the child as a root,
+  outside its parent. Drop `forceSave` and save the parent.
+- **The async operators compile on `Get<T>()` under .NET 10.** `manager.Get<T>().ToListAsync()`
+  and the other async operators were ambiguous with `System.Linq.AsyncEnumerable` (CS0121) unless
+  a `Where` came first. They are now declared on `IObjectDataAdaptor<T>`, with the same results.
 
 These came in with the linked object read.
 

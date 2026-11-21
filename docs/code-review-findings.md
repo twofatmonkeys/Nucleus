@@ -141,6 +141,68 @@ that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, Pos
 Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
 same reference without `Include` each load their own instance. Listed in the README's known limits.
 
+### SQL Server deadlocks under concurrent saves, fixed (November 2026)
+
+Seen once as a deadlocked cleanup delete in `ChildModelIntegrationTests` (the net8.0 and net10.0
+runs share the database), then reproduced with `SqlServer\DeadlockStressTests`: 16 workers each
+saving, reading, removing from and deleting a roster with lines and breaks deadlocked 6 to 11 times
+per 480 cycles on the SQL Server 2008 R2 test server and on SQL Server 2025 (LocalDB).
+
+- **Root cause.** Child queries and cascade deletes reached their parents through a subquery over
+  the parent's table (`[Parent] IN (SELECT [ID] FROM parent WHERE ...)`). On small tables both
+  servers ran that from the child side: a clustered scan of the child table, probing the parent for
+  each row. The statement held a lock on a child row of some other parent while it waited for that
+  parent's row; a save of that parent held the parent row (X) and then asked for its own child
+  row: the opposite order. Captured as 74 deadlock graphs on LocalDB (every one a parent save
+  against a cascade delete or a child-collection read, including plain loads), and on 2008 R2 by
+  polling `sys.dm_tran_locks` during the stress (its `system_health` ring buffer XML is cut off
+  before recent events): there the grandchild query held a break row while it read the break's line,
+  against a save holding the line and converting to X on the break. With 20,000 rosters the
+  optimizer drove from the parent and seeked the `Parent` index, and 960 cycles ran clean, which is
+  why it shows on new and small tables, or on plans compiled while they were small.
+- **Fix.** `SqlServerQueryRenderer` keeps each level's keys in a table variable read from that
+  level's table alone, and the next level selects by them; a delete keeps each level's IDs the same
+  way and evaluates its condition once (previously once per level, so a parent committed between
+  statements could, by reading, be deleted without its children; not tested). No statement reads
+  two user tables, so none can hold one table's row while waiting on another's, whatever the plan.
+  After the fix: 0 deadlocks in 3,360 cycles plus three rounds of 48 workers alongside every SQL
+  Server suite on 2008 R2, and 0 in five such rounds on LocalDB. Cover: `SqlServerKeptIdsTests`
+  (every statement names one table), the goldens, and the opt-in stress test. Hints (`FORCESEEK`,
+  forced join order) were rejected: version-dependent, and `FORCESEEK` fails outright (8622) when
+  the parent index is missing.
+- **Connect timeout.** The same load made connection opens fail after `SQLConfiguration`'s fixed
+  3 second connect timeout (`SqlException -2` in the post-login phase), 282 of 1,440 cycles in one
+  LocalDB round. It is now `ConnectTimeoutSeconds`, still 3 by default. The README claimed "4
+  connect retries"; the driver's `ConnectRetryCount` only reconnects a broken idle connection and
+  does not retry a first open, so the README now says so. Whether the server or the client's thread
+  pool was the bottleneck was not isolated.
+
+Open: readers still wait (not deadlock) behind saves, because locking read committed scans an
+unindexed predicate's table and waits on any row a save holds. READ_COMMITTED_SNAPSHOT on the
+database removes that wait; Nucleus does not set it.
+
+### Found with links to child types, fixed (November 2026)
+
+Raised by a consumer that needed a voucher to refer to a campaign's recipient, a child type.
+Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
+
+- **A child loaded on its own could not read its parent.** A child loaded by a link, by `LoadByID`
+  or by a query of its type held its parent's ID under `Parent` (the parent column is bound like
+  any other; `IPropertySchema.SkipOnDbRead` is set for it but nothing reads it), and the read cast
+  the ID to the parent type: `InvalidCastException`. `CoreObject.StoredValueAs` now resolves a
+  stored ID under a `[ParentObject]` as it does under a `[LinkedObject]`, and `ChildGraphBinder`
+  binds the stack's loader to every child type it completes, so the parent comes from the manager
+  or context that loaded the child. Cover: the child tests in `LinkedObjectReadTests`, and the
+  `ALinkToAChild_*`, `AChild*_Reads*Parent*` and `Include_LoadsALinkedChildInTheSameRead` tests of
+  `ChildModelIntegrationTests` on every provider.
+- **A `forceSave` link to a child would save the child as a root.** The link path validates a
+  link as a dependent, so the child's own refusal of a root save was skipped, and
+  `CreateSaveQueries` wrote it outside its parent. `SchemaManager.BuildSchema` now refuses it.
+  Cover: `LinkedObjectReadTests.AForceSaveLinkToAChild_FailsAtSchemaBuild`.
+
+Open: `IPropertySchema.SkipOnDbRead` is set for a `[ParentObject]` and read by nothing. It is public
+surface, so it stays until a major version.
+
 ### Timestamp in memory is the client clock (decided October 2026)
 
 The server stamps `Timestamp` on every write, and output parameters can now read a stored value
@@ -826,6 +888,15 @@ unqualified `.Where(...)` was ambiguous between `Queryable.Where` and the new
 `AsyncEnumerable.Where` and did not compile. `IObjectDataAdaptor<T>` now declares `Where` as an
 instance method, which beats both extension methods. The `net8.0` pin on the test projects is gone
 and the whole suite runs on both target frameworks.
+
+The async operators had the same ambiguity and were missed, because every test called `Where`
+first, which returns a plain `IQueryable<T>`: `manager.Get<T>().ToListAsync()` did not compile on
+net10.0 (found by a consumer, November 2026). `IObjectDataAdaptor<T>` now declares `ToListAsync`,
+`ToArrayAsync`, `FirstAsync`, `FirstOrDefaultAsync`, `SingleAsync`, `SingleOrDefaultAsync`,
+`AnyAsync`, `CountAsync` and `LongCountAsync` with default bodies that call the extensions. The
+composing operators (`OrderBy`, `Take`, `Skip`, `Select`) are still ambiguous on the adaptor, and
+are left so: the parser translates only `Where`, so they would compile only to throw. Cover:
+`AdaptorOperatorResolutionTests`, whose net10.0 build failed with CS0121 on 18 calls before the fix.
 
 ### IPropertySchema.Create threw for most properties
 
