@@ -14,6 +14,12 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresConnectionLimitIntegrationTests(PostgresFixture fixture) : ConnectionLimitIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresRetryPolicyIntegrationTests(PostgresFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.StatementTimeoutSeconds = 1;
+    }
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresDatabaseFailureIntegrationTests(PostgresFixture fixture) : DatabaseFailureIntegrationTests(fixture)
     {
         // Port 1 on the loopback address: nothing listens there, so the connection is refused.

@@ -3,6 +3,23 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## An opt-in retry policy for the manager's own operations
+
+- **`RetryAttempts` on every provider's options, 1 by default.** Set above 1, a manager save,
+  delete or load, a streamed load until its first row, a row read, or the read of a lazy
+  collection or a linked object that fails with a transient `DatabaseException` having applied
+  nothing is attempted again on a new connection, with the back-off opening a connection uses.
+  At the default nothing changes. See [Retries](saving.md#retries).
+- **With the policy on, the last attempt's failure is not transient.** It is the same failure with
+  `IsTransient` false and `Attempts` set, so a caller's `catch (DatabaseException { IsTransient: true })`
+  does not retry it again. Remove a retry of your own around manager calls when you turn the
+  policy on; keep it around caller-owned contexts, which the policy never touches.
+- **A batch save of mixed types checks its objects before it opens a connection.** The manager
+  runs each provider's objects' rules and `PreSave` once, before the first attempt, instead of the
+  context running them as it saved. A rule that fails now fails before a connection is taken.
+- **`IDataProvider.RetryAttempts`** is a new member with a default of 1, so another implementation
+  still compiles and is never retried.
+
 ## A save that fails keeps nothing the server returned
 
 - **A value read back with `ReturnOutputToProperty` is taken when the save commits.** It used to

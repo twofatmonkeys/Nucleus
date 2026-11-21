@@ -103,6 +103,9 @@ namespace TFM.Nucleus.Data.Providers
 
         public Type? RootType { get; set; }
 
+        /// <inheritdoc cref="RelationalProviderOptions.RetryAttempts"/>
+        public int RetryAttempts => Math.Max(1, Options.RetryAttempts);
+
         #region Initialisation
 
         public DataProviderStatus Initialize(IObjectSchemaProvider? objectSchema = null) =>

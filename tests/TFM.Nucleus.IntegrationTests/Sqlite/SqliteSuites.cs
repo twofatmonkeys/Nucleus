@@ -14,6 +14,14 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteConnectionLimitIntegrationTests(SqliteFixture fixture) : ConnectionLimitIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteRetryPolicyIntegrationTests(SqliteFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        // SQLite has no statement time limit: the wait for the write lock is its busy timeout.
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) =>
+            ((TFM.Nucleus.Data.SQLite.SqliteConfiguration)options).BusyTimeoutSeconds = 1;
+    }
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteDatabaseFailureIntegrationTests(SqliteFixture fixture) : DatabaseFailureIntegrationTests(fixture)
     {
         protected override bool ReadsWaitForWriters => false;

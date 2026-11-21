@@ -360,11 +360,10 @@ the code; no test reaches it.
 
 What the failure contract below ("A database failure was a bare Exception") does not do yet:
 
-- **Nucleus retries only opening a connection.** A statement or a commit that fails is reported at
-  once; the caller retries the whole operation when `IsTransient` says so. An opt-in retry policy
-  for the manager's operations that own their transaction is planned, off by default, never inside
-  a caller's context, never after a commit was sent and never for a stream that has returned rows.
-  Until then each caller writes the loop, and its attempts multiply `ConnectAttempts`.
+- **The retry policy is off by default and does not cover a caller-owned context.** `RetryAttempts`
+  (1 by default) retries the manager's own operations only. A caller-owned context is the caller's
+  transaction, so its unit of work is the caller's to repeat. Either way each attempt multiplies
+  `ConnectAttempts`. Cover: `RetryPolicyTests`, `RetryPolicyIntegrationTests`.
 - **A failed write on a context with no transaction always reports `MayHaveBeenApplied`.** Each
   statement commits as it runs and a command can hold several, so Nucleus does not know how much
   ran. That is true even of a lock wait that ran out before the first statement, which therefore

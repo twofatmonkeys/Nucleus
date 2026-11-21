@@ -26,6 +26,25 @@ namespace TFM.Nucleus.Tests
         /// </summary>
         public Exception? CommitFailure { get; set; }
 
+        /// <summary>
+        /// Failures thrown once each, in order, by the next executions, reads, deletes by predicate
+        /// and stream starts on this provider's contexts, as a database that fails and then recovers.
+        /// </summary>
+        public Queue<Exception> PendingFailures { get; } = [];
+
+        /// <summary>When set, a stream on this provider's contexts throws it after handing out this many rows, once.</summary>
+        public (int AfterRows, Exception Failure)? StreamFailure { get; set; }
+
+        /// <summary>Throws the next pending failure, if there is one.</summary>
+        internal void FailIfPending()
+        {
+            if (PendingFailures.TryDequeue(out var failure))
+                throw failure;
+        }
+
+        /// <inheritdoc />
+        public int RetryAttempts { get; set; } = 1;
+
         public Guid ConnectionIdentifier { get; } = Guid.NewGuid();
         public DataProviderStatus Status => DataProviderStatus.Ok;
         public Type? RootType { get; set; }
@@ -205,8 +224,11 @@ namespace TFM.Nucleus.Tests
         public bool HasChildren => false;
         public IDataContext? Parent => options.Parent;
 
-        public TFM.Nucleus.DataSet GetDataSet(IQuery query) =>
-            provider.BuildDataSet(((FakeQuery)query).EntityType);
+        public TFM.Nucleus.DataSet GetDataSet(IQuery query)
+        {
+            provider.FailIfPending();
+            return provider.BuildDataSet(((FakeQuery)query).EntityType);
+        }
         public Task<TFM.Nucleus.DataSet> GetDataSetAsync(IQuery query) => Task.FromResult(GetDataSet(query));
         public Task<TFM.Nucleus.DataSet> GetDataSetAsync(IQuery query, CancellationToken token) => Task.FromResult(GetDataSet(query));
 
@@ -214,6 +236,7 @@ namespace TFM.Nucleus.Tests
         {
             if (provider.ExecuteFailure is { } failure)
                 throw failure;
+            provider.FailIfPending();
             ExecutedQueries.Add(query);
         }
         public Task ExecuteQueryAsync(IQuery query)
@@ -226,8 +249,12 @@ namespace TFM.Nucleus.Tests
             ExecutionTokens.Add(token);
             return ExecuteQueryAsync(query);
         }
-        public void ExecuteQueries(IQuery[] queries) => ExecutedQueries.AddRange(queries);
-        public Task ExecuteQueriesAsync(IQuery[] queries) { ExecutedQueries.AddRange(queries); return Task.CompletedTask; }
+        public void ExecuteQueries(IQuery[] queries)
+        {
+            provider.FailIfPending();
+            ExecutedQueries.AddRange(queries);
+        }
+        public Task ExecuteQueriesAsync(IQuery[] queries) { ExecuteQueries(queries); return Task.CompletedTask; }
         public Task ExecuteQueriesAsync(IQuery[] queries, CancellationToken token) => ExecuteQueriesAsync(queries);
 
         public IEnumerable<T> Load<T>(Expression expression) where T : ICoreObject<T>, new() =>
@@ -241,6 +268,11 @@ namespace TFM.Nucleus.Tests
             for (int i = 0; i < dataSet.RowCount; i++)
             {
                 await Task.Yield();
+                if (provider.StreamFailure is { } failure && failure.AfterRows == i)
+                {
+                    provider.StreamFailure = null;
+                    throw failure.Failure;
+                }
                 var row = new StreamingRow(dataSet.ColumnNames);
                 dataSet[i].CopyTo(row.Values, 0);
                 yield return row;
@@ -259,15 +291,20 @@ namespace TFM.Nucleus.Tests
 
         public int DeleteWhere<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject<T>, new()
         {
+            provider.FailIfPending();
             DeletedWhere.Add((typeof(T), predicate));
             return provider.RowsAffectedByDeleteWhere;
         }
 
         public Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token = default) where T : ICoreObject<T>, new() =>
             Task.FromResult(DeleteWhere(predicate));
-        public void BulkSave(IEnumerable<ICoreObject?>? objects) { }
-        public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => Task.CompletedTask;
-        public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => Task.CompletedTask;
+        public void BulkSave(IEnumerable<ICoreObject?>? objects) => provider.FailIfPending();
+        public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects)
+        {
+            BulkSave(objects);
+            return Task.CompletedTask;
+        }
+        public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => BulkSaveAsync(objects);
 
         /// <summary>How the context was committed: null if it was not, else true for CommitAsync.</summary>
         public bool? CommittedAsync { get; private set; }

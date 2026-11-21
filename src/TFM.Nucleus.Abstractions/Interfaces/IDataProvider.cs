@@ -22,6 +22,14 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public Type? RootType { get; set; }
 
+        /// <summary>
+        /// How many times an operation Nucleus runs on a context of its own (a manager save,
+        /// delete or load, a row read) is attempted when it fails with a transient
+        /// <see cref="DatabaseException"/>, the first attempt included. 1, the default, attempts
+        /// each once. Nothing run on a caller's context is attempted again.
+        /// </summary>
+        public int RetryAttempts => 1;
+
         public DataProviderStatus Initialize(IEnumerable<IObjectSchema>? objectSchemas = null);
         public Task<DataProviderStatus> InitializeAsync(IObjectSchemaProvider? objectSchema = null);
 

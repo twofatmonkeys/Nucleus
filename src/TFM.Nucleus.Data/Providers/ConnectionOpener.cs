@@ -80,6 +80,6 @@ namespace TFM.Nucleus.Data.Providers
             return connection.ConnectionTimeout > 0 ? TimeSpan.FromSeconds(connection.ConnectionTimeout) : Timeout.InfiniteTimeSpan;
         }
 
-        private static TimeSpan Backoff(int attempt) => TimeSpan.FromMilliseconds(200 * Math.Pow(2, attempt - 1));
+        private static TimeSpan Backoff(int attempt) => OperationRetry.Backoff(attempt);
     }
 }

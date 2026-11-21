@@ -33,7 +33,8 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// True when another attempt of the whole operation may succeed and is safe: the failure is
         /// one that passes (a deadlock, a dropped connection, a timeout) and it is known not to
-        /// have been applied. Always false when <see cref="MayHaveBeenApplied"/> is true.
+        /// have been applied. Always false when <see cref="MayHaveBeenApplied"/> is true, and when
+        /// Nucleus's own retry policy has already spent its attempts on the operation.
         /// </summary>
         public bool IsTransient => _transient && !MayHaveBeenApplied;
 
@@ -49,8 +50,11 @@ namespace TFM.Nucleus.Data
         public DatabaseOperation Operation { get; init; }
 
         /// <summary>
-        /// How many times Nucleus attempted the step that failed. Opening a connection is attempted
-        /// up to <c>ConnectAttempts</c> times when its failures are transient; every other step once.
+        /// How many times Nucleus attempted what failed. Under the provider's retry policy
+        /// (<c>RetryAttempts</c> above 1) it is the attempts of the whole operation, and a failure
+        /// reported after them is not transient. Otherwise it is the attempts of the step: opening
+        /// a connection up to <c>ConnectAttempts</c> times when its failures are transient, every
+        /// other step once.
         /// </summary>
         public int Attempts { get; init; } = 1;
     }

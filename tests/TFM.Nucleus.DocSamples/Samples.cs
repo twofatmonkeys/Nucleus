@@ -69,6 +69,19 @@ namespace PortlyPrimate
             #endregion
         }
 
+        public static void RetryPolicy(IServiceCollection services)
+        {
+            #region retry-policy
+            services.AddNucleusSqliteDataProvider(options =>
+            {
+                options.Database = @"C:\ProgramData\PortlyPrimate\sanctuary.db";
+                // A manager save, delete or load that fails transiently, having applied nothing, is
+                // attempted again on a new connection: up to 3 attempts in all, 200 ms then 400 ms apart.
+                options.RetryAttempts = 3;
+            });
+            #endregion
+        }
+
         public static void FromConfiguration(IServiceCollection services, IConfiguration configuration)
         {
             #region register-configuration
@@ -348,16 +361,20 @@ namespace PortlyPrimate
             return false;
         }
 
-        public async Task<Monkey?> FindWithRetryAsync(Guid id, CancellationToken ct)
+        public async Task WeighWithRetryAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
         {
             #region transient-retry
-            // Nucleus retries only opening a connection. Another attempt of the whole operation is
-            // the caller's, when the failure says it is worth one and nothing was applied.
+            // The policy never repeats work on a caller-owned context: the unit of work is the
+            // caller's to repeat, from the start, when the failure says nothing was applied.
             for (var attempt = 1; ; attempt++)
             {
                 try
                 {
-                    return await data.LoadByIDAsync<Monkey>(id, ct);
+                    await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
+                    await context.SaveAsync(monkey, ct);
+                    await context.SaveAsync(weighIn, ct);
+                    await context.CommitAsync(ct);
+                    return;
                 }
                 catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
                 {

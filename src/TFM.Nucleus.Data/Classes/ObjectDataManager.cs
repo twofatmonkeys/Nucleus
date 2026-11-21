@@ -337,12 +337,14 @@ namespace TFM.Nucleus.Data
             SaveChecks.Run(list);
             var provider = ProviderFor<T>();
             var linkTypes = LinkTypes(list);
-            var queries = provider.CreateSaveQueries(list);
-            if (queries.Count == 0)
-                return null;
-            // The objects are marked saved only once the context has committed.
-            using (var context = provider.CreateContext(ContextOptions.Transactional))
+            // An attempt builds the queries again: running a save's queries changes them.
+            var wrote = OperationRetry.Run(provider, (provider, list), static s =>
             {
+                var queries = s.provider.CreateSaveQueries(s.list);
+                if (queries.Count == 0)
+                    return false;
+                // The objects are marked saved only once the context has committed.
+                using var context = s.provider.CreateContext(ContextOptions.Transactional);
                 try
                 {
                     foreach (var query in queries)
@@ -354,7 +356,10 @@ namespace TFM.Nucleus.Data
                     context.TryRollback();
                     throw;
                 }
-            }
+                return true;
+            });
+            if (!wrote)
+                return null;
             MarkSaved(list, [typeof(T), .. linkTypes]);
             return new NucleusCollection<T>(list);
         }
@@ -410,25 +415,29 @@ namespace TFM.Nucleus.Data
             SaveChecks.Run(list);
             var provider = ProviderFor<T>();
             var linkTypes = LinkTypes(list);
-            var queries = provider.CreateSaveQueries(list);
-            if (queries.Count == 0)
-                return null;
-
-            // The objects are marked saved only once the context has committed.
-            await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
+            // An attempt builds the queries again: running a save's queries changes them.
+            var wrote = await OperationRetry.RunAsync(provider, (provider, list), static async (s, ct) =>
             {
+                var queries = s.provider.CreateSaveQueries(s.list);
+                if (queries.Count == 0)
+                    return false;
+                // The objects are marked saved only once the context has committed.
+                await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
                 try
                 {
                     foreach (var query in queries)
-                        await context.ExecuteQueryAsync(query, token);
-                    await context.CommitAsync(token);
+                        await context.ExecuteQueryAsync(query, ct);
+                    await context.CommitAsync(ct);
                 }
                 catch
                 {
                     context.TryRollback();
                     throw;
                 }
-            }
+                return true;
+            }, token);
+            if (!wrote)
+                return null;
             MarkSaved(list, [typeof(T), .. linkTypes]);
             return new NucleusCollection<T>(list);
         }
@@ -442,17 +451,21 @@ namespace TFM.Nucleus.Data
         {
             foreach (var (provider, queries, types) in BuildDeleteQueriesByProvider(objs))
             {
-                using var context = provider.CreateContext(ContextOptions.Transactional);
-                try
+                OperationRetry.Run(provider, (provider, queries), static s =>
                 {
-                    context.ExecuteQueries(queries);
-                    context.Commit();
-                }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                    using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                    try
+                    {
+                        context.ExecuteQueries(s.queries);
+                        context.Commit();
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
+                    return true;
+                });
                 foreach (var type in types)
                     EvictCache(type);
             }
@@ -465,17 +478,21 @@ namespace TFM.Nucleus.Data
         {
             foreach (var (provider, queries, types) in BuildDeleteQueriesByProvider(objs))
             {
-                using var context = await provider.CreateContextAsync(ContextOptions.Transactional, cancellationToken);
-                try
+                await OperationRetry.RunAsync(provider, (provider, queries), static async (s, ct) =>
                 {
-                    await context.ExecuteQueriesAsync(queries, cancellationToken);
-                    await context.CommitAsync(cancellationToken);
-                }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                    using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                    try
+                    {
+                        await context.ExecuteQueriesAsync(s.queries, ct);
+                        await context.CommitAsync(ct);
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
+                    return true;
+                }, cancellationToken);
                 foreach (var type in types)
                     EvictCache(type);
             }
@@ -535,18 +552,22 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(predicate);
             if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
                 return 0;
-            using var context = ProviderFor<T>().CreateContext(ContextOptions.Transactional);
-            int affected;
-            try
+            var provider = ProviderFor<T>();
+            var affected = OperationRetry.Run(provider, (provider, predicate), static s =>
             {
-                affected = context.DeleteWhere(predicate);
-                context.Commit();
-            }
-            catch
-            {
-                context.TryRollback();
-                throw;
-            }
+                using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                try
+                {
+                    var affected = context.DeleteWhere(s.predicate);
+                    context.Commit();
+                    return affected;
+                }
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
+            });
             EvictCache(typeof(T));
             return affected;
         }
@@ -557,18 +578,22 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(predicate);
             if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
                 return 0;
-            await using var context = await ProviderFor<T>().CreateContextAsync(ContextOptions.Transactional, cancellationToken);
-            int affected;
-            try
+            var provider = ProviderFor<T>();
+            var affected = await OperationRetry.RunAsync(provider, (provider, predicate), static async (s, ct) =>
             {
-                affected = await context.DeleteWhereAsync(predicate, cancellationToken);
-                await context.CommitAsync(cancellationToken);
-            }
-            catch
-            {
-                await context.TryRollbackAsync(cancellationToken);
-                throw;
-            }
+                await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                try
+                {
+                    var affected = await context.DeleteWhereAsync(s.predicate, ct);
+                    await context.CommitAsync(ct);
+                    return affected;
+                }
+                catch
+                {
+                    await context.TryRollbackAsync(ct);
+                    throw;
+                }
+            }, cancellationToken);
             EvictCache(typeof(T));
             return affected;
         }
@@ -651,16 +676,19 @@ namespace TFM.Nucleus.Data
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
-            using var context = await provider.CreateContextAsync(token: cancellationToken);
-            var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader, this, excluded);
-            var result = new PagedResult<T>(rows)
+            return await OperationRetry.RunAsync(provider, (manager: this, provider, query, excluded, skip, take), static async (s, ct) =>
             {
-                Skip = skip,
-                Take = take,
-            };
-            result.TotalCount = dataSet.TotalRowCount ?? result.Count;
-            return result;
+                using var context = await s.provider.CreateContextAsync(token: ct);
+                var dataSet = await context.GetDataSetAsync(s.query, ct);
+                var rows = ChildGraphBinder.BuildCollection<T>(s.query, dataSet, s.manager.LazyLoader, s.manager, s.excluded);
+                var result = new PagedResult<T>(rows)
+                {
+                    Skip = s.skip,
+                    Take = s.take,
+                };
+                result.TotalCount = dataSet.TotalRowCount ?? result.Count;
+                return result;
+            }, cancellationToken);
         }
 
         /// <summary>Loads by primary key; [Cacheable] types answer from the Guid index in O(1).</summary>
@@ -876,14 +904,16 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                // The context validates the objects before it writes, and the objects are marked
-                // saved only once it has committed.
-                using (var context = providerGroup.Key.CreateContext(ContextOptions.Transactional))
+                // Checked here once, not by the context on each attempt, and marked saved only
+                // once the context has committed.
+                SaveChecks.Run(list);
+                OperationRetry.Run(providerGroup.Key, (provider: providerGroup.Key, list), static s =>
                 {
+                    using var context = s.provider.CreateContext(ContextOptions.Transactional);
                     LeaveSavedObjectsToManager(context);
                     try
                     {
-                        context.Save(list);
+                        context.Save(s.list);
                         context.Commit();
                     }
                     catch
@@ -891,7 +921,8 @@ namespace TFM.Nucleus.Data
                         context.TryRollback();
                         throw;
                     }
-                }
+                    return true;
+                });
                 MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
         }
@@ -903,33 +934,38 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                await using (var context = await providerGroup.Key.CreateContextAsync(ContextOptions.Transactional, cancellationToken))
+                SaveChecks.Run(list);
+                await OperationRetry.RunAsync(providerGroup.Key, (provider: providerGroup.Key, list), static async (s, ct) =>
                 {
+                    await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
                     LeaveSavedObjectsToManager(context);
                     try
                     {
-                        await context.SaveAsync(list, cancellationToken);
-                        await context.CommitAsync(cancellationToken);
+                        await context.SaveAsync(s.list, ct);
+                        await context.CommitAsync(ct);
                     }
                     catch
                     {
-                        await context.TryRollbackAsync(cancellationToken);
+                        await context.TryRollbackAsync(ct);
                         throw;
                     }
-                }
+                    return true;
+                }, cancellationToken);
                 MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
         }
 
         /// <summary>
-        /// A context marks the objects it saves as saved itself, without the audit logger. The
-        /// batch save of mixed types saves through one, so it turns that off and marks them in
-        /// <see cref="MarkSaved"/> once the context has committed, as every other manager save does.
+        /// A context checks the objects it saves and marks them saved itself, without the audit
+        /// logger. The batch save of mixed types saves through one, so it turns both off: it checks
+        /// them once before its first attempt, so a retry does not run a save hook again, and marks
+        /// them in <see cref="MarkSaved"/> once the context has committed, as every other manager
+        /// save does.
         /// </summary>
         private static void LeaveSavedObjectsToManager(IDataContext context)
         {
             if (context is ISaveAcceptance acceptance)
-                acceptance.AcceptsSavedObjects = false;
+                acceptance.CallerManagesObjects = true;
         }
 
         /// <summary>
@@ -1056,8 +1092,7 @@ namespace TFM.Nucleus.Data
         {
             if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
                 return default;
-            using var context = provider.CreateContext();
-            return ChildGraphBinder.BuildCollection<T>(query, context.GetDataSet(query), LazyLoader, this, excluded).FirstOrDefault();
+            return Load<T>(provider, query, excluded).FirstOrDefault();
         }
 
         /// <inheritdoc cref="LoadFirst{T}(Expression{Func{T, bool}}, LoadOptions?)"/>
@@ -1065,8 +1100,7 @@ namespace TFM.Nucleus.Data
         {
             if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
                 return default;
-            using var context = await provider.CreateContextAsync(token: cancellationToken);
-            return ChildGraphBinder.BuildCollection<T>(query, await context.GetDataSetAsync(query, cancellationToken), LazyLoader, this, excluded).FirstOrDefault();
+            return (await LoadAsync<T>(provider, query, excluded, cancellationToken)).FirstOrDefault();
         }
 
         /// <summary>The select for the first match, or null when the predicate can match nothing.</summary>
@@ -1123,10 +1157,29 @@ namespace TFM.Nucleus.Data
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return [];
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = ProviderFor<T>().CreateContext();
-            return ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, this, excluded);
+            var provider = ProviderFor<T>();
+            return Load<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded);
         }
+
+        /// <summary>
+        /// The one read of a load's rows into entities, on a context of its own, attempted again
+        /// as the provider's retry policy says.
+        /// </summary>
+        private NucleusCollection<T> Load<T>(IDataProvider provider, ISelectQuery query, IPropertySchema[] excluded) where T : ICoreObject<T>, new() =>
+            OperationRetry.Run(provider, (manager: this, provider, query, excluded), static s =>
+            {
+                using var context = s.provider.CreateContext();
+                return ChildGraphBinder.BuildCollection<T>(s.query, context.GetDataSet(s.query), s.manager.LazyLoader, s.manager, s.excluded);
+            });
+
+        /// <inheritdoc cref="Load{T}(IDataProvider, ISelectQuery, IPropertySchema[])"/>
+        private Task<NucleusCollection<T>> LoadAsync<T>(IDataProvider provider, ISelectQuery query, IPropertySchema[] excluded, CancellationToken token)
+            where T : ICoreObject<T>, new() =>
+            OperationRetry.RunAsync(provider, (manager: this, provider, query, excluded), static async (s, ct) =>
+            {
+                using var context = await s.provider.CreateContextAsync(token: ct);
+                return ChildGraphBinder.BuildCollection<T>(s.query, await context.GetDataSetAsync(s.query, ct), s.manager.LazyLoader, s.manager, s.excluded);
+            }, token);
 
         public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new() =>
             await LoadCoreAsync<T>(expression, [], [], false, CancellationToken.None);
@@ -1166,9 +1219,8 @@ namespace TFM.Nucleus.Data
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return [];
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            return ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, this, excluded);
+            var provider = ProviderFor<T>();
+            return await LoadAsync<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded, cancellationToken);
         }
 
         /// <summary>
@@ -1211,11 +1263,32 @@ namespace TFM.Nucleus.Data
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 yield break;
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, this, cancellationToken);
+            var provider = ProviderFor<T>();
+            var qry = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
+            // Opening, the child graph and the first row are attempted again as the policy says;
+            // a stream that has handed out a row is not.
+            await foreach (var obj in OperationRetry.StreamAsync(provider, (manager: this, provider, qry, excluded), static async (s, ct) =>
+            {
+                var context = await s.provider.CreateContextAsync(token: ct);
+                try
+                {
+                    var children = await ChildGraphBinder.LoadAsync(s.qry, context, s.manager.LazyLoader, s.manager, ct);
+                    return new OpenedStream<T>(context, s.manager.Bind<T>(context.StreamAsync(s.qry, ct), children, s.excluded, ct).GetAsyncEnumerator(ct));
+                }
+                catch
+                {
+                    await context.DisposeAsync();
+                    throw;
+                }
+            }, cancellationToken))
+                yield return obj;
+        }
 
-            await foreach (var row in context.StreamAsync(qry, cancellationToken))
+        /// <summary>Each streamed row as an entity, with its children attached.</summary>
+        private async IAsyncEnumerable<T> Bind<T>(IAsyncEnumerable<StreamingRow> rows, ChildGraphBinder.Graph? children, IPropertySchema[] excluded,
+            [EnumeratorCancellation] CancellationToken token) where T : ICoreObject<T>, new()
+        {
+            await foreach (var row in rows.WithCancellation(token))
             {
                 T obj = new();
                 for (int i = 0; i < row.ColumnNames.Length; i++)

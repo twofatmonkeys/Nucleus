@@ -119,21 +119,50 @@ when the engine reports the cancelled command as its own error.
 
 ### Retries
 
-Nucleus retries one thing by itself: opening a connection, when the failure is transient, up to
-the provider's `ConnectAttempts` (3 by default), all within the connection's connect timeout. A
-statement, a commit or a rollback that fails is reported at once, because only the caller knows
-whether the operation is worth repeating. A retry is the caller's, of the whole operation, when
-the failure says it is safe:
+Opening a connection is always retried when the failure is transient, up to the provider's
+`ConnectAttempts` (3 by default), all within the connection's connect timeout.
+
+Everything else is retried only when you switch it on. With the provider's `RetryAttempts` above
+1, an operation the manager runs on a context of its own (a save, a delete, a load, a streamed
+load until its first row, a row read, and the read of a lazy collection or a linked object) that
+fails with `IsTransient` true is attempted again from the start, on a new connection, 200 ms, then
+400 ms, then 800 ms later. A save's rules and `PreSave` run once, before the first attempt.
+
+<!-- sample: retry-policy -->
+```csharp
+services.AddNucleusSqliteDataProvider(options =>
+{
+    options.Database = @"C:\ProgramData\PortlyPrimate\sanctuary.db";
+    // A manager save, delete or load that fails transiently, having applied nothing, is
+    // attempted again on a new connection: up to 3 attempts in all, 200 ms then 400 ms apart.
+    options.RetryAttempts = 3;
+});
+```
+
+The policy never repeats what may already have happened: a failure that may have been applied is
+not transient, so a commit whose outcome is unknown is reported, not retried. Nor does it repeat a
+stream that has handed out a row, or anything on a caller-owned context, whose transaction is the
+caller's. Each retry is logged as a warning. When the last attempt fails transiently, the failure
+is reported with `IsTransient` false and `Attempts` set to the attempts made, so a caller's own
+filter does not retry it on top of the policy. With the policy on, do not wrap manager calls in a
+retry of your own.
+
+With it off, and always around a caller-owned context, the retry is the caller's, of the whole
+unit of work, when the failure says it is safe:
 
 <!-- sample: transient-retry -->
 ```csharp
-// Nucleus retries only opening a connection. Another attempt of the whole operation is
-// the caller's, when the failure says it is worth one and nothing was applied.
+// The policy never repeats work on a caller-owned context: the unit of work is the
+// caller's to repeat, from the start, when the failure says nothing was applied.
 for (var attempt = 1; ; attempt++)
 {
     try
     {
-        return await data.LoadByIDAsync<Monkey>(id, ct);
+        await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
+        await context.SaveAsync(monkey, ct);
+        await context.SaveAsync(weighIn, ct);
+        await context.CommitAsync(ct);
+        return;
     }
     catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
     {
@@ -142,11 +171,12 @@ for (var attempt = 1; ; attempt++)
 }
 ```
 
-Each attempt of the operation opens its own connection, with its own `ConnectAttempts`, so three
-attempts at the default make at most nine opens. A save that failed leaves its objects unsaved, with
-their changes and removals pending, so saving them again is the retry. After `CommitOutcomeUnknown`,
-do not save again blindly: load the rows and see whether the commit took effect. An insert that
-did commit fails a second time with a `UniqueViolationException` on its key.
+Each attempt opens its own connection, with its own `ConnectAttempts`, so three attempts at the
+default make at most nine opens. A save that failed leaves its objects unsaved, with their changes
+and removals pending, and with none of the values the server returned to the failed write, so
+saving them again is the retry. After `CommitOutcomeUnknown`, do not save again blindly: load the
+rows and see whether the commit took effect. An insert that did commit fails a second time with a
+`UniqueViolationException` on its key.
 
 The drivers do not say which of their errors are transient for SQL Server and SQLite
 (`DbException.IsTransient` is always false for both), so a check of the driver's flag never
