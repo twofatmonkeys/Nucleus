@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -22,7 +23,15 @@ namespace TFM.Nucleus.Data.Providers
             OpenAsync(connection, async, attempts, isTransient, Timeout.InfiniteTimeSpan, token);
 
         /// <summary>Opens within <paramref name="totalTimeout"/>, retries included; zero or infinite means no limit.</summary>
-        public static async ValueTask OpenAsync(DbConnection connection, bool async, int attempts, Func<Exception, bool> isTransient, TimeSpan totalTimeout, CancellationToken token)
+        public static ValueTask OpenAsync(DbConnection connection, bool async, int attempts, Func<Exception, bool> isTransient, TimeSpan totalTimeout, CancellationToken token) =>
+            OpenAsync(connection, async, attempts, isTransient, totalTimeout, attemptsMade: null, token);
+
+        /// <summary>
+        /// As <see cref="OpenAsync(DbConnection, bool, int, Func{Exception, bool}, TimeSpan, CancellationToken)"/>,
+        /// counting in <paramref name="attemptsMade"/> the attempts started, so a failure can report them.
+        /// </summary>
+        internal static async ValueTask OpenAsync(DbConnection connection, bool async, int attempts, Func<Exception, bool> isTransient, TimeSpan totalTimeout,
+            StrongBox<int>? attemptsMade, CancellationToken token)
         {
             ArgumentNullException.ThrowIfNull(connection);
             ArgumentNullException.ThrowIfNull(isTransient);
@@ -33,6 +42,8 @@ namespace TFM.Nucleus.Data.Providers
             var openToken = budget?.Token ?? token;
             for (var attempt = 1; ; attempt++)
             {
+                if (attemptsMade != null)
+                    attemptsMade.Value = attempt;
                 try
                 {
                     if (async)

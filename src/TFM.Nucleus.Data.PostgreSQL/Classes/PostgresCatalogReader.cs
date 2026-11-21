@@ -52,13 +52,13 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = "SELECT 1 FROM pg_database WHERE datname = @name";
-                command.Parameters.AddWithValue("name", Config.Database ?? throw new Exception("PostgreSQL database name is missing"));
+                command.Parameters.AddWithValue("name", Config.Database ?? throw new PostgresDataProviderException("PostgreSQL database name is missing", DataProviderErrorKind.NotConfigured));
                 var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
                 return result != null;
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException or TimeoutException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex, PostgresErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -75,9 +75,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException or TimeoutException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex, PostgresErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -143,9 +143,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException or TimeoutException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex, PostgresErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -174,9 +174,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
                     rows.Add(read(reader));
                 return rows;
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException or TimeoutException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving {what} from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving {what} from database '{Config.Database}'. Error: {ex.Message}", ex, PostgresErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 

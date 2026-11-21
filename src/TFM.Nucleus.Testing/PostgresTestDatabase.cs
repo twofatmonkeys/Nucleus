@@ -74,6 +74,25 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
     }
 
     /// <inheritdoc />
+    /// <remarks>ACCESS EXCLUSIVE, the one mode that conflicts with every other, readers included.</remarks>
+    public override async Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default)
+    {
+        var connection = await OpenAsync(token);
+        try
+        {
+            var transaction = await connection.BeginTransactionAsync(token);
+            await using var command = new NpgsqlCommand($"LOCK TABLE \"public\".\"{table}\" IN ACCESS EXCLUSIVE MODE", connection, transaction);
+            await command.ExecuteNonQueryAsync(token);
+            return new HeldLock(connection, transaction);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public override string TableIdSql(string table) => $"SELECT to_regclass('\"public\".\"{table}\"')::oid::bigint";
 
     /// <inheritdoc />

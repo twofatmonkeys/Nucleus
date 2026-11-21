@@ -93,7 +93,7 @@ namespace TFM.Nucleus.Tests
             var cs = NewConnectionString();
             QueryNotificationHost.StartListener = _ => throw new InvalidOperationException("no broker");
 
-            var ex = Assert.Throws<Exception>(() => QueryNotificationHost.Acquire(cs));
+            var ex = Assert.Throws<TFM.Nucleus.Data.Providers.DataProviderException>(() => QueryNotificationHost.Acquire(cs));
             Assert.Contains("ENABLE_BROKER", ex.Message);
             Assert.Contains("SUBSCRIBE QUERY NOTIFICATIONS", ex.Message);
             Assert.IsType<InvalidOperationException>(ex.InnerException);

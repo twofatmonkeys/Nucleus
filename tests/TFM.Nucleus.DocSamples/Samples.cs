@@ -348,6 +348,36 @@ namespace PortlyPrimate
             return false;
         }
 
+        public async Task<Monkey?> FindWithRetryAsync(Guid id, CancellationToken ct)
+        {
+            #region transient-retry
+            // Nucleus retries only opening a connection. Another attempt of the whole operation is
+            // the caller's, when the failure says it is worth one and nothing was applied.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return await data.LoadByIDAsync<Monkey>(id, ct);
+                }
+                catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct);   // a deadlock, a dropped connection, a timeout
+                }
+            }
+            #endregion
+        }
+
+        public async Task StatementTimeoutAsync(CancellationToken ct)
+        {
+            #region statement-timeout
+            // A long job's own statements get five minutes; every other context keeps the provider's limit.
+            await using var context = await data.CreateContextAsync<WeighIn>(
+                new ContextOptions { UseTransaction = true, StatementTimeoutSeconds = 300 }, ct);
+            await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 14.7m, Notes = "after lunch" }, ct);
+            await context.CommitAsync(ct);
+            #endregion
+        }
+
         public async Task<int> DeletesAsync(CancellationToken ct)
         {
             #region deletes

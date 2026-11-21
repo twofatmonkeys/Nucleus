@@ -59,6 +59,26 @@ public sealed class SqliteTestDatabase : NucleusTestDatabase
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// SQLite has no table locks: an IMMEDIATE transaction takes the file's write lock, so every
+    /// other writer waits, whatever table it writes, and readers carry on in write-ahead log mode.
+    /// </remarks>
+    public override async Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default)
+    {
+        var connection = await OpenAsync(token);
+        try
+        {
+            var transaction = connection.BeginTransaction(deferred: false);
+            return new HeldLock(connection, transaction);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     /// <remarks>The table's root page: a rename keeps it, a rebuild creates the table anew on another page.</remarks>
     public override string TableIdSql(string table) => $"SELECT rootpage FROM sqlite_schema WHERE type = 'table' AND name = '{table.Replace("'", "''")}'";
 

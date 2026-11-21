@@ -14,6 +14,18 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteConnectionLimitIntegrationTests(SqliteFixture fixture) : ConnectionLimitIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteDatabaseFailureIntegrationTests(SqliteFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        protected override bool ReadsWaitForWriters => false;
+
+        protected override DatabaseOperation BlockedWriteFailsAt => DatabaseOperation.Open;
+
+        // A file that is not there: every connection but the one that creates the database opens read-write without creating it.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) =>
+            options.Database = Path.Combine(Path.GetTempPath(), $"nucleus-missing-{Guid.NewGuid():N}", "missing.db");
+    }
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteContextSaveIntegrationTests(SqliteFixture fixture) : ContextSaveIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]

@@ -12,9 +12,11 @@ namespace TFM.Nucleus.Data
     /// index, <see cref="PropertyName"/> and <see cref="ColumnName"/> name its one column; for a
     /// unique [TableIndex], <see cref="DeclaredIndexName"/> is its declared name and they are null.
     /// When the index is not one Nucleus manages, such as a primary key or an index added by hand,
-    /// the entity and names are null and the lists are empty.
+    /// the entity and names are null and the lists are empty. It is a <see cref="DatabaseException"/>
+    /// of kind <see cref="DatabaseErrorKind.UniqueViolation"/>, never transient: the same write
+    /// breaks the same index again.
     /// </summary>
-    public class UniqueViolationException : TFM.Nucleus.NucleusException
+    public class UniqueViolationException : DatabaseException
     {
         public UniqueViolationException(string message, string? indexName, Type? entityType, string? columnName, Exception innerException)
             : this(message, indexName, entityType, columnName, columnName, innerException)
@@ -23,7 +25,7 @@ namespace TFM.Nucleus.Data
 
         /// <summary>A broken [DatabaseColumn(Unique = true)] index, or one Nucleus does not manage when the names are null.</summary>
         public UniqueViolationException(string message, string? indexName, Type? entityType, string? propertyName, string? columnName, Exception innerException)
-            : base(message, innerException)
+            : base(message, DatabaseErrorKind.UniqueViolation, transient: false, innerException)
         {
             IndexName = indexName;
             EntityType = entityType;
@@ -36,7 +38,7 @@ namespace TFM.Nucleus.Data
         /// <summary>A broken unique [TableIndex] index, declared as <paramref name="declaredIndexName"/>, over the given key properties and their columns.</summary>
         public UniqueViolationException(string message, string? indexName, Type? entityType, string declaredIndexName,
             IReadOnlyList<string> propertyNames, IReadOnlyList<string> columnNames, Exception innerException)
-            : base(message, innerException)
+            : base(message, DatabaseErrorKind.UniqueViolation, transient: false, innerException)
         {
             ArgumentNullException.ThrowIfNull(declaredIndexName);
             ArgumentNullException.ThrowIfNull(propertyNames);

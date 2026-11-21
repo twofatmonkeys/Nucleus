@@ -147,6 +147,35 @@ public abstract class NucleusTestDatabase
     /// <summary>The first column of the first row the statement returns; null for no row or a database null.</summary>
     public abstract Task<object?> ScalarAsync(string sql, CancellationToken token = default);
 
+    /// <summary>
+    /// Takes a lock outside Nucleus that keeps every other connection from writing
+    /// <paramref name="table"/>, and holds it until the result is disposed, which rolls the
+    /// transaction holding it back. On the server engines no other connection can read the table
+    /// either; SQLite locks the whole file for writing and lets readers through. For a test of what
+    /// a statement that cannot get its lock is told. Lock a table no other suite uses, or the
+    /// suites that use it wait too. A database class of its own that does not override it throws
+    /// <see cref="NotSupportedException"/>, so one written before it existed still compiles.
+    /// </summary>
+    public virtual Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default) =>
+        throw new NotSupportedException($"{GetType().Name} does not hold locks.");
+
+    /// <summary>A lock taken by <see cref="HoldWriteLockAsync"/>: its connection and the transaction that holds it.</summary>
+    protected sealed class HeldLock(System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction transaction) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await transaction.RollbackAsync();
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
+                await connection.DisposeAsync();
+            }
+        }
+    }
+
     /// <summary>A query returning the table's object id as a bigint, which only a rebuild changes; null when there is no such table.</summary>
     public abstract string TableIdSql(string table);
 

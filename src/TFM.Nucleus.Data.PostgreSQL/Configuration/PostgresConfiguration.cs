@@ -26,15 +26,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         /// </summary>
         public string? SslMode { get; set; }
 
-        /// <summary>
-        /// How many times opening a connection is attempted when the failure is transient, the
-        /// first attempt included. 1 or less means one attempt and no retry. Every attempt shares
-        /// the connect timeout (<see cref="ConnectTimeoutSeconds"/>, or the raw connection
-        /// string's), so retrying never makes an open wait longer than it.
-        /// </summary>
-        public int ConnectAttempts { get; set; } = 3;
-
-        /// <summary>The old name of <see cref="ConnectAttempts"/>. It always counted attempts, not retries.</summary>
+        /// <summary>The old name of <see cref="RelationalProviderOptions.ConnectAttempts"/>. It always counted attempts, not retries.</summary>
         [Obsolete("Use ConnectAttempts. The value counts attempts, the first included, not retries.")]
         public int ConnectRetryCount
         {

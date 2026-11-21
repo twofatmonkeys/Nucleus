@@ -22,6 +22,24 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   parameter limit runs as several commands. `SaveAsync` is the path that hands a large batch to
   the bulk engine.
 
+## Failures and retries
+
+- **Nucleus retries only opening a connection.** A statement, a commit or a rollback that fails is
+  reported at once as a `DatabaseException`; another attempt of the operation is the caller's, when
+  `IsTransient` is true. Each attempt opens its own connection with its own `ConnectAttempts`, so a
+  caller's retries multiply those.
+- **A write on a context with no transaction reports that it may have been applied.** Each statement
+  commits as it runs, so Nucleus cannot tell how much of a failed write was kept, and such a failure
+  is never transient, even a lock wait that ran out before anything ran. Write through a
+  transactional context (every manager save and delete does) to get a failure known not to have
+  been applied.
+- **After `CommitOutcomeUnknown`, the objects are left unsaved.** The commit may have taken effect.
+  Load the rows to find out before saving again: a new object that did commit fails a second insert
+  with a `UniqueViolationException` on its key.
+- **SQLite has no statement time limit.** Its driver's command timeout is the wait for the write
+  lock (`BusyTimeoutSeconds`), so `StatementTimeoutSeconds` is ignored, a long statement runs until
+  it finishes, and a cancelled token does not stop one under way.
+
 ## Reading
 
 - **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use

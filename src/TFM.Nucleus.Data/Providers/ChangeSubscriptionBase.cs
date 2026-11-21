@@ -121,8 +121,9 @@ namespace TFM.Nucleus.Data.Providers
 
     /// <summary>
     /// Ref-counts a process-wide listener per connection string: the first subscription for a
-    /// string starts it, the last release stops it. Start failures are rethrown with
-    /// <see cref="StartFailureMessage"/>; stop failures are traced, since teardown must not throw.
+    /// string starts it, the last release stops it. A start the database fails is a
+    /// <see cref="DatabaseException"/>, and any other a <see cref="DataProviderException"/>, both
+    /// with <see cref="StartFailureMessage"/>; stop failures are traced, since teardown must not throw.
     /// </summary>
     public sealed class ListenerRefCounter(Action<string> start, Action<string> stop, string startFailureMessage)
     {
@@ -149,9 +150,16 @@ namespace TFM.Nucleus.Data.Providers
                     {
                         Start(connectionString);
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
                     {
-                        throw new Exception($"{StartFailureMessage} {ex.Message}", ex);
+                        throw DatabaseFailures.Create($"{StartFailureMessage} {ex.Message}", ex,
+                            DatabaseFailures.ClassifyDefault(ex), DatabaseOperation.Subscribe, mayHaveBeenApplied: false);
+                    }
+                    catch (Exception ex) when (ex is not (NucleusException or OperationCanceledException))
+                    {
+                        // The engine refused to listen, usually for a missing prerequisite the
+                        // message names: a setup failure of the provider, not of the database.
+                        throw new DataProviderException($"{StartFailureMessage} {ex.Message}", DataProviderErrorKind.Error, ex);
                     }
                 }
                 _refCounts[connectionString] = count + 1;

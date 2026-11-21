@@ -52,6 +52,25 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
     }
 
     /// <inheritdoc />
+    /// <remarks>An exclusive table lock, held to the end of the transaction, which no reader or writer passes.</remarks>
+    public override async Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default)
+    {
+        var connection = await OpenAsync(token);
+        try
+        {
+            var transaction = (SqlTransaction)await connection.BeginTransactionAsync(token);
+            await using var command = new SqlCommand($"SELECT COUNT(*) FROM [dbo].[{table}] WITH (TABLOCKX, HOLDLOCK)", connection, transaction);
+            await command.ExecuteScalarAsync(token);
+            return new HeldLock(connection, transaction);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public override string TableIdSql(string table) => $"SELECT CAST(OBJECT_ID(N'dbo.{table}') AS bigint)";
 
     /// <inheritdoc />

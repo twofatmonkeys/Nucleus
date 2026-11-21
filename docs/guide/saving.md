@@ -75,10 +75,9 @@ in the Abstractions package), whichever provider stores the data. It says which 
 - **For an index Nucleus does not manage,** such as a primary key, the names are null and the lists
   empty.
 
-The message is the one an ordinary storage failure carries, and the provider's own exception is
-the inner exception, so code that caught `Exception` before still does. The manager's `Save` and
-`SaveAsync` throw it as it is, not wrapped, so the filters below work on them as they do on a
-context's save.
+It is a [`DatabaseException`](#failures) of kind `UniqueViolation`, never transient, with the
+provider's own exception as its inner exception. The manager's `Save` and `SaveAsync` throw it as
+it is, not wrapped, so the filters below work on them as they do on a context's save.
 
 <!-- sample: unique-violation -->
 ```csharp
@@ -96,15 +95,96 @@ catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath
 }
 ```
 
-## Exceptions
+## Failures
+
+When the database fails an operation, Nucleus throws a `DatabaseException` (namespace
+`TFM.Nucleus.Data`, in the Abstractions package), on every engine, with the driver's own exception
+as its inner exception, one level down. It says what happened in terms that do not depend on the
+engine:
+
+- **`Kind`**: `ConnectionFailed`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
+  `ForeignKeyViolation`, `NotNullViolation`, `ValueTooLong`, `CommitOutcomeUnknown` or `Other`.
+- **`IsTransient`**: another attempt of the whole operation may succeed and is safe. It is true
+  for a deadlock, a dropped connection, a timeout and the like, and only when nothing was applied.
+- **`MayHaveBeenApplied`**: the database may have kept some or all of what was written. It is true
+  for a commit that failed in a way that does not say whether it took effect
+  (`CommitOutcomeUnknown`), and for a write on a context with no transaction, where each statement
+  commits as it runs. It is false for a read, and for a write whose transaction did not commit,
+  which covers every manager save and delete.
+- **`Operation`**: what Nucleus was doing (`Open`, `Read`, `Write`, `Delete`, `Commit`, ...).
+- **`Attempts`**: how many times Nucleus tried the step that failed (see below).
+
+A cancellation you asked for is an `OperationCanceledException`, never a `DatabaseException`, even
+when the engine reports the cancelled command as its own error.
+
+### Retries
+
+Nucleus retries one thing by itself: opening a connection, when the failure is transient, up to
+the provider's `ConnectAttempts` (3 by default), all within the connection's connect timeout. A
+statement, a commit or a rollback that fails is reported at once, because only the caller knows
+whether the operation is worth repeating. A retry is the caller's, of the whole operation, when
+the failure says it is safe:
+
+<!-- sample: transient-retry -->
+```csharp
+// Nucleus retries only opening a connection. Another attempt of the whole operation is
+// the caller's, when the failure says it is worth one and nothing was applied.
+for (var attempt = 1; ; attempt++)
+{
+    try
+    {
+        return await data.LoadByIDAsync<Monkey>(id, ct);
+    }
+    catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct);   // a deadlock, a dropped connection, a timeout
+    }
+}
+```
+
+Each attempt of the operation opens its own connection, with its own `ConnectAttempts`, so three
+attempts at the default make at most nine opens. A save that failed leaves its objects unsaved, with
+their changes and removals pending, so saving them again is the retry. After `CommitOutcomeUnknown`,
+do not save again blindly: load the rows and see whether the commit took effect. An insert that
+did commit fails a second time with a `UniqueViolationException` on its key.
+
+The drivers do not say which of their errors are transient for SQL Server and SQLite
+(`DbException.IsTransient` is always false for both), so a check of the driver's flag never
+retries on those engines. Each provider classifies its engine's errors itself, by error number,
+SQLSTATE or result code, which is what `IsTransient` reports.
+
+### Time limits
+
+Every statement a context runs has a time limit, the provider's `StatementTimeoutSeconds`, 30 by
+default, the SQL Server and PostgreSQL drivers' own. A statement over it fails with a
+`DatabaseException` of kind `Timeout`. A context for a long job takes a limit of its own:
+
+<!-- sample: statement-timeout -->
+```csharp
+// A long job's own statements get five minutes; every other context keeps the provider's limit.
+await using var context = await data.CreateContextAsync<WeighIn>(
+    new ContextOptions { UseTransaction = true, StatementTimeoutSeconds = 300 }, ct);
+await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 14.7m, Notes = "after lunch" }, ct);
+await context.CommitAsync(ct);
+```
+
+A limit on the whole operation, retries included, is a `CancellationToken` with `CancelAfter`.
+Schema statements have their own limit (`SchemaCommandTimeoutSeconds`), and so do bulk writes
+(`BulkTimeoutSeconds`). SQLite has no limit on a running statement: its driver's command timeout is
+the wait for another connection's write lock, which stays `BusyTimeoutSeconds`, so
+`StatementTimeoutSeconds` is ignored there.
+
+### Other exceptions
 
 Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
-`catch (NucleusException)` catches the family: `UniqueViolationException`, `DataProviderException`
-and each provider's own, `DataContextException`, `InvalidQueryException`, `CoreObjectException` and
-the schema exceptions.
+`catch (NucleusException)` catches the family: `DatabaseException` and `UniqueViolationException`,
+`DataProviderException` and each provider's own, `DataContextException` (a full connection budget is
+its kind `PoolExhausted`), `InvalidQueryException`, `CoreObjectException` and the schema exceptions.
 
 Nucleus also throws the framework's own exceptions where they are the right ones
-(`ArgumentException`, `NotSupportedException`, `OperationCanceledException`). Those are not wrapped.
+(`ArgumentException`, `NotSupportedException`, `InvalidOperationException`,
+`OperationCanceledException`). Those, and a rule your `Validate()` throws, reach the caller as they
+were thrown, not wrapped.
 
 ## Change notifications
 

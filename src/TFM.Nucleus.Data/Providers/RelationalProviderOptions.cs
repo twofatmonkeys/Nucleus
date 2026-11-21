@@ -73,8 +73,8 @@ namespace TFM.Nucleus.Data.Providers
         /// How long opening a context or a change subscription on the asynchronous path waits for
         /// a free slot when <see cref="MaxConnectionPoolSize"/> are already held, in seconds, before
         /// it fails. 3 by default: the failure goes back to the caller, who decides whether to wait
-        /// longer or retry. 0 fails at once. The synchronous path never waits. It is not a command
-        /// timeout: commands use the driver's default.
+        /// longer or retry. 0 fails at once. The synchronous path never waits. It is not a statement
+        /// timeout; that is <see cref="StatementTimeoutSeconds"/>.
         /// </summary>
         public int PoolWaitTimeoutSeconds
         {
@@ -86,13 +86,45 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        /// <summary>The old name of <see cref="PoolWaitTimeoutSeconds"/>. It never set a command timeout.</summary>
-        [Obsolete("Use PoolWaitTimeoutSeconds. This was always the wait for a free pool slot and never set a command timeout.")]
+        /// <summary>The old name of <see cref="PoolWaitTimeoutSeconds"/>. It never set a command timeout; that is <see cref="StatementTimeoutSeconds"/>.</summary>
+        [Obsolete("Use PoolWaitTimeoutSeconds. This was always the wait for a free pool slot and never set a command timeout; the statement timeout is StatementTimeoutSeconds.")]
         public int CommandTimeoutSeconds
         {
             get => PoolWaitTimeoutSeconds;
             set => PoolWaitTimeoutSeconds = value;
         }
+
+        private int _statementTimeoutSeconds = 30;
+
+        /// <summary>
+        /// The time limit of each statement a context runs, in seconds: every read, write and
+        /// delete. 30 by default, the SQL Server and PostgreSQL drivers' own default, so setting
+        /// nothing changes nothing. 0 means no limit. A statement over it fails with a
+        /// <see cref="DatabaseException"/> of kind <see cref="DatabaseErrorKind.Timeout"/>. A
+        /// context can take another (<see cref="ContextOptions.StatementTimeoutSeconds"/>). Schema
+        /// statements use <see cref="SchemaCommandTimeoutSeconds"/> and bulk writes
+        /// <see cref="BulkTimeoutSeconds"/>. An engine whose driver cannot limit a running
+        /// statement ignores it and says so in its own settings.
+        /// </summary>
+        public int StatementTimeoutSeconds
+        {
+            get => _statementTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _statementTimeoutSeconds = value;
+            }
+        }
+
+        /// <summary>
+        /// How many times opening a connection is attempted when the failure is transient (as the
+        /// provider classifies its engine's errors), the first attempt included, with an exponential
+        /// back-off. 3 by default; 1 or less means one attempt and no retry. Every attempt shares the
+        /// connection's connect timeout, so retrying never makes an open wait longer than it. Only
+        /// opening is retried: a statement or a commit that fails is reported to the caller, whose
+        /// retry of the whole operation multiplies these attempts.
+        /// </summary>
+        public int ConnectAttempts { get; set; } = 3;
 
         private int _schemaCommandTimeoutSeconds = 900;
 
