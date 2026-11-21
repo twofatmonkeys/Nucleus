@@ -32,3 +32,6 @@ Thumbs.db
 *.pfx
 appsettings.*.local.json
 .env
+
+# Private local work. Never committed.
+/private/
