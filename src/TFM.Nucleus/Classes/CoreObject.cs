@@ -43,7 +43,9 @@ namespace TFM.Nucleus
             get { return GetValue<Guid>(); }
         }
         /// <summary>
-        /// When the row was last written. The server stamps the stored value on every write; the
+        /// When the row was last written. The server stamps the stored value on every write. A
+        /// save writes the object saved and only the rows below it that are new or changed, so a
+        /// child's stamp moves when the child changes, not on every save of its parent. The
         /// value in memory is the client clock at the first commit and is not read back, because
         /// reading it back slowed batched and bulk saves by 10% to 65% (see
         /// docs/code-review-findings.md). Mark a column of your own ReturnOutputToProperty to have

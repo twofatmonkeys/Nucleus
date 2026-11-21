@@ -96,7 +96,8 @@ Nucleus does the bookkeeping from there:
   Lazy collections are the exception (below).
 - **Saving.** Save the parent, never a child (a child's own `Save` throws
   `UnableToSaveFromChildObject`). New children are inserted, changed ones updated and removed ones
-  deleted, in one transaction. The deletes run first, so a replacement with the same unique key
+  deleted, in one transaction. An unchanged child is not written, so its `Timestamp` stays put,
+  while its own changed children still are. The deletes run first, so a replacement with the same unique key
   does not collide with the row it replaces. Large batches go to the bulk engine on their own. A
   save that fails rolls back and keeps the removals, so saving again deletes them.
 - **Validating.** The parent's `Validate()` runs `Validate()` on every new or changed child, at

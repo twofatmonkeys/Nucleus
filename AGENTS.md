@@ -187,7 +187,9 @@ Validation (`CoreObject.Validate`), the writes and the commit all read it, so th
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
 manager and `IDataContext.Save`/`SaveAsync`, for one object or a batch): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
-roots. Every save path validates before it builds anything, once per object: the manager's `Save`
+roots. A row the save reaches (a child, a link or a member) with no changes of its own is not
+written, only the changed rows below it, because its update would only stamp `Timestamp`; the roots
+are always written (`RelationalDataProvider.WriteQueries`). Every save path validates before it builds anything, once per object: the manager's `Save`
 and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
 reaches the caller as thrown, and `DbDataContext` in its save and batch save builders, which also
 covers the manager's save of a batch of mixed types. There is one save: `BulkSave` is the obsolete

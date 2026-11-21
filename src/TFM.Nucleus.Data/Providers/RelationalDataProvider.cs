@@ -303,7 +303,8 @@ namespace TFM.Nucleus.Data.Providers
                 queries.AddRange(WriteQueries(table, [.. links], separateOperations));
             }
             foreach (var group in roots.GroupBy(rootTable))
-                queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations));
+                // The objects the save was asked for are written even with no changes of their own.
+                queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations, writeUnchanged: true));
             // After the roots, so a member is never written before the one its key points at.
             foreach (var members in graph.Members.GroupBy(o => o.GetType()))
             {
@@ -317,24 +318,49 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         /// <summary>
-        /// The inserts and updates of objects stored in one table: the updates linked from the
-        /// inserts, or as separate chains.
+        /// The inserts and updates of objects stored in one table, then the writes below the
+        /// stored objects that have nothing of their own to write: the updates linked from the
+        /// inserts and those writes linked after them, or each as a separate chain.
         /// </summary>
-        private IEnumerable<Query> WriteQueries(TableSchema table, List<ICoreObject> objs, bool separateOperations)
+        /// <remarks>
+        /// A stored object with no changes of its own (<see cref="SaveGraph.IsChanged"/>) is not
+        /// written unless <paramref name="writeUnchanged"/> says so, which only the objects a save
+        /// was asked for do. Its update would set nothing but the server's columns, so a parent
+        /// save used to stamp the Timestamp of every loaded child. Its child collections are still
+        /// written, so a changed grandchild under a clean child is not lost. Those writes come
+        /// last: they are all below rows that already exist, so no row they reference is unwritten.
+        /// </remarks>
+        private IEnumerable<Query> WriteQueries(TableSchema table, List<ICoreObject> objs, bool separateOperations, bool writeUnchanged = false)
         {
+            var hasChildren = table.ObjectSchema.HasNucleusChildCollections;
+            List<ICoreObject>? inserts = null;
+            List<ICoreObject>? updates = null;
+            List<Query>? below = null;
             foreach (var obj in objs)
-                Bind(obj);
-            var update = UpdateQuery.Create(Renderer, table, objs.Where(x => !x.IsNew));
-            var insert = InsertQuery.Create(Renderer, table, objs.Where(x => x.IsNew));
-            if (separateOperations)
-                return new Query?[] { insert, update }.OfType<Query>();
-            if (insert != null)
             {
-                if (update != null)
-                    insert.LinkedQueries.Add(update);
-                return [insert];
+                Bind(obj);
+                if (obj.IsNew)
+                    (inserts ??= []).Add(obj);
+                else if (writeUnchanged || SaveGraph.IsChanged(obj))
+                    (updates ??= []).Add(obj);
+                else if (hasChildren)
+                    foreach (var collection in obj.NucleusChildCollections)
+                        if (collection.GetInsertUpdateQuery() is Query query)
+                            (below ??= []).Add(query);
             }
-            return update != null ? [update] : [];
+            var insert = InsertQuery.Create(Renderer, table, inserts);
+            var update = UpdateQuery.Create(Renderer, table, updates);
+            if (separateOperations)
+                return new Query?[] { insert, update }.OfType<Query>().Concat(below ?? []);
+            Query? root = null;
+            foreach (var query in new Query?[] { insert, update }.OfType<Query>().Concat(below ?? []))
+            {
+                if (root is null)
+                    root = query;
+                else
+                    root.LinkedQueries.Add(query);
+            }
+            return root is null ? [] : [root];
         }
 
         public TableSchema GetTableSchema(Type type) =>

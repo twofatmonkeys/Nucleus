@@ -125,8 +125,8 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   `VALUES`. The largest change here.
 
 Also open, from before: graph saves allocate 6-17% more than before the child model, accepted in
-the first baselines; P2, P3, P7 and P8 recover part of it. Unchanged loaded children are still
-rewritten with a Timestamp-only update (see "Saving a parent rewrites every loaded child" below).
+the first baselines; P2, P3, P7 and P8 recover part of it. Unchanged loaded children are no longer
+rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
 
 ### Found with the child model (November 2026)
 
@@ -328,17 +328,6 @@ safe to call, but removing it is a public API change and was left for a major ve
 
 Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs` and `DBColumn.cs`.
 
-### Saving a parent rewrites every loaded child
-
-`UpdateQuery` links an update for every child in each loaded collection, and an update always sets
-`Timestamp`, so saving a parent touches every child row even when none changed. Skipping unchanged
-children is not safe as things stand: `HasChanges` covers an object's own columns only, and a
-grandchild's update is linked from its child's, so a clean child with a changed grandchild would
-lose the grandchild's write. The fix needs a recursive dirty check first. Loaded children are no
-longer dirty themselves (see "Loaded children were dirty" below), so the only write is the
-timestamp. `SaveGraph` now works out whether anything below an object is new, changed or removed
-(it decides whether a forceSave link is written), which is the recursive check this needs.
-
 ### A caller-owned context commits on dispose and evicts no cache (November 2026)
 
 A transactional `IDataContext` that the caller opens (`IObjectDataManager.CreateContextAsync<T>`,
@@ -413,6 +402,23 @@ doubling in the option tables and the known limits.
 - **A failure before any command left the transaction unmarked.** See the open entry on
   caller-owned contexts. Cover: `AFailedValidation_DoomsTheTransaction_SoTheEarlierWriteIsRolledBack`,
   `AFailureInAChild_DoomsTheWholeTree`.
+
+### Saving a parent rewrote every loaded child (November 2026)
+
+`UpdateQuery` linked an update for every child in each loaded collection, and an update always sets
+`Timestamp`, so saving a parent touched every child row even when none changed: a parent with 500
+loaded children wrote 501 rows to change one, and a child's `Timestamp` no longer said when the
+child last changed. Skipping a clean child was not safe on its own, because a grandchild's write is
+linked under its child's update.
+
+`RelationalDataProvider.WriteQueries`, which every save path and every child collection's writes
+go through, now writes a stored object only when it has changes of its own
+(`SaveGraph.IsChanged`). A clean object's child collections are still written, after the object's
+level, so a changed grandchild under a clean child is kept at any depth. The same applies to a
+forceSave link or a linked collection member that is written only for what is below it. The objects
+a save was asked for are always written, so saving an unchanged object still stamps it. Because the
+fix is in the query builder, both write paths and every provider's bulk engine follow. Cover in
+`ChildSaveIntegrationTests` (the three-level roster on every save path).
 
 ### Names that could only be changed by breaking (November 2026)
 
