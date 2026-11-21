@@ -1,27 +1,27 @@
 {
-  "commit": "980a8fa-dirty",
-  "acceptedOn": "2026-11-19",
+  "commit": "963cf77",
+  "acceptedOn": "2026-11-21",
   "scenarios": {
     "bind 100x10": {
-      "allocatedBytes": 1020976
+      "allocatedBytes": 1042704
     },
     "delete removed build 50": {
-      "allocatedBytes": 44744
+      "allocatedBytes": 33240
     },
     "insert\u002Bupdate build 100": {
-      "allocatedBytes": 638144
+      "allocatedBytes": 642944
     },
     "materialise 1000": {
-      "allocatedBytes": 152040
+      "allocatedBytes": 160040
     },
     "parse predicate x200": {
-      "allocatedBytes": 4570528
+      "allocatedBytes": 4578472
     },
     "savegraph walk 100x10x2": {
-      "allocatedBytes": 627544
+      "allocatedBytes": 627624
     },
     "validate 100x10x2": {
-      "allocatedBytes": 785640
+      "allocatedBytes": 734440
     }
   }
 }
