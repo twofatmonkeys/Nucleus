@@ -131,6 +131,7 @@ namespace TFM.Nucleus.Tests
             var widget = new TestAllTypesWidget { Count = 7 };
 
             widget.AcceptServerValue(nameof(TestAllTypesWidget.Count), DBNull.Value);
+            ((ICoreObject)widget).CommitChanges();
 
             Assert.Equal(0, widget.Count);
         }

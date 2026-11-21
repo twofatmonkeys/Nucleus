@@ -3,6 +3,19 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A save that fails keeps nothing the server returned
+
+- **A value read back with `ReturnOutputToProperty` is taken when the save commits.** It used to
+  replace the object's value, and drop its pending one, as soon as the write returned, before the
+  transaction committed. A save that then failed left the object holding a value from a
+  rolled-back write, and saving it again wrote that value instead of the object's own, so a server
+  default or generated value was not produced again. Now the object keeps its own value until its
+  changes are committed: after the manager's save commits, or as a caller-owned context's save
+  runs, where a rollback puts it back with the rest of the object. Code that read the property
+  between the write and its commit sees the old value; read it after the save returns.
+- **`AcceptServerValue` holds the value until the commit.** Call `CommitChanges` after it to see
+  the value, as a save does.
+
 ## A database failure is a DatabaseException, and statements have a time limit
 
 - **A database failure is a `DatabaseException`**, on every engine and every path, with the

@@ -46,7 +46,7 @@ set by name:
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). |
 | `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
-| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. The property takes it once the save commits (through a caller's context, as its save runs), so a save that fails leaves the object's own value in place for the next one. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 ### Renaming a column
 
