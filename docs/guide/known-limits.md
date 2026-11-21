@@ -5,9 +5,6 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Saving
 
-- **Saving a parent rewrites every loaded child.** An update links an update of every child in each
-  loaded collection, and each sets `Timestamp`, so a parent with many loaded children writes them
-  all on every save. Exclude, or make lazy, a large collection the save does not need.
 - **A save through a caller-owned context commits in memory before the caller commits.**
   `SaveAsync(IDataContext, ...)` marks the object, its children and its removals saved as soon as
   the writes run. A caller who then rolls back must reload the objects.

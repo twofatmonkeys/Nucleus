@@ -16,7 +16,9 @@ is on the [Relationships](relationships.md) page.
 Every entity has two properties it does not declare:
 
 - **`ID`**, a `Guid` primary key, assigned when the object is constructed.
-- **`Timestamp`**, a `DateTimeOffset` the server stamps on every insert and update. The stamped
+- **`Timestamp`**, a `DateTimeOffset` the server stamps on every insert and update. A save
+  updates the object saved and only those rows below it that are new or changed, so a child's
+  `Timestamp` moves when the child changes, not whenever its parent is saved. The stamped
   value is not read back. In memory it is the client clock at the object's first save, and a
   loaded object keeps the value it was loaded with. Reading it back on every write was measured at
   10% to 65% slower for batched, split and bulk saves.

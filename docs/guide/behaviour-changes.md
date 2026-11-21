@@ -3,6 +3,18 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Unchanged children are not written
+
+- **A save writes only the rows that changed below the object saved.** Saving a parent used to
+  update every loaded child at every depth, and each update set `Timestamp`, so every child's
+  `Timestamp` moved on every parent save. A child with no changes of its own is now not written:
+  its `Timestamp`, any other `SetValueOverride` column and any `ReturnOutputToProperty` read-back
+  are left as they were. Its own changed or new children are still written. The same holds for a
+  `forceSave` link or a linked collection member that the save reaches only for what is below it.
+- **The object you save is still always written.** Saving an unchanged object stamps its
+  `Timestamp`, as before. Code that read a child's `Timestamp` as "when its parent was last saved"
+  must read the parent's instead.
+
 ## Explicit commit
 
 A caller-owned transactional context used to commit when it was disposed, unless something rolled
