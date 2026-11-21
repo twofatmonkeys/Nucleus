@@ -3,6 +3,36 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## An opt-in retry policy for the manager's own operations
+
+- **`RetryAttempts` on every provider's options, 1 by default.** Set above 1, a manager save,
+  delete or load, a streamed load until its first row, a row read, or the read of a lazy
+  collection or a linked object that fails with a transient `DatabaseException` having applied
+  nothing is attempted again on a new connection, with the back-off opening a connection uses.
+  At the default nothing changes. See [Retries](saving.md#retries).
+- **With the policy on, the last attempt's failure is not transient.** It is the same failure with
+  `IsTransient` false and `Attempts` set, so a caller's `catch (DatabaseException { IsTransient: true })`
+  does not retry it again. Remove a retry of your own around manager calls when you turn the
+  policy on; keep it around caller-owned contexts, which the policy never touches.
+- **A batch save of mixed types checks its objects before it opens a connection.** The manager
+  runs each provider's objects' rules and `PreSave` once, before the first attempt, instead of the
+  context running them as it saved. A rule that fails now fails before a connection is taken.
+- **`IDataProvider.RetryAttempts`** is a new member with a default of 1, so another implementation
+  still compiles and is never retried.
+
+## A save that fails keeps nothing the server returned
+
+- **A value read back with `ReturnOutputToProperty` is taken when the save commits.** It used to
+  replace the object's value, and drop its pending one, as soon as the write returned, before the
+  transaction committed. A save that then failed left the object holding a value from a
+  rolled-back write, and saving it again wrote that value instead of the object's own, so a server
+  default or generated value was not produced again. Now the object keeps its own value until its
+  changes are committed: after the manager's save commits, or as a caller-owned context's save
+  runs, where a rollback puts it back with the rest of the object. Code that read the property
+  between the write and its commit sees the old value; read it after the save returns.
+- **`AcceptServerValue` holds the value until the commit.** Call `CommitChanges` after it to see
+  the value, as a save does.
+
 ## A database failure is a DatabaseException, and statements have a time limit
 
 - **A database failure is a `DatabaseException`**, on every engine and every path, with the

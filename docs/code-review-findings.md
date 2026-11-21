@@ -360,11 +360,10 @@ the code; no test reaches it.
 
 What the failure contract below ("A database failure was a bare Exception") does not do yet:
 
-- **Nucleus retries only opening a connection.** A statement or a commit that fails is reported at
-  once; the caller retries the whole operation when `IsTransient` says so. An opt-in retry policy
-  for the manager's operations that own their transaction is planned, off by default, never inside
-  a caller's context, never after a commit was sent and never for a stream that has returned rows.
-  Until then each caller writes the loop, and its attempts multiply `ConnectAttempts`.
+- **The retry policy is off by default and does not cover a caller-owned context.** `RetryAttempts`
+  (1 by default) retries the manager's own operations only. A caller-owned context is the caller's
+  transaction, so its unit of work is the caller's to repeat. Either way each attempt multiplies
+  `ConnectAttempts`. Cover: `RetryPolicyTests`, `RetryPolicyIntegrationTests`.
 - **A failed write on a context with no transaction always reports `MayHaveBeenApplied`.** Each
   statement commits as it runs and a command can hold several, so Nucleus does not know how much
   ran. That is true even of a lock wait that ran out before the first statement, which therefore
@@ -380,6 +379,24 @@ What the failure contract below ("A database failure was a bare Exception") does
   `StatementTimeoutSeconds`.
 
 ## Fixed
+
+### A failed save kept the values the server returned (November 2026)
+
+Found while designing the retry policy, which replays a save that failed. `CoreObject.AcceptServerValue`,
+which every `ReturnOutputToProperty` read-back calls as the write returns, dropped the object's
+pending value and stored the server's as committed straight away, before the transaction
+committed. A save that failed after a read-back, at a later statement or at the commit, rolled
+back in the database but not in memory: the object held a value from a rolled-back write, its own
+change was gone, and the next save, a caller's retry included, wrote that value instead of letting
+the server produce a new one. A caller-owned context's undo log did
+not cover it either, because the value never went through a commit.
+
+Now the value is held on the object until its changes are committed (`CommitChanges`, which the
+manager runs once its transaction commits and a caller-owned context runs as its save does), where
+it replaces the pending value. Under a transaction the undo log records the property's stored and
+pending values first and puts both back on a rollback, keeping any edit made since. The next save's
+`PrepareForSave` drops what a save that did not commit left. Cover: `ServerValueTests`, and
+`ServerValueIntegrationTests` on every provider for the paths that read back.
 
 ### A database failure was a bare Exception (November 2026)
 

@@ -24,10 +24,11 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Failures and retries
 
-- **Nucleus retries only opening a connection.** A statement, a commit or a rollback that fails is
-  reported at once as a `DatabaseException`; another attempt of the operation is the caller's, when
-  `IsTransient` is true. Each attempt opens its own connection with its own `ConnectAttempts`, so a
-  caller's retries multiply those.
+- **The retry policy is off by default, and never covers a caller-owned context.** Until a
+  provider's `RetryAttempts` is set above 1, only opening a connection is retried, and a failed
+  statement or commit is reported at once. Work on a context you opened is yours to retry, as a
+  whole, when `IsTransient` is true. Each attempt, the policy's or yours, opens its own connection
+  with its own `ConnectAttempts`, so the two multiply.
 - **A write on a context with no transaction reports that it may have been applied.** Each statement
   commits as it runs, so Nucleus cannot tell how much of a failed write was kept, and such a failure
   is never transient, even a lock wait that ran out before anything ran. Write through a

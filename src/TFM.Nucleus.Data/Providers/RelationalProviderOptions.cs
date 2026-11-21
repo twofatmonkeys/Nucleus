@@ -121,10 +121,24 @@ namespace TFM.Nucleus.Data.Providers
         /// provider classifies its engine's errors), the first attempt included, with an exponential
         /// back-off. 3 by default; 1 or less means one attempt and no retry. Every attempt shares the
         /// connection's connect timeout, so retrying never makes an open wait longer than it. Only
-        /// opening is retried: a statement or a commit that fails is reported to the caller, whose
-        /// retry of the whole operation multiplies these attempts.
+        /// opening is retried here; the operation around it is retried only under
+        /// <see cref="RetryAttempts"/>, and each of its attempts opens with these attempts again.
         /// </summary>
         public int ConnectAttempts { get; set; } = 3;
+
+        /// <summary>
+        /// How many times an operation Nucleus runs on a context of its own is attempted when it
+        /// fails with a transient <see cref="DatabaseException"/> (<see cref="DatabaseException.IsTransient"/>:
+        /// worth another attempt, and nothing applied), the first included, with the same back-off
+        /// as <see cref="ConnectAttempts"/>. It covers the manager's saves, deletes and loads, its
+        /// streamed loads until their first row, row reads, and the reads of rows a load left for
+        /// later. 1, the default, attempts each once, so the policy is off until it is set. Nothing
+        /// run on a caller's context is attempted again, nor a commit whose outcome is unknown,
+        /// nor a stream that has returned a row. When the last attempt fails transiently, the
+        /// failure is reported with <see cref="DatabaseException.IsTransient"/> false and
+        /// <see cref="DatabaseException.Attempts"/> set, so the caller does not retry it again.
+        /// </summary>
+        public int RetryAttempts { get; set; } = 1;
 
         private int _schemaCommandTimeoutSeconds = 900;
 

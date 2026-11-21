@@ -52,8 +52,9 @@ namespace TFM.Nucleus.Data.Providers
         // On a root, what the tree's saves committed in memory, put back if the transaction does
         // not commit. Created by the first save.
         private CommitUndoLog? _undo;
-        // False on a context whose caller marks the saved objects itself, after the commit.
-        private bool _acceptsSavedObjects = true;
+        // True on a context whose caller checks the saved objects itself, before, and marks them
+        // saved itself, after the commit.
+        private bool _callerManagesObjects;
         // The context's own statement time limit from its ContextOptions; null takes its parent's.
         private int? _statementTimeoutSeconds;
 
@@ -375,7 +376,7 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private void Accept(IEnumerable<ICoreObject?> objs)
         {
-            if (!_acceptsSavedObjects)
+            if (_callerManagesObjects)
                 return;
             try
             {
@@ -395,9 +396,9 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        bool ISaveAcceptance.AcceptsSavedObjects
+        bool ISaveAcceptance.CallerManagesObjects
         {
-            set => _acceptsSavedObjects = value;
+            set => _callerManagesObjects = value;
         }
 
         int IStatementTimeout.StatementTimeoutSeconds
@@ -440,7 +441,8 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var list = objects as IList<ICoreObject?> ?? objects?.ToList();
-                SaveChecks.Run(list);
+                if (!_callerManagesObjects)
+                    SaveChecks.Run(list);
                 return _provider.CreateSaveQueries(list, separateOperations: true);
             }
             catch (Exception) when (Doom())

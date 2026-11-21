@@ -24,6 +24,10 @@ namespace TFM.Nucleus
 
         private readonly Dictionary<string, object?> _properties = [];
         private readonly Dictionary<string, object?> _newProperties = [];
+        // The values the server returned for this object's columns during a save that has not
+        // been committed in memory yet. They become stored values when the object's changes are
+        // committed, so a save that fails leaves the object as it was. Null until one arrives.
+        private Dictionary<string, object?>? _serverValues;
         private bool _isValidated = false;
 
 
@@ -91,6 +95,8 @@ namespace TFM.Nucleus
             var members = graph?.Members ?? [];
             var record = undo?.GetOrAdd(this, () => new CommitUndo(this));
             record?.BeforeCommit();
+            if (_serverValues is { Count: > 0 })
+                record?.BeforeServerValues(_serverValues.Keys);
             LogChanges(logger);
             if (makeReadOnly)
                 _isReadOnly = true;
@@ -99,6 +105,16 @@ namespace TFM.Nucleus
                 foreach (var newProp in _newProperties)
                     _properties[newProp.Key] = newProp.Value;
                 _newProperties.Clear();
+            }
+            // What the server stored wins over what the object sent.
+            if (_serverValues is { Count: > 0 })
+            {
+                foreach (var (property, value) in _serverValues)
+                {
+                    _newProperties.Remove(property);
+                    _properties[property] = value;
+                }
+                _serverValues.Clear();
             }
             // Timestamp is stamped by the server but not read back, so a new object takes the
             // local clock here. A loaded object keeps the value it was loaded with.
@@ -167,6 +183,10 @@ namespace TFM.Nucleus
             // HadValue false when the property held nothing. Only for an object that was not new:
             // one that was new goes back to holding every value as a change.
             private Dictionary<string, (bool HadValue, object? Value)>? _originals;
+            // Each property a commit took the server's value for, as it was before the first such
+            // commit: its stored value and its pending one, each with whether it had one. Put back
+            // exactly, since the commit replaced both.
+            private Dictionary<string, (bool HadStored, object? Stored, bool HadPending, object? Pending)>? _serverOriginals;
             private List<(object Collection, List<ICoreObject> Removed)>? _removals;
 
             /// <summary>Records the stored value of each pending property not recorded by an earlier commit.</summary>
@@ -178,6 +198,45 @@ namespace TFM.Nucleus
                 foreach (var key in owner._newProperties.Keys)
                     if (!_originals.ContainsKey(key))
                         _originals[key] = owner._properties.TryGetValue(key, out var value) ? (true, value) : (false, null);
+            }
+
+            /// <summary>Records each property about to take the server's value that an earlier commit did not.</summary>
+            public void BeforeServerValues(IEnumerable<string> properties)
+            {
+                _serverOriginals ??= [];
+                foreach (var key in properties)
+                    if (!_serverOriginals.ContainsKey(key))
+                    {
+                        var hadStored = owner._properties.TryGetValue(key, out var stored);
+                        var hadPending = owner._newProperties.TryGetValue(key, out var pending);
+                        _serverOriginals[key] = (hadStored, stored, hadPending, pending);
+                    }
+            }
+
+            /// <summary>
+            /// Puts back each property a commit took the server's value for, stored and pending
+            /// value both. An edit made since the commit, pending now because a committed object
+            /// holds its edits as changes, is kept: on a new object <see cref="Revert"/> then makes
+            /// it the value, and on a loaded one it stays pending.
+            /// </summary>
+            private void RevertServerValues()
+            {
+                if (_serverOriginals == null)
+                    return;
+                foreach (var (key, original) in _serverOriginals)
+                {
+                    var editedSince = owner._newProperties.TryGetValue(key, out var edit);
+                    if (original.HadStored)
+                        owner._properties[key] = original.Stored;
+                    else
+                        owner._properties.Remove(key);
+                    if (editedSince)
+                        owner._newProperties[key] = edit;
+                    else if (original.HadPending)
+                        owner._newProperties[key] = original.Pending;
+                    else
+                        owner._newProperties.Remove(key);
+                }
             }
 
             /// <summary>Records the removals a collection is about to forget.</summary>
@@ -192,6 +251,9 @@ namespace TFM.Nucleus
 
             public void Revert()
             {
+                // Server values first: a new object's edits since the commit, moved below, and a
+                // loaded one's, kept here, still win over what the property held before.
+                RevertServerValues();
                 if (_wasNew)
                 {
                     // The edits made since the commit are pending; a new object holds them all.
@@ -206,6 +268,8 @@ namespace TFM.Nucleus
                 {
                     foreach (var (key, original) in _originals)
                     {
+                        if (_serverOriginals?.ContainsKey(key) == true)
+                            continue;
                         var current = owner._newProperties.TryGetValue(key, out var pending)
                             ? pending
                             : owner._properties.GetValueOrDefault(key);
@@ -596,15 +660,24 @@ namespace TFM.Nucleus
         }
 
         /// <summary>
-        /// Takes the value the server stored for a property during a write. It is coerced as a
-        /// loaded value is, becomes the committed value, and drops any pending client value, so
-        /// committing the object's changes after the write keeps it.
+        /// Takes the value the server stored for a property during a write, coerced as a loaded
+        /// value is. It is held until the object's changes are committed, which happens once the
+        /// save's transaction commits (or, through a caller's context, as its save runs), and then
+        /// becomes the stored value, replacing any value the object sent. Until then the property
+        /// reads as it did, so a save that fails, and is rolled back, leaves the object as it was,
+        /// ready to be saved again. The next save drops anything held from one that did not commit.
         /// </summary>
         public void AcceptServerValue(string property, object? value)
         {
-            _newProperties.Remove(property);
-            _properties[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
+            ArgumentNullException.ThrowIfNull(property);
+            (_serverValues ??= [])[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
         }
+
+        /// <summary>
+        /// Drops the server values held from a save that did not commit, before a new save writes
+        /// the object: its write returns them again, and one it does not write must not take them.
+        /// </summary>
+        private void DropHeldServerValues() => _serverValues?.Clear();
 
 
 
@@ -832,10 +905,14 @@ namespace TFM.Nucleus
             if (dependents != null)
                 ValidateDependents(dependents);
             EnsureSaveable();
+            DropHeldServerValues();
             PreSave();
             if (dependents != null)
                 foreach (var dependent in dependents)
+                {
+                    dependent.DropHeldServerValues();
                     dependent.PreSave();
+                }
         }
 
         /// <summary>Saves the object through the ambient runtime, which validates it first.</summary>

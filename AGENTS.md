@@ -470,16 +470,26 @@ warning or an analyzer warning in new code fails CI.
   failure is a `DatabaseException`, never a bare `Exception`; a new path that reaches the database
   translates its failures through the provider (`TranslateFailure`, or `DatabaseFailures` with the
   provider's classifier), and lets anything else propagate as it was thrown.
-- **Nucleus retries only opening a connection.** This is the library's retry design; what a caller
-  retries is in the guide's [Retries](docs/guide/saving.md#retries). An open is retried up to `ConnectAttempts`
-  times, only for a failure the provider classifies as transient, all within the connection's
-  connect timeout. No statement, commit or rollback is retried: its failure is reported at once as
-  a `DatabaseException` whose `IsTransient` and `MayHaveBeenApplied` let the caller decide, because
-  only the caller knows whether the operation is worth repeating, and a hidden retry could repeat a
-  write whose outcome is unknown. An opt-in retry policy for the manager's operations that own
-  their transaction is planned (off by default; never inside a caller's context, after a commit
-  was sent, or for a stream that has returned rows); it changes this entry when it lands, not
-  before.
+- **Nucleus retries an open always, and an operation only when the application asks.** This is
+  the library's retry design; what a caller retries is in the guide's
+  [Retries](docs/guide/saving.md#retries).
+  - An open is retried up to `ConnectAttempts` times, only for a failure the provider classifies
+    as transient, all within the connection's connect timeout.
+  - An operation Nucleus runs on a context of its own (the manager's saves, deletes and loads,
+    streams until their first row, row reads, `KeyedRowLoader`) is retried only under the
+    provider's `RetryAttempts`, 1 (off) by default, and only for a `DatabaseException` with
+    `IsTransient` true, which is never true when the operation may have been applied. Each attempt
+    runs on a new context, and a save's checks and `PreSave` run once, before the first.
+  - Never retried: anything on a caller's context (its transaction is the caller's), a stream
+    that has handed out a row, and a commit whose outcome is unknown.
+  - The last attempt's failure is reported with `IsTransient` false and `Attempts`, so a caller
+    does not stack a retry on the policy.
+  - All of it goes through `OperationRetry` (Data); a new operation on a context of its own uses
+    it rather than a loop of its own, with a struct state and a static lambda, so the policy costs
+    nothing when it is off.
+  - Only the application decides that an operation is worth repeating, which is why the policy is
+    opt-in. A retry that repeated a write whose outcome is unknown, or hid the failure, would be
+    wrong, which is why those are never retried.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
   SQL Server names were removed in the November 2026 naming clean-up.
