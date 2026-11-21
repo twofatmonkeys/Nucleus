@@ -220,7 +220,7 @@ namespace TFM.Nucleus.IntegrationTests
                 await TwoMoreAsync(manager, name);
                 Expression<Func<IntCampaign, bool>> mine = c => c.Name!.StartsWith(name);
 
-                var page = await manager.LoadPagedAsync<IntCampaign>(1, 2, mine.Body, [], [nameof(IntCampaign.Vouchers)], Ct);
+                var page = await manager.LoadPagedAsync<IntCampaign>(1, 2, mine, new LoadOptions { Include = [nameof(IntCampaign.Vouchers)] }, Ct);
 
                 Assert.Equal(2, page.Count);
                 Assert.Equal(3, page.TotalCount);
@@ -237,7 +237,7 @@ namespace TFM.Nucleus.IntegrationTests
                 Expression<Func<IntCampaign, bool>> mine = c => c.Name!.StartsWith(name);
 
                 var streamed = new List<IntCampaign>();
-                await foreach (var c in manager.LoadStreamAsync<IntCampaign>(mine.Body, [], [nameof(IntCampaign.Vouchers)], Ct))
+                await foreach (var c in manager.LoadStreamAsync<IntCampaign>(mine, new LoadOptions { Include = [nameof(IntCampaign.Vouchers)] }, Ct))
                     streamed.Add(c);
 
                 Assert.Equal(3, streamed.Count);

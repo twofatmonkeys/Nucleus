@@ -94,6 +94,13 @@ namespace TFM.Nucleus.Data
         public IQueryable<TICoreObject> Exclude(System.Linq.Expressions.Expression<Func<TICoreObject, TFM.Nucleus.Abstractions.Interfaces.INucleusChildCollection>> collection) =>
             throw new NotSupportedException($"{GetType().Name} cannot exclude child collections.");
 
+        /// <summary>
+        /// The same query also returning the rows of a soft-deletable type that are marked
+        /// deleted, and those of its child collections.
+        /// </summary>
+        public IQueryable<TICoreObject> IncludeDeleted() =>
+            throw new NotSupportedException($"{GetType().Name} cannot include deleted rows.");
+
         public TICoreObject? Find(Guid id);
         public Task<TICoreObject?> FindAsync(Guid id);
 

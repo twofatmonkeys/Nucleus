@@ -29,7 +29,7 @@
                 using (var recorder = new SqlCommandRecorder())
                 {
                     await using (var context = await manager.CreateContextAsync<IntBenchWidget>(ContextOptions.Transactional, Ct))
-                        await context.BulkSaveAsync(widgets, Ct);
+                        await context.SaveAsync(widgets, Ct);
                     Assert.Equal(batches, recorder.Commands.Count(c => c.Contains("s.[_rowid] BETWEEN")));
                 }
 
@@ -38,7 +38,7 @@
 
                 saved.ForEach(w => w.Quantity += 1_000_000);
                 await using (var context = await manager.CreateContextAsync<IntBenchWidget>(ContextOptions.Transactional, Ct))
-                    await context.BulkSaveAsync(saved, Ct);
+                    await context.SaveAsync(saved, Ct);
 
                 var updated = await manager.Get<IntBenchWidget>().Where(w => w.Name!.StartsWith(prefix)).ToListAsync(Ct);
                 Assert.Equal(rows, updated.Count);

@@ -8,7 +8,7 @@ namespace TFM.Nucleus.IntegrationTests
             fixture.RequireSettings();
             using var schema = await fixture.SchemaLockAsync();
 
-            var status = fixture.Provider!.CheckSchemaIsCurrent(null);
+            var status = fixture.Provider!.CheckSchemaIsCurrent();
 
             Assert.Equal(DataProviderStatus.Ok, status);
         }

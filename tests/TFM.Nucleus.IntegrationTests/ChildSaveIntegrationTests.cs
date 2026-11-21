@@ -27,13 +27,13 @@ namespace TFM.Nucleus.IntegrationTests
                 manager.Save(bundle);
                 return;
             }
-            await using var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct);
+            await using var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct);
             switch (path)
             {
                 case SavePath.ContextSave: context.Save(bundle); break;
                 case SavePath.ContextSaveAsync: await context.SaveAsync(bundle, Ct); break;
-                case SavePath.ContextBulkSave: context.BulkSave([bundle]); break;
-                case SavePath.ContextBulkSaveAsync: await context.BulkSaveAsync([bundle], Ct); break;
+                case SavePath.ContextBulkSave: context.Save((IEnumerable<ICoreObject?>)[bundle]); break;
+                case SavePath.ContextBulkSaveAsync: await context.SaveAsync((IEnumerable<ICoreObject?>)[bundle], Ct); break;
             }
         }
 

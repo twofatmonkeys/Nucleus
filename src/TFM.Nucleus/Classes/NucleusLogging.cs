@@ -28,6 +28,14 @@ namespace TFM.Nucleus
 
         [DatabaseColumn]
         public DateTimeOffset LoggedAt { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
+
+        /// <summary>The application that wrote the entry: <see cref="NucleusOptions.AppName"/>.</summary>
+        [DatabaseColumn]
+        public string? AppName { get => GetValue<string>(); set => SetValue(value); }
+
+        /// <summary>The version of the application that wrote the entry: <see cref="NucleusOptions.AppVersion"/>.</summary>
+        [DatabaseColumn]
+        public string? AppVersion { get => GetValue<string>(); set => SetValue(value); }
     }
 
     /// <summary>
@@ -91,7 +99,7 @@ namespace TFM.Nucleus
                     batch.Add(entry);
                 }
                 if (batch.Count > 0)
-                    NucleusRuntime.Current.BulkSave(batch);
+                    NucleusRuntime.Current.Save(batch);
             }
             catch (Exception)
             {
@@ -136,6 +144,8 @@ namespace TFM.Nucleus
                     Message = formatter(state, exception),
                     Exception = exception?.ToString(),
                     LoggedAt = DateTimeOffset.Now,
+                    AppName = provider._options.AppName,
+                    AppVersion = provider._options.AppVersion,
                 });
             }
         }

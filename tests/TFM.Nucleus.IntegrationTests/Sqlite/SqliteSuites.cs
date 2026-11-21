@@ -8,6 +8,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteCrudIntegrationTests(SqliteFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteManagerLoadIntegrationTests(SqliteFixture fixture) : ManagerLoadIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteChildCollectionLoadIntegrationTests(SqliteFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]

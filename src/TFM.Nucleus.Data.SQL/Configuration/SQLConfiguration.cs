@@ -59,7 +59,7 @@ namespace TFM.Nucleus.Data.SQL
             if (ConnectionString != null)
                 return BuildFromRawConnectionString(ConnectionString, useTransaction);
             var builder = BuildConnectionStringBuilder();
-            builder.InitialCatalog = Database ?? throw new Exception("SQL database name is missing");
+            builder.InitialCatalog = Database ?? throw new SqlDataProviderException("SQL database name is missing", SqlDataProviderExceptionType.NotConfigured);
             return useTransaction ? new SqlConnection($"{builder.ConnectionString}") :
                 new SqlConnection($"{builder.ConnectionString}; Enlist = false");
         }
@@ -81,7 +81,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             SqlConnectionStringBuilder builder = [];
             var server = Server;
-            if (server?.Contains(':') ?? throw new Exception("SQL server name is missing"))
+            if (server?.Contains(':') ?? throw new SqlDataProviderException("SQL server name is missing", SqlDataProviderExceptionType.NotConfigured))
             {
                 var srv = server.Split(':')[0];
                 var port = server.Split(':')[1];
@@ -95,10 +95,10 @@ namespace TFM.Nucleus.Data.SQL
             else
             {
                 builder.IntegratedSecurity = false;
-                builder.UserID = Username ?? throw new Exception("SQL user name is missing");
-                builder.Password = Password ?? throw new Exception("SQL password is missing");
+                builder.UserID = Username ?? throw new SqlDataProviderException("SQL user name is missing", SqlDataProviderExceptionType.NotConfigured);
+                builder.Password = Password ?? throw new SqlDataProviderException("SQL password is missing", SqlDataProviderExceptionType.NotConfigured);
             }
-            builder.ApplicationName = AppName ?? throw new Exception("SQL application name is missing");
+            builder.ApplicationName = AppName ?? throw new SqlDataProviderException("SQL application name is missing", SqlDataProviderExceptionType.NotConfigured);
             builder.ConnectTimeout = ConnectTimeoutSeconds;
             builder.ConnectRetryCount = 4;
             builder.ConnectRetryInterval = 5;

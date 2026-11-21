@@ -106,10 +106,18 @@ place at its next start.
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
 `IObjectDataManager`, so it carries every operation a store needs (writes with tokens, deletes,
-`CreateContextAsync<T>` and `SubscribeToChangesAsync<T>` routed by type) and reads go through
-`Get<T>()` and `Rows<T>()`. A member added to it gets a default body that throws
-`NotSupportedException`, so another implementation still compiles. `DataProvider` on it is
-obsolete: it is the unrooted default provider and misroutes a rooted type. `ObjectDataAdaptor<T>`
+`CreateContextAsync<T>` and `SubscribeToChangesAsync<T>` routed by type). Reads are its loads
+(`LoadByIDAsync`, `LoadAsync`, `LoadPagedAsync`, `LoadStreamAsync`, each taking a typed predicate
+and a `LoadOptions`: names to exclude, names to include, and whether soft-deleted rows are seen),
+`Get<T>()` and `Rows<T>()`. Every public load forwards to one private core per shape
+(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`), which
+the adaptor calls too. A member added to an interface gets a default body, so another
+implementation still compiles: it forwards to an older member where one does the same work
+(`IDataContext.Save(IEnumerable)` to `BulkSave`), and throws `NotSupportedException` otherwise.
+`DataProvider` and `DataProviderStatus` on it are obsolete: they are the unrooted default provider
+and its status, and misroute a rooted type; `Status` is the worst status across providers. A load
+that takes an untyped `Expression` accepts a predicate whole or as its body
+(`ExpressionParser.Normalize` unwraps a lambda). `ObjectDataAdaptor<T>`
 is a real LINQ provider; it is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so `Where` and the
 async operators (`ToListAsync` and the rest) are declared on `IObjectDataAdaptor<T>`, or .NET 10's
 `System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. `ExpressionParser` lowers expression trees to the neutral query model,
@@ -169,12 +177,14 @@ runs, by a select of member IDs whose key is in the rows the delete's own condit
 depth, the `forceSave` links it must write, and the stored children removed from collections.
 Validation (`CoreObject.Validate`), the writes and the commit all read it, so they cannot disagree.
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
-manager, `IDataContext.Save`/`SaveAsync` and `BulkSave`): removal deletes first, as top-level
+manager and `IDataContext.Save`/`SaveAsync`, for one object or a batch): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
 roots. Every save path validates before it builds anything, once per object: the manager's `Save`
 and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
-reaches the caller as thrown, and `DbDataContext` in its save and bulk save builders, which also
-covers the manager's `BulkSave`. Each calls `ICoreObject.PrepareForSave`, which `CoreObject` runs as
+reaches the caller as thrown, and `DbDataContext` in its save and batch save builders, which also
+covers the manager's save of a batch of mixed types. There is one save: `BulkSave` is the obsolete
+name of the batch save, and which engine writes a batch is decided in `DbDataContext.ExecuteSQLAsync`
+by its parameter count, never by the caller. The synchronous path has no bulk engine. Each calls `ICoreObject.PrepareForSave`, which `CoreObject` runs as
 `Validate()`, the saveable checks, then `PreSave()` on the object and its changed dependents, from
 one walk of the dependents (a flag keeps `base.Validate()` from walking them a second time).
 `CoreObject`'s own saves do not validate, because they route through the manager or a context;
@@ -339,8 +349,8 @@ warning or an analyzer warning in new code fails CI.
   column plus a private `List<T>`, and never write `Attach*`, `Remove*Line`,
   `AcknowledgeRemovals` or removal tracking in an entity or store. Those are antipatterns here.
 - Save the root; the graph follows, and the root's `Validate()` runs the children's. Do not loop
-  over children calling `SaveAsync`, do not restate a child's rules on the parent, and do not call
-  `BulkSaveAsync` for children (oversized batches go to the bulk engine automatically).
+  over children calling `SaveAsync`, do not restate a child's rules on the parent, and do not look for a
+  bulk save: there is one save, and an oversized batch goes to the bulk engine by itself.
 - Deletes are declared with `[Deletable]` on the child type, on the collection property or on an
   owner. The child type's `[Deletable(false)]` wins, and a conflict is a startup error. Removing a
   stored child from an undeclared collection throws. Delete the root, or `DeleteWhere` on the

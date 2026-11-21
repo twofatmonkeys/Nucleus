@@ -92,7 +92,7 @@ namespace TFM.Nucleus
                 return [];
             if (dataSet.DataTableSchema == null)
                 throw new InvalidOperationException("DataSet does not have a DataTableSchema associated with it.");
-            return [.. dataSet.BindRows<T>()];
+            return [.. dataSet.BindRowsCore<T>()];
         }
 
         event NotifyCollectionChangedEventHandler? INotifyCollectionChanged.CollectionChanged

@@ -34,15 +34,15 @@ namespace TFM.Nucleus.IntegrationTests
                     await manager.SaveAsync(roster, Ct);
                     return;
                 case SavePath.ManagerBulkSave:
-                    manager.BulkSave([roster]);
+                    manager.Save((IEnumerable<ICoreObject?>)[roster]);
                     return;
             }
-            await using var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct);
+            await using var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct);
             if (path == SavePath.ContextSaveAsync)
                 await roster.SaveAsync(context, Ct);
             else
             {
-                await context.BulkSaveAsync([roster], Ct);
+                await context.SaveAsync((IEnumerable<ICoreObject?>)[roster], Ct);
                 ((ICoreObject)roster).CommitChanges();
             }
         }
@@ -316,7 +316,7 @@ namespace TFM.Nucleus.IntegrationTests
                 Assert.Equal([1, 2, 3], loaded.OrderBy(o => o.Name).Select(o => o.Items.Count));
 
                 System.Linq.Expressions.Expression<Func<IntLazyOwner, bool>> mine = o => o.Name!.StartsWith(name);
-                var page = await manager.LoadPagedAsync<IntLazyOwner>(0, 2, mine.Body, [], [nameof(IntLazyOwner.Items)], Ct);
+                var page = await manager.LoadPagedAsync<IntLazyOwner>(0, 2, mine, new LoadOptions { Include = [nameof(IntLazyOwner.Items)] }, Ct);
                 Assert.Equal(2, page.Count);
                 Assert.All(page, owner => Assert.True(owner.Items.IsLoaded));
             }
@@ -589,7 +589,7 @@ namespace TFM.Nucleus.IntegrationTests
             await WithIncludedTargetsAsync(async (manager, name) =>
             {
                 System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> mine = s => s.Name!.StartsWith(name);
-                var page = await manager.LoadPagedAsync<IntLinkSource>(1, 2, mine.Body, [], [nameof(IntLinkSource.Target)], Ct);
+                var page = await manager.LoadPagedAsync<IntLinkSource>(1, 2, mine, new LoadOptions { Include = [nameof(IntLinkSource.Target)] }, Ct);
 
                 Assert.Equal(2, page.Count);
                 Assert.Equal(3, page.TotalCount);
@@ -604,7 +604,7 @@ namespace TFM.Nucleus.IntegrationTests
             {
                 System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> mine = s => s.Name!.StartsWith(name);
                 var streamed = new List<IntLinkSource>();
-                await foreach (var source in manager.LoadStreamAsync<IntLinkSource>(mine.Body, [], [nameof(IntLinkSource.Target)], Ct))
+                await foreach (var source in manager.LoadStreamAsync<IntLinkSource>(mine, new LoadOptions { Include = [nameof(IntLinkSource.Target)] }, Ct))
                     streamed.Add(source);
 
                 Assert.Equal(3, streamed.Count);
@@ -648,7 +648,7 @@ namespace TFM.Nucleus.IntegrationTests
             System.Linq.Expressions.Expression<Func<IntLinkSource, bool>> none = s => s.Name == "none";
 
             var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
-                manager.LoadAsync<IntLinkSource>(none.Body, [], [nameof(IntLinkSource.Name)], Ct));
+                manager.LoadAsync<IntLinkSource>(none, new LoadOptions { Include = [nameof(IntLinkSource.Name)] }, Ct));
             Assert.Contains("[LinkedObject]", ex.Message);
         }
 

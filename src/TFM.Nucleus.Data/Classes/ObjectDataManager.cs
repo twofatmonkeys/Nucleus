@@ -35,6 +35,9 @@ namespace TFM.Nucleus.Data
             "Use the routed members instead: CreateContextAsync<T>, SubscribeToChangesAsync<T>, Rows<T>, SaveAsync and DeleteAsync.")]
         IDataProvider DataProvider { get; }
         IObjectSchemaProvider ObjectSchema { get; }
+
+        /// <summary>The status of the unrooted default provider only.</summary>
+        [Obsolete("DataProviderStatus reports the unrooted default provider only. Use Status, which reports the worst status across every provider.")]
         DataProviderStatus DataProviderStatus { get; }
         Task<DataProviderStatus> InitializeDataProviderAsync();
         IObjectDataAdaptor<T> Get<T>() where T : ICoreObject<T>, new();
@@ -113,6 +116,68 @@ namespace TFM.Nucleus.Data
         /// </summary>
         Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support caller-owned contexts.");
+
+        /// <summary>
+        /// The worst status among the registered providers: <see cref="DataProviderStatus.Ok"/>
+        /// only when every one of them is.
+        /// </summary>
+        DataProviderStatus Status =>
+            throw new NotSupportedException($"{GetType().Name} does not report a status across providers.");
+
+        /// <summary>
+        /// Saves objects of any types, as <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
+        /// saves objects of one: in one transaction per provider that stores them, so a batch
+        /// spanning providers is not atomic. A batch too large for ordinary statements is
+        /// written by the provider's bulk engine; the caller does not choose.
+        /// </summary>
+        Task SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException($"{GetType().Name} does not support saving a batch of mixed types.");
+
+        /// <summary>
+        /// Loads by primary key, or null when there is no such row. A <c>[Cacheable]</c> type
+        /// answers from its cache.
+        /// </summary>
+        Task<T?> LoadByIDAsync<T>(Guid id, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadByIDAsync<T>(id, null, cancellationToken);
+
+        /// <summary>
+        /// Loads by primary key as <paramref name="options"/> say: child collections left out,
+        /// lazy collections and references brought in, deleted rows seen. A <c>[Cacheable]</c>
+        /// type answers from its cache only when the options ask for nothing, since the cache
+        /// holds whole live objects.
+        /// </summary>
+        Task<T?> LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading by ID.");
+
+        /// <summary>
+        /// Loads the rows <paramref name="predicate"/> matches (every row when null), each with
+        /// its child collections. Never null: no match is an empty collection.
+        /// </summary>
+        Task<INucleusCollection<T>> LoadAsync<T>(Expression<Func<T, bool>>? predicate = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadAsync(predicate, null, cancellationToken);
+
+        /// <summary>
+        /// Loads the rows <paramref name="predicate"/> matches (every row when null) as
+        /// <paramref name="options"/> say. Never null: no match is an empty collection.
+        /// </summary>
+        Task<INucleusCollection<T>> LoadAsync<T>(Expression<Func<T, bool>>? predicate, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support loading by predicate.");
+
+        /// <summary>
+        /// One page of the rows <paramref name="predicate"/> matches (every row when null) and the
+        /// unpaged total, in a single round trip.
+        /// </summary>
+        Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression<Func<T, bool>>? predicate = null, LoadOptions? options = null,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support paged loads.");
+
+        /// <summary>
+        /// Streams the rows <paramref name="predicate"/> matches (every row when null). The child
+        /// graph is fetched first, and each row is yielded with its children attached.
+        /// </summary>
+        IAsyncEnumerable<T> LoadStreamAsync<T>(Expression<Func<T, bool>>? predicate = null, LoadOptions? options = null,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            throw new NotSupportedException($"{GetType().Name} does not support streamed loads.");
 
         /// <summary>
         /// A read of rows rather than entities over the rows <paramref name="predicate"/> matches
@@ -210,8 +275,31 @@ namespace TFM.Nucleus.Data
             ProviderFor<T>().SubscribeToChangesAsync<T>(token);
 
         public IDataProviderRegistry Providers => _registry;
-        public DataProviderStatus DataProviderStatus => DataProvider.Status;
-        public IDataProvider DataProvider =>
+        /// <summary>The status of the unrooted default provider only. <see cref="Status"/> covers every provider.</summary>
+        [Obsolete("DataProviderStatus reports the unrooted default provider only. Use Status, which reports the worst status across every provider.")]
+        public DataProviderStatus DataProviderStatus => DefaultProvider.Status;
+
+        /// <inheritdoc cref="IObjectDataManager.Status"/>
+        public DataProviderStatus Status
+        {
+            get
+            {
+                var worst = DataProviderStatus.Ok;
+                foreach (var provider in _registry.AllProviders)
+                {
+                    if (provider.Status != DataProviderStatus.Ok)
+                        worst = provider.Status;
+                }
+                return worst;
+            }
+        }
+
+        /// <inheritdoc cref="IObjectDataManager.DataProvider"/>
+        [Obsolete("DataProvider is the unrooted default provider and misroutes types registered under a rooted provider. " +
+            "Use the routed members instead: CreateContextAsync<T>, SubscribeToChangesAsync<T>, Rows<T>, SaveAsync and DeleteAsync.")]
+        public IDataProvider DataProvider => DefaultProvider;
+
+        private IDataProvider DefaultProvider =>
             _registry.AllProviders.FirstOrDefault(p => p.RootType == null) ?? _registry.AllProviders[0];
         public IObjectSchemaProvider ObjectSchema => _objectSchema;
 
@@ -530,15 +618,15 @@ namespace TFM.Nucleus.Data
         }
 
         private NucleusCollection<T> LoadAllFromProvider<T>() where T : ICoreObject<T>, new() =>
-            (NucleusCollection<T>?)Load<T>(Expression.Constant(true)) ?? [];
+            LoadCore<T>(Expression.Constant(true), [], [], false);
 
         /// <summary>
         /// One page of rows plus the unpaged total count, fetched in a single round trip.
-        /// The optional expression is a LINQ Where tree (or null for all rows).
+        /// The optional expression is a predicate, a LINQ Where tree, or null for all rows.
         /// </summary>
         public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression = null, CancellationToken cancellationToken = default)
             where T : ICoreObject<T>, new() =>
-            LoadPagedAsync<T>(skip, take, expression, [], cancellationToken);
+            LoadPagedCoreAsync<T>(skip, take, expression, [], [], false, cancellationToken);
 
         /// <summary>
         /// One page of rows plus the unpaged total count, in a single round trip, leaving the
@@ -547,15 +635,30 @@ namespace TFM.Nucleus.Data
         public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
             IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken = default)
             where T : ICoreObject<T>, new() =>
-            LoadPagedAsync<T>(skip, take, expression, excludedCollections, [], cancellationToken);
+            LoadPagedCoreAsync<T>(skip, take, expression, excludedCollections, [], false, cancellationToken);
 
         /// <summary>
         /// One page of rows plus the unpaged total count, in a single round trip, leaving the
         /// named child collections unloaded and loading the named lazy ones with the page.
         /// </summary>
-        public async Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
+        public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression? expression,
             IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
             CancellationToken cancellationToken = default)
+            where T : ICoreObject<T>, new() =>
+            LoadPagedCoreAsync<T>(skip, take, expression, excludedCollections, includedCollections, false, cancellationToken);
+
+        /// <inheritdoc cref="IObjectDataManager.LoadPagedAsync{T}(int, int, Expression{Func{T, bool}}?, LoadOptions?, CancellationToken)"/>
+        public Task<PagedResult<T>> LoadPagedAsync<T>(int skip, int take, Expression<Func<T, bool>>? predicate, LoadOptions? options = null,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return LoadPagedCoreAsync<T>(skip, take, predicate, options.Exclude, options.Include, options.IncludeDeleted, cancellationToken);
+        }
+
+        internal async Task<PagedResult<T>> LoadPagedCoreAsync<T>(int skip, int take, Expression? expression,
+            IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted,
+            CancellationToken cancellationToken)
             where T : ICoreObject<T>, new()
         {
             ArgumentOutOfRangeException.ThrowIfNegative(skip);
@@ -565,7 +668,7 @@ namespace TFM.Nucleus.Data
             if (expression != null && ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return new PagedResult<T>([]) { Skip = skip, Take = take, TotalCount = 0 };
             var provider = ProviderFor<T>();
-            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded, included);
+            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded, included, includeDeleted);
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
@@ -582,34 +685,45 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>Loads by primary key; [Cacheable] types answer from the Guid index in O(1).</summary>
-        public T? LoadByID<T>(Guid id) where T : ICoreObject<T>, new() => LoadByID<T>(id, []);
+        public T? LoadByID<T>(Guid id) where T : ICoreObject<T>, new() => LoadByIDCore<T>(id, [], [], false);
 
         /// <summary>
         /// Loads by primary key, leaving the named child collections unloaded. [Cacheable] types
         /// answer from the cache only when nothing is excluded, since the cache holds whole objects.
         /// </summary>
         public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new() =>
-            LoadByID<T>(id, excludedCollections, []);
+            LoadByIDCore<T>(id, excludedCollections, [], false);
 
         /// <summary>
         /// Loads by primary key, leaving the named child collections unloaded and loading the
         /// named lazy ones with it. [Cacheable] types answer from the cache only when nothing is
         /// excluded or included, since the cache holds whole objects.
         /// </summary>
-        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new()
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
+        public T? LoadByID<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new() =>
+            LoadByIDCore<T>(id, excludedCollections, includedCollections, false);
+
+        /// <summary>The synchronous form of <see cref="LoadByIDAsync{T}(Guid, LoadOptions?, CancellationToken)"/>.</summary>
+        public T? LoadByID<T>(Guid id, LoadOptions? options) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return LoadByIDCore<T>(id, options.Exclude, options.Include, options.IncludeDeleted);
+        }
+
+        internal T? LoadByIDCore<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(excludedCollections);
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections))
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
                 return FromCache<T>(id);
-            return Load<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections) is { } loaded ? loaded.FirstOrDefault() : default;
+            return LoadCore<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted).FirstOrDefault();
         }
 
-        /// <inheritdoc cref="LoadByIDAsync{T}(Guid, IReadOnlyCollection{string}, IReadOnlyCollection{string}, CancellationToken)"/>
+        /// <inheritdoc cref="IObjectDataManager.LoadByIDAsync{T}(Guid, CancellationToken)"/>
         public Task<T?> LoadByIDAsync<T>(Guid id, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
-            LoadByIDAsync<T>(id, [], [], cancellationToken);
+            LoadByIDCoreAsync<T>(id, [], [], false, cancellationToken);
 
         /// <summary>
         /// Loads by primary key on the asynchronous path, leaving the named child collections
@@ -617,21 +731,40 @@ namespace TFM.Nucleus.Data
         /// cache when nothing is excluded or included; a cold cache is filled on the synchronous
         /// path once, as <c>Load&lt;T&gt;()</c> fills it, since the cache has no asynchronous fill.
         /// </summary>
-        public async Task<T?> LoadByIDAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
-            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
+        public Task<T?> LoadByIDAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadByIDCoreAsync<T>(id, excludedCollections, includedCollections, false, cancellationToken);
+
+        /// <inheritdoc cref="IObjectDataManager.LoadByIDAsync{T}(Guid, LoadOptions?, CancellationToken)"/>
+        /// <remarks>
+        /// A cold cache is filled on the synchronous path once, as <c>Load&lt;T&gt;()</c> fills
+        /// it, since the cache has no asynchronous fill.
+        /// </remarks>
+        public Task<T?> LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return LoadByIDCoreAsync<T>(id, options.Exclude, options.Include, options.IncludeDeleted, cancellationToken);
+        }
+
+        internal async Task<T?> LoadByIDCoreAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
+            bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(excludedCollections);
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections))
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
                 return FromCache<T>(id);
-            return await LoadAsync<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, cancellationToken) is { } loaded ? loaded.FirstOrDefault() : default;
+            return (await LoadCoreAsync<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted, cancellationToken)).FirstOrDefault();
         }
 
-        /// <summary>A [Cacheable] type with nothing excluded or included: the cache holds whole objects.</summary>
-        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new() =>
-            excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true };
+        /// <summary>
+        /// A [Cacheable] type with nothing excluded or included and live rows only: the cache
+        /// holds whole live objects.
+        /// </summary>
+        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new() =>
+            !includeDeleted && excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true };
 
         private T? FromCache<T>(Guid id) where T : ICoreObject<T>, new()
         {
@@ -683,15 +816,12 @@ namespace TFM.Nucleus.Data
             return included;
         }
 
-        /// <summary>The select for a load, without the child queries of excluded collections.</summary>
-        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded) =>
-            ParseSelect<T>(provider, expression, excluded, []);
-
         /// <summary>
-        /// The select for a load: without the child queries of excluded collections, and with
-        /// those of included lazy ones, which a plain select leaves out.
+        /// The select for a load: without the child queries of excluded collections, with those
+        /// of included lazy ones, which a plain select leaves out, and seeing soft-deleted rows
+        /// when asked to.
         /// </summary>
-        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded, IPropertySchema[] included)
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded, IPropertySchema[] included, bool includeDeleted)
         {
             var query = ParseSelectCore<T>(provider, expression, excluded);
             foreach (var property in included)
@@ -703,6 +833,8 @@ namespace TFM.Nucleus.Data
                 else
                     query.IncludeChildCollection(property.Name);
             }
+            if (includeDeleted)
+                query.IncludeDeleted = true;
             return query;
         }
 
@@ -749,12 +881,19 @@ namespace TFM.Nucleus.Data
         Task INucleusRuntime.DeleteAsync(ICoreObject obj, CancellationToken token) =>
             (Task)InvokeForType(nameof(DeleteAsync), obj, [obj, token])!;
 
+        [Obsolete("Use Save. A batch too large for ordinary statements is written by the bulk engine automatically.")]
+        [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+        public void BulkSave(IEnumerable<ICoreObject?> objs) => Save(objs);
+
         /// <summary>
-        /// Routes each object to its owning provider and bulk-saves per provider in one
-        /// transaction each; cross-provider batches are not atomic.
+        /// Saves objects of any types: each is routed to the provider that stores it, and each
+        /// provider's objects are saved in one transaction, so a batch spanning providers is not
+        /// atomic. Nulls are skipped. Statements over the provider's parameter limit run as
+        /// several commands; the bulk engine takes them on the asynchronous path only.
         /// </summary>
-        public void BulkSave(IEnumerable<ICoreObject?> objs)
+        public void Save(IEnumerable<ICoreObject?> objs)
         {
+            ArgumentNullException.ThrowIfNull(objs);
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
@@ -764,11 +903,34 @@ namespace TFM.Nucleus.Data
                 {
                     try
                     {
-                        context.BulkSave(list);
+                        context.Save(list);
                     }
                     catch
                     {
                         context.TryRollback();
+                        throw;
+                    }
+                }
+                MarkSaved(list, list.Select(o => o.GetType()).Distinct());
+            }
+        }
+
+        /// <inheritdoc cref="IObjectDataManager.SaveAsync(IEnumerable{ICoreObject}, CancellationToken)"/>
+        public async Task SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(objs);
+            foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
+            {
+                var list = providerGroup.ToList();
+                await using (var context = await providerGroup.Key.CreateContextAsync(ContextOptions.Transactional, cancellationToken))
+                {
+                    try
+                    {
+                        await context.SaveAsync(list, cancellationToken);
+                    }
+                    catch
+                    {
+                        await context.TryRollbackAsync(cancellationToken);
                         throw;
                     }
                 }
@@ -851,70 +1013,116 @@ namespace TFM.Nucleus.Data
             LoadByID<T>(id, excludedCollections);
 
         NucleusCollection<T> INucleusRuntime.LoadWhere<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) =>
-            (NucleusCollection<T>?)Load<T>(expression, excludedCollections) ?? [];
+            LoadCore<T>(expression, excludedCollections, [], false);
 
-        async Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken token) =>
-            (NucleusCollection<T>?)await LoadAsync<T>(expression, excludedCollections, token) ?? [];
+        Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken token) =>
+            LoadCoreAsync<T>(expression, excludedCollections, [], false, token);
 
         NucleusCollection<T> INucleusRuntime.LoadWhere<T>(Expression expression) =>
-            (NucleusCollection<T>?)Load<T>(expression) ?? [];
+            LoadCore<T>(expression, [], [], false);
 
-        async Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression expression, CancellationToken token) =>
-            (NucleusCollection<T>?)await LoadAsync<T>(expression, token) ?? [];
+        Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression expression, CancellationToken token) =>
+            LoadCoreAsync<T>(expression, [], [], false, token);
+
+        NucleusCollection<T> INucleusRuntime.LoadWhere<T>(Expression<Func<T, bool>> predicate, LoadOptions? options)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            options ??= LoadOptions.Default;
+            return LoadCore<T>(predicate, options.Exclude, options.Include, options.IncludeDeleted);
+        }
+
+        Task<NucleusCollection<T>> INucleusRuntime.LoadWhereAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(predicate);
+            options ??= LoadOptions.Default;
+            return LoadCoreAsync<T>(predicate, options.Exclude, options.Include, options.IncludeDeleted, cancellationToken);
+        }
+
+        T? INucleusRuntime.LoadByID<T>(Guid id, LoadOptions? options) where T : default => LoadByID<T>(id, options);
+
+        Task<T?> INucleusRuntime.LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
+            LoadByIDAsync<T>(id, options, cancellationToken);
 
         #endregion
         /// <summary>Loads the matching rows, each with its child collections attached.</summary>
         public INucleusCollection<T>? Load<T>(Expression expression) where T : ICoreObject<T>, new() =>
-            Load<T>(expression, []);
+            LoadCore<T>(expression, [], [], false);
 
         /// <summary>
         /// Loads the matching rows with their child collections, except the named ones, which
         /// are neither queried nor transferred and come back unloaded.
         /// </summary>
         public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections) where T : ICoreObject<T>, new() =>
-            Load<T>(expression, excludedCollections, []);
+            LoadCore<T>(expression, excludedCollections, [], false);
 
         /// <summary>
         /// Loads the matching rows with their child collections, except the named excluded ones,
         /// and with the named lazy ([RetrieveOnDemand]) ones, which come in the same round trip.
         /// </summary>
-        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new()
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
+        public INucleusCollection<T>? Load<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections) where T : ICoreObject<T>, new() =>
+            LoadCore<T>(expression, excludedCollections, includedCollections, false);
+
+        /// <summary>The synchronous form of <see cref="LoadAsync{T}(Expression{Func{T, bool}}?, LoadOptions?, CancellationToken)"/>.</summary>
+        public INucleusCollection<T> Load<T>(Expression<Func<T, bool>>? predicate, LoadOptions? options = null) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return LoadCore<T>(predicate ?? (Expression)Expression.Constant(true), options.Exclude, options.Include, options.IncludeDeleted);
+        }
+
+        internal NucleusCollection<T> LoadCore<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
-                return new NucleusCollection<T>();
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
+                return [];
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
             using var context = ProviderFor<T>().CreateContext();
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, this, excluded);
-            return rows;
+            return ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, this, excluded);
         }
 
-        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new()
-        {
-            return await LoadAsync<T>(expression, CancellationToken.None);
-        }
+        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new() =>
+            await LoadCoreAsync<T>(expression, [], [], false, CancellationToken.None);
 
         /// <inheritdoc cref="Load{T}(Expression)"/>
-        public Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
-            LoadAsync<T>(expression, [], cancellationToken);
+        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            await LoadCoreAsync<T>(expression, [], [], false, cancellationToken);
 
         /// <inheritdoc cref="Load{T}(Expression, IReadOnlyCollection{string})"/>
-        public Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
-            LoadAsync<T>(expression, excludedCollections, [], cancellationToken);
+        public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            await LoadCoreAsync<T>(expression, excludedCollections, [], false, cancellationToken);
 
-        /// <inheritdoc cref="Load{T}(Expression, IReadOnlyCollection{string}, IReadOnlyCollection{string})"/>
+        /// <summary>
+        /// Loads the matching rows with their child collections, except the named excluded ones,
+        /// and with the named lazy ([RetrieveOnDemand]) ones, which come in the same round trip.
+        /// </summary>
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
         public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
-            IReadOnlyCollection<string> includedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+            IReadOnlyCollection<string> includedCollections, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            await LoadCoreAsync<T>(expression, excludedCollections, includedCollections, false, cancellationToken);
+
+        /// <inheritdoc cref="IObjectDataManager.LoadAsync{T}(Expression{Func{T, bool}}?, CancellationToken)"/>
+        public Task<INucleusCollection<T>> LoadAsync<T>(Expression<Func<T, bool>>? predicate = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadAsync(predicate, null, cancellationToken);
+
+        /// <inheritdoc cref="IObjectDataManager.LoadAsync{T}(Expression{Func{T, bool}}?, LoadOptions?, CancellationToken)"/>
+        public async Task<INucleusCollection<T>> LoadAsync<T>(Expression<Func<T, bool>>? predicate, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return await LoadCoreAsync<T>(predicate ?? (Expression)Expression.Constant(true), options.Exclude, options.Include, options.IncludeDeleted, cancellationToken);
+        }
+
+        internal async Task<NucleusCollection<T>> LoadCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
-                return new NucleusCollection<T>();
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
+                return [];
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, this, excluded);
-            return rows;
+            return ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, this, excluded);
         }
 
         /// <summary>
@@ -922,7 +1130,7 @@ namespace TFM.Nucleus.Data
         /// collection, and each row is yielded with its children attached.
         /// </summary>
         public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
-            LoadStreamAsync<T>(expression, [], cancellationToken);
+            LoadStreamCoreAsync<T>(expression, [], [], false, cancellationToken);
 
         /// <summary>
         /// Streams the matching rows, leaving the named child collections unloaded: their
@@ -930,21 +1138,34 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
-            LoadStreamAsync<T>(expression, excludedCollections, [], cancellationToken);
+            LoadStreamCoreAsync<T>(expression, excludedCollections, [], false, cancellationToken);
 
         /// <summary>
         /// Streams the matching rows, leaving the named child collections unloaded and fetching
         /// the named lazy ones first with the other child queries.
         /// </summary>
-        public async IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
-            IReadOnlyCollection<string> includedCollections,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
+        public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new() =>
+            LoadStreamCoreAsync<T>(expression, excludedCollections, includedCollections, false, cancellationToken);
+
+        /// <inheritdoc cref="IObjectDataManager.LoadStreamAsync{T}(Expression{Func{T, bool}}?, LoadOptions?, CancellationToken)"/>
+        public IAsyncEnumerable<T> LoadStreamAsync<T>(Expression<Func<T, bool>>? predicate = null, LoadOptions? options = null,
+            CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
+        {
+            options ??= LoadOptions.Default;
+            return LoadStreamCoreAsync<T>(predicate ?? (Expression)Expression.Constant(true), options.Exclude, options.Include, options.IncludeDeleted, cancellationToken);
+        }
+
+        internal async IAsyncEnumerable<T> LoadStreamCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted,
+            [EnumeratorCancellation] CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 yield break;
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included);
+            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
             using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
             var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, this, cancellationToken);
 

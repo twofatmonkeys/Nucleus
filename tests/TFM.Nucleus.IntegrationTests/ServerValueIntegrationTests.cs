@@ -76,8 +76,8 @@
             try
             {
                 var items = Enumerable.Range(0, rows).Select(i => new IntStampedRow { Name = $"{prefix}-{i}" }).ToList();
-                await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                    await context.BulkSaveAsync(items, Ct);
+                await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                    await context.SaveAsync(items, Ct);
 
                 var stored = (await manager.Get<IntStampedRow>().Where(r => r.Name!.StartsWith(prefix)).ToListAsync(Ct)).ToDictionary(r => r.ID);
                 Assert.Equal(rows, stored.Count);
@@ -87,8 +87,8 @@
                 var inserted = loaded.ToDictionary(r => r.ID, r => r.StampedAt);
                 loaded.ForEach(r => r.Name += "-u");
                 await Task.Delay(20, Ct);
-                await using (var context = await manager.DataProvider.CreateContextAsync(ContextOptions.Transactional, Ct))
-                    await context.BulkSaveAsync(loaded, Ct);
+                await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
+                    await context.SaveAsync(loaded, Ct);
 
                 var updated = (await manager.Get<IntStampedRow>().Where(r => r.Name!.StartsWith(prefix)).ToListAsync(Ct)).ToDictionary(r => r.ID);
                 Assert.All(loaded, r => Assert.True(r.StampedAt > inserted[r.ID], "The bulk update's StampedAt was not read back."));

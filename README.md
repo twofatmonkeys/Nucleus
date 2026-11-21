@@ -77,7 +77,7 @@ services.AddNucleusSqliteDataProvider(options =>
 
 `InitializeDataProviderAsync` connects, then creates or migrates the database, tables, indexes and full-text indexes (and, on PostgreSQL, the change notification triggers) to match your entity classes. Set `NucleusOptions.ReadOnlySchema` to `true` to make it verify without writing.
 
-How a table is migrated depends on what changed. A table that only lacks columns (a new property, or the soft-delete columns of a type newly made soft-deletable) has them added in place with `ALTER TABLE`. Every column is created NULL, so the change is metadata only and takes no time at any table size, and existing rows read the new column as null. A column whose type or size changed means a rebuild: the table is renamed, created again and its rows copied across in one transaction, which takes time in proportion to the table. A column the entity no longer has is left in the table either way. Each schema statement runs under `SchemaCommandTimeoutSeconds` (15 minutes by default).
+How a table is migrated depends on what changed. A table that only lacks columns (a new property, or the soft-delete columns of a type newly made soft-deletable) has them added in place with `ALTER TABLE`. A new property's column is created NULL, so the change is metadata only and takes no time at any table size, and existing rows read the new column as null. The soft-delete flag is the exception: it is created `NOT NULL` with a default of 0 (see [Behaviour changes](#behaviour-changes) for what that costs on SQL Server). A column whose type or size changed means a rebuild: the table is renamed, created again and its rows copied across in one transaction, which takes time in proportion to the table. A column the entity no longer has is left in the table either way. Each schema statement runs under `SchemaCommandTimeoutSeconds` (15 minutes by default).
 
 Define entities. Properties are backed by the framework's change-tracking dictionaries through `GetValue`/`SetValue` rather than by fields:
 
@@ -140,7 +140,7 @@ var removed = await CoreObject.DeleteWhereAsync<Customer>(c => c.Name == "Old");
 
 ### The manager interface
 
-DI registers `IObjectDataManager` and nothing else, and it is what an application service or a
+`IObjectDataManager` is the data surface DI registers, and it is what an application service or a
 store takes. Every call routes the entity type to the provider of its nearest registered root,
 runs in a transaction of its own, evicts the `[Cacheable]` cache when it commits and marks the
 objects saved. Do not cast it to `ObjectDataManager`.
@@ -150,13 +150,32 @@ objects saved. Do not cast it to `ObjectDataManager`.
 | `Get<T>()` | The LINQ adaptor: `Where`, `Exclude`, `Include`, `FindAsync(id, token)`, `ToListAsync`, `ToPagedResultAsync(skip, take, token)` and the other async operators. |
 | `Rows<T>(predicate)` | Rows of values rather than entities. See [Row reads](#row-reads). |
 | `SaveAsync(obj, token)` | Saves the object with its child collections and forceSave links. |
-| `SaveAsync(objs, token)` | Saves a batch of one type in one transaction. |
+| `SaveAsync(objs, token)` | Saves a batch of one type in one transaction. A batch of mixed types (`IEnumerable<ICoreObject?>`) is saved in one transaction per provider. A batch too large for ordinary statements goes to the provider's bulk engine by itself. |
+| `LoadByIDAsync<T>(id, token)`, `LoadByIDAsync<T>(id, options, token)` | One row by primary key, or null. A `[Cacheable]` type answers from its cache unless the options ask for something. |
+| `LoadAsync<T>(predicate, token)`, `LoadAsync<T>(predicate, options, token)` | The matching rows (every row for a null predicate) with their child collections. Never null. |
+| `LoadPagedAsync<T>(skip, take, predicate, options, token)` | One page and the unpaged total in a single round trip. |
+| `LoadStreamAsync<T>(predicate, options, token)` | The matching rows as an `IAsyncEnumerable<T>`. |
 | `DeleteAsync(obj, token)`, `DeleteAsync(objs, token)` | Deletes, cascading to child rows. The type must be `[Deletable]`. |
 | `DeleteWhereAsync<T>(predicate, token)` | Deletes by predicate without loading. |
 | `LoadChildCollectionAsync(collection, token)` | Loads an excluded or lazy collection. |
 | `SubscribeToChangesAsync<T>(token)` | Change notifications from the provider that owns `T`. |
 | `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types. See the known limits: it commits on dispose unless rolled back, and the manager's eviction does not apply. |
 | `InitializeDataProviderAsync()` | Creates or migrates every registered provider's schema. |
+| `Status` | The worst status among the registered providers; `Ok` only when every one is. |
+
+A load takes its extras as a `LoadOptions`, so the names cannot be passed in each other's place:
+
+```csharp
+var options = new LoadOptions
+{
+    Exclude = [nameof(Roster.Notes)],        // child collections left unloaded
+    Include = [nameof(Roster.Lines)],        // a lazy collection, a linked collection or a [LinkedObject]
+    IncludeDeleted = true,                   // also the soft-deleted rows
+};
+var roster  = await data.LoadByIDAsync<Roster>(id, options, ct);
+var current = await data.LoadAsync<Roster>(r => r.Name != null, ct);
+var page    = await data.LoadPagedAsync<Roster>(skip: 0, take: 20, r => r.Name != null, cancellationToken: ct);
+```
 
 ```csharp
 public sealed class RosterStore(IObjectDataManager data)
@@ -185,10 +204,13 @@ public sealed class RosterStore(IObjectDataManager data)
 }
 ```
 
-`DataProvider` is obsolete: it is the unrooted default provider, so a context opened or a
-subscription made through it goes to the wrong database for a type under a rooted provider. The
-synchronous writes, `BulkSave` and the `Load` overloads that take an `Expression` stay on the
-concrete class for the static `CoreObject` API.
+`DataProvider` and `DataProviderStatus` are obsolete: they are the unrooted default provider and
+its status, so a context opened or a subscription made through `DataProvider` goes to the wrong
+database for a type under a rooted provider. Use the routed members and `Status`. The synchronous
+writes and loads stay on the concrete class for the static `CoreObject` API. `BulkSave` is
+obsolete everywhere: there is one save, and it picks the bulk engine by itself. On the concrete
+class the overloads that took two lists of names are obsolete in favour of `LoadOptions`, and a
+load that takes an untyped `Expression` accepts a predicate whole or as its `Body`.
 
 ## PostgreSQL
 
@@ -396,7 +418,7 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 |---|---|
 | `[Cacheable(refreshInterval, cacheLifetime)]` | Keeps the whole collection plus a Guid index in memory. Both values are in seconds and default to 120 and 900. |
 | `[Deletable(DeleteBehavior.Hard)]` | Deletes physically remove rows. `[Deletable]` alone is hard. |
-| `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless `IncludeDeleted` is set on the query. |
+| `[Deletable(DeleteBehavior.Soft)]` | Deletes flag the row through `IsDeleted` and `DeletedAt` system columns, and reads filter them out unless the read asks for them: `LoadOptions.IncludeDeleted` on a manager load, or `.IncludeDeleted()` on a query from `Get<T>()`. |
 | `[Deletable(false)]` | On a child type: its rows are never deleted, by any route. A declaration above it that would delete them fails the schema. |
 | `[SuppressDB]` | Excludes the type from schema management entirely. |
 | `[InitializePriority(n)]` | Intended to order type initialisation, descending. Parsed but not currently applied. |
@@ -473,7 +495,7 @@ If more than one of a missing table's old tables exists, nothing is renamed: ini
 |---|---|
 | `[SuppressLogging]` | Omits the type or property from audit summaries. Note it is inherited, so applying it to a base class silences every descendant. |
 | `[AbbreviatedLogging]` | Records that the property changed without recording the values, for long or sensitive data. |
-| `[LinkWhenLogging]` | Includes the linked object's ID in the audit entry. |
+| `[LinkWhenLogging]` | Marks a linked object whose type and ID are to be attached to the log entry's linked objects. Not applied yet: the attribute is read into the schema and nothing acts on it. See [Known limits](#known-limits). |
 | `[RetrieveOnDemand]` | On a child collection, makes it lazy (see [Relationships](#relationships)). On any other property it has no effect. |
 
 ## Static API reference
@@ -491,7 +513,7 @@ These live on `CoreObject` and forward to the runtime that `AddNucleusData()` pu
 | `LoadByID<T>(Guid, params Expression<Func<T, INucleusChildCollection>>[] exclude)` | `T?` | Leaves the selected child collections unloaded. Bypasses the cache when anything is excluded. |
 | `LoadWhere<T>(predicate, params exclude)`, `LoadWhereAsync<T>(predicate, CancellationToken, params exclude)` | as above | The same, for a predicate. |
 | `DeleteWhere<T>(Expression<Func<T, bool>>)`, `DeleteWhereAsync<T>(..., CancellationToken)` | `int`, `Task<int>` | Deletes every matching row without loading any, with its child collection rows, in one transaction. Returns the rows of `T` affected. See [Deleting](#deleting). |
-| `BulkSave<TObject>(IEnumerable<TObject>)` | `void` | Routes large batches through the provider's bulk engine. |
+| `Save(IEnumerable<ICoreObject?>)`, `SaveAsync(IEnumerable<ICoreObject?>, CancellationToken)` | `void`, `Task` | Saves a batch of any types, each routed to the provider that stores it, in one transaction per provider. On the asynchronous path a batch too large for ordinary statements is written by the bulk engine. `BulkSave` is the obsolete name. |
 
 Instance members on every entity:
 
@@ -552,8 +574,8 @@ Nucleus then does the bookkeeping:
 - **Validating.** The parent's `Validate()` runs `Validate()` on every new or changed child, at
   every depth, before anything is written, so a child's rules hold without the parent restating
   them. Unchanged loaded children are not checked again. Every save path validates: an entity's
-  own `Save`, the manager's `Save`, `SaveAsync` and `BulkSave`, and a context's `Save`,
-  `SaveAsync` and `BulkSave`. Do not call `Validate()` before saving; the save does.
+  own `Save`, and the manager's and a context's `Save` and `SaveAsync`, for one object or a
+  batch. Do not call `Validate()` before saving; the save does.
 - **Indexing.** A child's `Parent` column always has an index (`NCI_<table>_Parent`), since every
   load of a collection and every cascaded delete filters on it. Declare no `[TableIndex]` on
   `Parent` alone, which would duplicate it; one that leads with `Parent` and adds a column the
@@ -680,8 +702,8 @@ that refer to the same entity share one instance:
 var vouchers = await manager.Get<Voucher>().Include(v => v.Recipient).Where(v => v.Status == Status.Issued).ToListAsync();
 ```
 
-`Include` of a reference works on every read the adaptor runs, on `LoadPagedAsync`, `LoadByID` and
-`LoadStreamAsync` by property name, and with child collection includes in the same read. The
+`Include` of a reference works on every read the adaptor runs, on the manager's loads through
+`LoadOptions.Include` by property name, and with child collection includes in the same read. The
 referenced type must be stored by the same provider as the rows; including one stored elsewhere
 throws rather than leaving every row to load its own. A referenced entity included this way is
 loaded with its own child collections and runs its load hook.
@@ -767,7 +789,7 @@ Override these on an entity to run logic at defined points:
 | `Validate()` | At the start of every save, on every path (entity, manager, context, bulk), once per object saved. Throw to reject the save: nothing is written and the exception reaches the caller as thrown. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
 | `PreSave()` | After validation and before anything is written, on the object saved and on each new or changed child and forceSave link the save writes. A value set here is written but not validated. |
 | `OnAfterLoadFromDB()` | Once per loaded object, at the end of every load: after its columns and parent are bound, its loaded children are attached and have run theirs, and an excluded collection reads as unloaded. A lazy collection's rows run theirs when it loads. |
-| `OnAfterInitializeDB()` | After schema initialisation for the type. |
+| `OnAfterInitializeDB()` | Never. It is obsolete: schema initialisation has no instance to call it on. Run start-up work after `InitializeDataProviderAsync`. |
 
 ## Async query operators
 
@@ -811,7 +833,7 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | Method | Package | Purpose |
 |---|---|---|
 | `AddNucleus()` | `TFM.Nucleus` | Registers the schema provider and derives `AppName` and `AppVersion` from the entry assembly. Note this overload sets `ReadOnlySchema` to `false`, which enables automatic schema creation and migration. |
-| `AddNucleus(Action<NucleusOptions>)` | `TFM.Nucleus` | The same, with explicit options. `ReadOnlySchema` defaults to `true` here. |
+| `AddNucleus(Action<NucleusOptions>)` | `TFM.Nucleus` | The same, with explicit options. `ReadOnlySchema` defaults to `true` here. An `AppName` or `AppVersion` the options leave unset is read from the entry assembly. |
 | `AddNucleusLogging()` | `TFM.Nucleus` | Opt-in. Persists host log entries into the `NucleusLogEntry` table. |
 | `AddNucleusData()` | `TFM.Nucleus.Data` | Registers the provider registry and the object data manager, and publishes the ambient runtime that the static API uses. |
 | `AddNucleusSQLDataProvider()` | `TFM.Nucleus.Data.SQL` | Configures from the `SQL_SERVER`, `SQL_DATABASE`, `SQL_USERNAME` and `SQL_PASSWORD` environment variables. |
@@ -832,8 +854,8 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | Option | Default | Meaning |
 |---|---|---|
 | `ReadOnlySchema` | `true` | When true the schema is verified but never written. The parameterless `AddNucleus()` sets it false. |
-| `AppName` | entry assembly name | Reported to the database server as the application name. |
-| `AppVersion` | entry assembly version | Recorded with audit entries. |
+| `AppName` | entry assembly name | Reported to the database server as the application name, and written on each entry `AddNucleusLogging` persists. Resolved at registration: the value set, or else the entry assembly's name. |
+| `AppVersion` | entry assembly version | Written on each entry `AddNucleusLogging` persists. Resolved at registration: the value set, or else the entry assembly's informational version (without build metadata), or else its assembly version. |
 | `EnableAuditLogging` | `true` | Writes change summaries such as "Updated Name from A to B" on save and delete. |
 | `AuditLogLevel` | `Information` | The level those summaries are written at. The category is the entity type's full name. |
 | `LogEntityMinimumLevel` | `Warning` | Minimum level for host log entries persisted by `AddNucleusLogging()`. |
@@ -851,7 +873,7 @@ A covering [`[TableIndex]`](#class-level-behaviour) over the filter and the colu
 | `SQLPacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | The most parallel contexts an oversized write without a table schema fans out to. |
 | `MaxParametersPerQuery` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Despite the name it is not a command timeout: queries and saves use the driver's default of 30 seconds. |
+| `PoolWaitTimeoutSeconds` | `10` | How long opening a context on the asynchronous path waits for a free slot under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a command timeout: queries and saves use the driver's default of 30 seconds. `CommandTimeoutSeconds` is its obsolete name. |
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkCopyBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
@@ -876,7 +898,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server. |
 | `MaxParametersPerQuery` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
+| `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkCopyTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
@@ -894,7 +916,7 @@ Every option except `UseIntegratedSecurity`, `SQLPacketSize`, `BulkCopyBatchSize
 | `BusyTimeoutSeconds` | `30` | How long a command waits for another connection's write lock before it fails. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once. |
 | `MaxParametersPerQuery` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
-| `CommandTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`. Not a command timeout, as for SQL Server. |
+| `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
@@ -949,8 +971,57 @@ These are open findings (`docs/code-review-findings.md`) that change what a cons
   was called. A failed statement does not roll it back by itself, so wrap the work in a try/catch
   that rolls back and rethrows. Work done through it evicts no `[Cacheable]` cache. A single type's
   batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
+- **`[LinkWhenLogging]` does nothing yet.** It is meant to attach the linked object's type and ID
+  to the log entry's linked objects. The implementation did not come across from the library
+  Nucleus grew out of and is to be restored; until then the attribute is accepted and ignored.
+- **The synchronous save never uses the bulk engine.** A synchronous batch over the provider's
+  parameter limit runs as several commands. `SaveAsync` is the path that hands a large batch to
+  the bulk engine.
+- **A row read sees live rows only.** `Rows<T>()` has no counterpart to `IncludeDeleted`.
 
 ## Behaviour changes
+
+These came in with the API surface review. Nothing was removed: each replaced member still works
+and is marked obsolete, so a build that treats warnings as errors will stop on them.
+
+- **The manager interface loads.** `IObjectDataManager` gains `LoadByIDAsync`, `LoadAsync`,
+  `LoadPagedAsync` and `LoadStreamAsync`, taking a typed predicate and a `LoadOptions`
+  (`Exclude`, `Include`, `IncludeDeleted`). Until now a store had to cast to the concrete manager
+  for them. The concrete overloads that took two lists of names side by side are obsolete: the
+  two could be passed in each other's place and still compile.
+- **A predicate can be passed whole.** The loads that take an untyped `Expression` needed a
+  predicate's `Body`; the lambda itself compiled and then failed to translate. Both now work.
+- **Soft-deleted rows can be read.** `LoadOptions.IncludeDeleted` and `.IncludeDeleted()` on a
+  query. The documentation said a query could ask for them; nothing a consumer could reach did.
+- **There is one save.** `BulkSave` and `BulkSaveAsync` are obsolete on `CoreObject`, the manager
+  and a context. `Save` and `SaveAsync` take a batch of mixed types (`IEnumerable<ICoreObject?>`),
+  and the provider decides when a batch goes to its bulk engine, as it already did.
+- **`PoolWaitTimeoutSeconds` replaces `CommandTimeoutSeconds`.** The option never set a command
+  timeout; it is the wait for a free context. A full pool now throws `DataContextException` with
+  `Kind` `PoolExhausted` instead of a bare `Exception`, and the wait observes the cancellation
+  token.
+- **`Status` on the manager** reports the worst status across every provider. `DataProviderStatus`
+  reported the unrooted default provider alone and is obsolete, as are `DataProvider` on the
+  concrete manager and on `INucleusServiceProvider`.
+- **`IDataProvider` checks and updates the schema without arguments.** `CheckSchemaIsCurrent`,
+  `CheckSchemaIsCurrentAsync`, `UpdateSchema` and `UpdateSchemaAsync` took schema arguments they
+  ignored; those overloads are obsolete.
+- **A missing connection setting is the provider's exception.** SQL Server and PostgreSQL threw a
+  bare `Exception` for a missing server, database, user name, password or application name. They
+  now throw `SqlDataProviderException` and `PostgresDataProviderException` with `Kind`
+  `NotConfigured`, as SQLite does.
+- **`AddNucleus(options)` always has an application name.** It left `AppName` unset unless the
+  options set it, and every provider then refused to start. Both overloads now read an unset
+  `AppName` or `AppVersion` from the entry assembly. `AppVersion` is the informational version
+  where the assembly has one (`1.4.2`, not `1.4.2.0`).
+- **Persisted log entries carry the application.** `NucleusLogEntry` gains `AppName` and
+  `AppVersion` columns, so its table gains two nullable columns at the next schema update. A site
+  that uses `AddNucleusLogging` with `ReadOnlySchema` on must let the schema update once.
+- **Members that never did anything are obsolete.** `CoreObject.AllowCaching`, `DisableLogging`,
+  `CacheRefreshInterval` and `CacheLifetime` were read by nothing (use `[Cacheable]` and
+  `[SuppressLogging]`), and `OnAfterInitializeDB` was never called. An override of one now warns.
+  `DataSet.Bind` and `BindRows` are obsolete too: they bind rows without attaching children or
+  running the load hook.
 
 These came in with the SQL Server deadlock fix.
 

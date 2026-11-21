@@ -8,6 +8,43 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
+### API surface review, what is left (November 2026)
+
+A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
+"Fixed"). Still open:
+
+- **Naming and parity.** The SQL Server registration and options are spelled `SQL` where every
+  other type says `SqlServer`; the parameter limit has two names (`MaxParametersPerQuery` on the
+  options, `MaxParametersPerCommand` on the capabilities); PostgreSQL's `ConnectRetryCount` counts
+  attempts, not retries; the exceptions share no base type; child and linked collections name the
+  same things differently (`ParentObject`/`Owner`, `ChildObjects`/`Members`); the static API has
+  no asynchronous load by ID; `LoadObjectWhere` loads every match to return the first. To be
+  aligned additively.
+- **Names that cannot be aligned additively.** `eServerFunction`, `EDataSchemaStatus`, the
+  all-caps members of `QueryType` and `OrderByType`, the `DataType` enum (it collides with
+  `System.ComponentModel.DataAnnotations.DataType`) and the attributes without the `Attribute`
+  suffix. Renaming them breaks consumers at compile time, so they go together in one release.
+- **Engine-named members.** `Query.WithNoLock`, `ContextOptions.UseDependency`,
+  `IDataContext.HasDependency`, `BulkCopyTimeoutSeconds` and `BulkCopyBatchSize` name a SQL Server
+  feature rather than what they mean.
+- **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
+  `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
+  consumer calls them, and an overload beside them would make a call without arguments ambiguous.
+  Left until a major version.
+- **`[LinkWhenLogging]` is parsed and not applied.** It is to attach the linked object's type and
+  ID to the log entry's linked objects. The implementation did not come across from the library
+  Nucleus grew out of and is to be restored. `GetLinkedIDsForLogging` is its unused half and
+  stays. Listed in the README's known limits.
+- **The synchronous save never reaches the bulk engine.** `DbDataContext.ExecuteSQL` splits an
+  oversized write into commands; only `ExecuteSQLAsync` hands it to the bulk engine. Listed in the
+  README's known limits.
+- **`IDataProvider.Initialize(IEnumerable<IObjectSchema>?)` ignores its argument**, like the
+  schema methods that were replaced. It is the only synchronous initialise on the interface, and
+  a call without arguments already reads correctly, so it was left.
+- **A load on the manager for every row of a `[Cacheable]` type does not use the cache.**
+  `LoadAsync<T>()` with no predicate reads the table; `Load<T>()` on the concrete manager and
+  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill.
+
 ### Save, load and schema audit (November 2026)
 
 An audit of the save, load and schema paths against the "ask the schema first" rule in AGENTS.md,
@@ -337,6 +374,63 @@ how many connections a production site opens and needs a decision. The README do
 doubling in the option tables and the known limits.
 
 ## Fixed
+
+### API surface traps (November 2026)
+
+Found by reading the whole public surface, not by a failure. Each replaced member still works and
+is marked obsolete, naming its replacement. Cover: `ManagerLoadIntegrationTests` on every provider,
+and `ApiTrapTests`.
+
+- **An untyped predicate had to be passed as its body.** `Load<T>(Expression)` and its siblings on
+  the manager, the runtime and a context took a predicate's `Body`. The lambda itself compiled,
+  since an `Expression<Func<T, bool>>` is an `Expression`, and then failed in
+  `ExpressionParser.Normalize`, which unwrapped a Where chain but not a lambda. It unwraps both
+  now, and `IDataContext` has typed overloads.
+- **Two lists of names sat side by side.** `LoadByID(id, excluded, included)` and five more took
+  two `IReadOnlyCollection<string>` in a row; swapped, they compiled and inverted the load. They
+  are obsolete in favour of `LoadOptions`.
+- **The interface DI registers could not load.** `IObjectDataManager` had `Get<T>()` and
+  `Rows<T>()`; load by ID, paged loads and streamed loads were on the concrete class, which the
+  modelling rules forbid a store to use, and the README pointed at them anyway. They are on the
+  interface now.
+- **Soft-deleted rows could not be read.** `IncludeDeleted` existed on the query model and
+  nowhere a consumer could reach. It is on `LoadOptions` and on a query (`IncludeDeleted()`).
+- **`BulkSave` was a second save in name only.** Both it and `Save` run the statements
+  `CreateSaveQueries` builds, and `DbDataContext.ExecuteSQLAsync` sends an oversized table group
+  to the bulk engine whichever built it. `BulkSave` only added a batch of mixed types. That is
+  now `Save(IEnumerable<ICoreObject?>)` and `BulkSave` is obsolete. The manager's batch save
+  used to exist only on the synchronous path; it has an asynchronous form now, which is the one
+  that reaches the bulk engine.
+- **`CommandTimeoutSeconds` was the wait for a free context.** Its own comment said so. It is
+  `PoolWaitTimeoutSeconds`. The wait ignored the cancellation token and a full pool threw a bare
+  `Exception`; it now observes the token and throws `DataContextException` with `PoolExhausted`.
+- **The provider's schema methods ignored their arguments.** `CheckSchemaIsCurrent(schemas)`,
+  `UpdateSchema(schemas)` and `UpdateSchemaAsync(schema)` always worked on every table.
+  Overloads without the argument replace them.
+- **`DataProviderStatus` on the manager was one provider's status**, while
+  `InitializeDataProviderAsync` returned the worst of all of them. `Status` reports the worst.
+  `DataProvider` was obsolete on the interface only; it is now obsolete on the concrete manager
+  and on `INucleusServiceProvider` too.
+- **Five overridable members of `CoreObject` did nothing.** `AllowCaching`, `DisableLogging`,
+  `CacheRefreshInterval` and `CacheLifetime` were read by nothing, and `OnAfterInitializeDB` was
+  never called. Obsolete. The README documented the last as a working hook.
+- **`DataSet.Bind` and `BindRows` skipped the load hook.** Four ways to bind a data set, one of
+  which ran `OnAfterLoadFromDB`. The two public ones that did not are obsolete. They were not
+  given the hook: `ChildGraphBinder` binds rows the same way and runs the hook itself, later,
+  once the children are attached.
+- **SQL Server and PostgreSQL threw a bare `Exception` for a missing connection setting**, where
+  SQLite threw its provider exception. All three now throw theirs, with `NotConfigured`.
+- **`AddNucleus(options)` left `AppName` unset**, and `ConfigureAppName` then threw "AppName must
+  be set in NucleusOptions" when a provider started. The README called the overload "the same,
+  with explicit options". Registration now fills an unset `AppName` or `AppVersion` from the entry
+  assembly on both overloads.
+- **`AppVersion` was set and never read.** The README said it was recorded with audit entries.
+  `NucleusLogEntry` now carries `AppName` and `AppVersion`.
+
+Documentation found wrong in the same review and corrected: the install text (a provider package
+does not pull `TFM.Nucleus`), a quick start that could not build its schema or run its delete, a
+testing snippet that did not compile, and "every column is created NULL" (the soft-delete flag
+is `NOT NULL` with a default).
 
 ### Save validation, PreSave, the parent index and the commit order (November 2026)
 

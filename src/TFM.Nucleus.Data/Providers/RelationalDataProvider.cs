@@ -410,14 +410,25 @@ namespace TFM.Nucleus.Data.Providers
         DataProviderStatus IDataProvider.Initialize(IEnumerable<IObjectSchema>? objectSchemas) => Initialize();
         Task<DataProviderStatus> IDataProvider.InitializeAsync(IObjectSchemaProvider? objectSchema) => InitializeAsync(objectSchema);
 
-        DataProviderStatus IDataProvider.CheckSchemaIsCurrent(IEnumerable<IObjectSchema>? objectSchemas) =>
-            MapSchemaStatus(Schema.CheckSchema());
-        async Task<DataProviderStatus> IDataProvider.CheckSchemaIsCurrentAsync(IEnumerable<IObjectSchema>? objectSchemas) =>
-            MapSchemaStatus(await Schema.CheckSchemaAsync());
+        /// <inheritdoc cref="IDataProvider.CheckSchemaIsCurrent()"/>
+        public DataProviderStatus CheckSchemaIsCurrent() => MapSchemaStatus(Schema.CheckSchema());
 
-        void IDataProvider.UpdateSchema(IEnumerable<IObjectSchema> objectSchemas) => Schema.Update();
-        Task IDataProvider.UpdateSchemaAsync(IObjectSchema objectSchema) => Schema.UpdateAsync();
-        Task IDataProvider.UpdateSchemaAsync(IEnumerable<IObjectSchema> objectSchemas) => Schema.UpdateAsync();
+        /// <inheritdoc cref="IDataProvider.CheckSchemaIsCurrent()"/>
+        public async Task<DataProviderStatus> CheckSchemaIsCurrentAsync(CancellationToken cancellationToken = default) =>
+            MapSchemaStatus(await Schema.CheckSchemaAsync(cancellationToken));
+
+        /// <inheritdoc cref="IDataProvider.UpdateSchema()"/>
+        public void UpdateSchema() => Schema.Update();
+
+        /// <inheritdoc cref="IDataProvider.UpdateSchema()"/>
+        public Task UpdateSchemaAsync(CancellationToken cancellationToken = default) => Schema.UpdateAsync(cancellationToken);
+
+        DataProviderStatus IDataProvider.CheckSchemaIsCurrent(IEnumerable<IObjectSchema>? objectSchemas) => CheckSchemaIsCurrent();
+        Task<DataProviderStatus> IDataProvider.CheckSchemaIsCurrentAsync(IEnumerable<IObjectSchema>? objectSchemas) => CheckSchemaIsCurrentAsync();
+
+        void IDataProvider.UpdateSchema(IEnumerable<IObjectSchema> objectSchemas) => UpdateSchema();
+        Task IDataProvider.UpdateSchemaAsync(IObjectSchema objectSchema) => UpdateSchemaAsync();
+        Task IDataProvider.UpdateSchemaAsync(IEnumerable<IObjectSchema> objectSchemas) => UpdateSchemaAsync();
 
         private static DataProviderStatus MapSchemaStatus(EDataSchemaStatus status) => status switch
         {

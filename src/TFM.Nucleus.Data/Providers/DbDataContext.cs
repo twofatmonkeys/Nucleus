@@ -176,6 +176,10 @@ namespace TFM.Nucleus.Data.Providers
         protected Task OpenAsync(TSelf? parent, bool useTransaction, bool useDependency, CancellationToken token) =>
             OpenCore(parent, useTransaction, useDependency, async: true, token).AsTask();
 
+        private DataContextException PoolExhausted(string detail) =>
+            new($"No context is free: all {Options.MaxConnectionPoolSize} (MaxConnectionPoolSize) are open, {detail}. " +
+                "Dispose contexts sooner or raise the limit.", DataContextErrorKind.PoolExhausted);
+
         private async ValueTask OpenCore(TSelf? parent, bool useTransaction, bool useDependency, bool async, CancellationToken token)
         {
             if (_isInitialized)
@@ -186,13 +190,13 @@ namespace TFM.Nucleus.Data.Providers
                 var sw = Stopwatch.StartNew();
                 while (ConnectionsAvailable < 1)
                 {
-                    await Task.Delay(100);
-                    if (sw.ElapsedMilliseconds > Options.CommandTimeoutSeconds * 1000)
-                        throw new Exception("Connection Pool size exceeded");
+                    if (sw.ElapsedMilliseconds >= Options.PoolWaitTimeoutSeconds * 1000L)
+                        throw PoolExhausted($"after waiting {Options.PoolWaitTimeoutSeconds} s (PoolWaitTimeoutSeconds)");
+                    await Task.Delay(100, token);
                 }
             }
             else if (ConnectionsAvailable < 1)
-                throw new Exception("Connection Pool size exceeded");
+                throw PoolExhausted("and the synchronous path does not wait");
             Debug.WriteLine($"Data Context Info: {ConnectionsAvailable} connections currently available from {_contextCache.Count} total in cache"
                 , "Database");
             if (parent != null && parent.GetType() != GetType())
@@ -309,10 +313,10 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         /// <summary>
-        /// What a bulk save of the objects runs, each type's inserts and updates as separate
-        /// chains. Every object is validated first.
+        /// What a save of a batch of objects of any types runs, each type's inserts and updates as
+        /// separate chains. Every object is validated first.
         /// </summary>
-        private List<Query> BuildBulkSaveQueries(IEnumerable<ICoreObject?>? objects)
+        private List<Query> BuildBatchSaveQueries(IEnumerable<ICoreObject?>? objects)
         {
             var list = objects as IList<ICoreObject?> ?? objects?.ToList();
             SaveChecks.Run(list);
@@ -350,19 +354,26 @@ namespace TFM.Nucleus.Data.Providers
         Task IDataContext.TryRollbackAsync() { TryRollback(); return Task.CompletedTask; }
         Task IDataContext.TryRollbackAsync(CancellationToken token) { TryRollback(); return Task.CompletedTask; }
 
-        void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects)
+        void IDataContext.Save(IEnumerable<ICoreObject?> objs) => SaveBatch(objs);
+        Task IDataContext.SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken) => SaveBatchAsync(objs, cancellationToken);
+
+        // The obsolete names of the batch save. They always ran the same statements a save runs;
+        // which engine writes them was never the caller's choice.
+        void IDataContext.BulkSave(IEnumerable<ICoreObject?>? objects) => SaveBatch(objects);
+        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => SaveBatchAsync(objects, CancellationToken.None);
+        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => SaveBatchAsync(objects, token);
+
+        private void SaveBatch(IEnumerable<ICoreObject?>? objects)
         {
-            foreach (var query in BuildBulkSaveQueries(objects))
+            foreach (var query in BuildBatchSaveQueries(objects))
                 ExecuteSQL(query);
         }
-        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects) => BulkSaveAsync(objects, CancellationToken.None);
-        Task IDataContext.BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token) => BulkSaveAsync(objects, token);
 
-        private async Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
+        private async Task SaveBatchAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token)
         {
             // ExecuteSQLAsync routes large parameter counts to the provider's bulk engine. Each
             // type's inserts and updates are separate chains, which is the shape it batches by.
-            foreach (var query in BuildBulkSaveQueries(objects))
+            foreach (var query in BuildBatchSaveQueries(objects))
                 await ExecuteSQLAsync(query, token);
         }
 
@@ -979,6 +990,8 @@ namespace TFM.Nucleus.Data.Providers
         InvalidIQueryType = 30,
         /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
         MissingResultSet = 40,
+        /// <summary>Every context the provider allows at once was open, and none came free in time.</summary>
+        PoolExhausted = 50,
         Unspecified = 99,
     }
 

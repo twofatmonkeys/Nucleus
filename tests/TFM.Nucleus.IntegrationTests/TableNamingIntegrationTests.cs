@@ -104,7 +104,7 @@ namespace TFM.Nucleus.IntegrationTests
                 Assert.Contains($"PK_{ShortTable}", owned);
                 Assert.Contains($"NCI_{ShortTable}_Name", owned);
                 Assert.DoesNotContain(owned, n => n.Contains("TFM_Nucleus", StringComparison.Ordinal));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
 
                 var added = new IntAdoptedItemWithALongName { Name = "after", Quantity = 99 };
                 await stack.Manager.SaveAsync(added);
@@ -160,7 +160,7 @@ namespace TFM.Nucleus.IntegrationTests
                 var loaded = await stack.Manager.Get<IntLegacyItem>().Where(i => i.Name != null).ToListAsync(Ct);
                 Assert.Equal(items.Select(i => (i.ID, i.Name)).Order(), loaded.Select(i => (i.ID, i.Name)).Order());
                 Assert.All(loaded, i => Assert.Null(i.Quantity));
-                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync(null));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
             }
             finally
             {

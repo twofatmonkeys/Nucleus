@@ -40,7 +40,7 @@ namespace TFM.Nucleus.IntegrationTests
                 AssertFinished(manager.LoadByID<IntHookOwner>(owner.ID)!);
 
                 // Through a data context.
-                using (var context = manager.DataProvider.CreateContext())
+                using (var context = manager.Providers.AllProviders[0].CreateContext())
                     AssertFinished(Assert.Single(context.Load<IntHookOwner>(mine.Body)));
 
                 // A lazy collection's rows run their hooks when it loads, with the owner bound.

@@ -5,7 +5,18 @@ namespace TFM.Nucleus
     public class NucleusOptions
     {
         public bool ReadOnlySchema { get; set; } = true;
+
+        /// <summary>
+        /// The application's name: reported to the database server as the connection's
+        /// application name and written on persisted log entries. Left unset, registration reads
+        /// it from the entry assembly.
+        /// </summary>
         public string? AppName { get; set; }
+
+        /// <summary>
+        /// The application's version, written on persisted log entries. Left unset, registration
+        /// reads it from the entry assembly: its informational version, or else its assembly version.
+        /// </summary>
         public string? AppVersion { get; set; }
 
         /// <summary>Write entity change summaries ("Updated X from A to B") to the host's logging pipeline on save/delete.</summary>

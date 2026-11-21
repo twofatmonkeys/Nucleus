@@ -42,11 +42,31 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The most parameters one command binds; a larger write is split or bulk copied.</summary>
         public int MaxParametersPerQuery { get; set; }
 
+        private int _poolWaitTimeoutSeconds = 10;
+
         /// <summary>
-        /// How long an async context waits for a free slot in the pool, in seconds. Despite the
-        /// name it is not a command timeout: commands use the driver's default.
+        /// How long opening a context on the asynchronous path waits for a free slot when
+        /// <see cref="MaxConnectionPoolSize"/> contexts are already open, in seconds, before it
+        /// fails. 0 fails at once. The synchronous path never waits. It is not a command timeout:
+        /// commands use the driver's default.
         /// </summary>
-        public int CommandTimeoutSeconds { get; set; } = 10;
+        public int PoolWaitTimeoutSeconds
+        {
+            get => _poolWaitTimeoutSeconds;
+            set
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(value);
+                _poolWaitTimeoutSeconds = value;
+            }
+        }
+
+        /// <summary>The old name of <see cref="PoolWaitTimeoutSeconds"/>. It never set a command timeout.</summary>
+        [Obsolete("Use PoolWaitTimeoutSeconds. This was always the wait for a free pool slot and never set a command timeout.")]
+        public int CommandTimeoutSeconds
+        {
+            get => PoolWaitTimeoutSeconds;
+            set => PoolWaitTimeoutSeconds = value;
+        }
 
         private int _schemaCommandTimeoutSeconds = 900;
 

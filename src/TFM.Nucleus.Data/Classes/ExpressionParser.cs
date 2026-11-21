@@ -99,6 +99,11 @@ namespace TFM.Nucleus.Data
         /// </summary>
         private static Expression? Normalize(Expression expression)
         {
+            // A predicate handed over whole (x => x.Name == "a") means its body. Callers used to
+            // have to pass .Body themselves, and a lambda compiled only to fail here.
+            if (StripQuotes(expression) is LambdaExpression lambda)
+                expression = lambda.Body;
+
             // Fold closure/local-variable sub-trees into constants before translation.
             expression = Evaluator.PartialEval(expression) ?? expression;
 
