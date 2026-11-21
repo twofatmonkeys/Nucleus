@@ -30,10 +30,10 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
 - **`[LinkWhenLogging]` is parsed and not applied.** It is to attach the linked object's type and
   ID to the log entry's linked objects. The implementation did not come across from the library
   Nucleus grew out of and is to be restored. `GetLinkedIDsForLogging` is its unused half and
-  stays. Listed in the README's known limits.
+  stays. Listed in the guide's known limits.
 - **The synchronous save never reaches the bulk engine.** `DbDataContext.ExecuteSQL` splits an
   oversized write into commands; only `ExecuteSQLAsync` hands it to the bulk engine. Listed in the
-  README's known limits.
+  guide's known limits.
 - **`IDataProvider.Initialize(IEnumerable<IObjectSchema>?)` ignores its argument**, like the
   schema methods that were replaced. It is the only synchronous initialise on the interface, and
   a call without arguments already reads correctly, so it was left.
@@ -133,7 +133,7 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
 - **A save through a caller-owned context commits in memory before the caller commits.**
   `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
   removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
-  saved and have forgotten their removals. Long-standing; listed in the README's known limits.
+  saved and have forgotten their removals. Long-standing; listed in the guide's known limits.
 - **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
   `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
   clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
@@ -144,7 +144,7 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   `[Deletable]`, and a delete of a one with members refused. What changed from the note that stood
   here: the members are saved with the one, because a one and its members are recorded in
   one transaction; and a delete is always refused, with no cascade, since the members outlive
-  any one use of them. Open, and in the README's known limits: the refusal is a check in the delete's
+  any one use of them. Open, and in the guide's known limits: the refusal is a check in the delete's
   transaction, not a foreign key, so a member inserted concurrently is not seen; and the one must be
   a root, because a parent's cascade deletes children without loading them. Cover:
   `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
@@ -170,7 +170,7 @@ that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, Pos
   before the fix.
 
 Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
-same reference without `Include` each load their own instance. Listed in the README's known limits.
+same reference without `Include` each load their own instance. Listed in the guide's known limits.
 
 ### SQL Server deadlocks under concurrent saves, fixed (November 2026)
 

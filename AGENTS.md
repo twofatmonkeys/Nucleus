@@ -332,9 +332,16 @@ run them.
 
 ## Deviations from the scaffold
 
-One, recorded in `tests\Directory.Build.props`: the tests use **xunit.v3 2.0.0**, not the scaffold's
-xunit 2.9.3, because they were written against v3. Everything else follows the scaffold, and both
-test projects multi-target `net8.0;net10.0` like the shipping packages.
+Two. The tests use **xunit.v3 2.0.0**, not the scaffold's xunit 2.9.3, because they were written
+against v3 (recorded in `tests\Directory.Build.props`). And there is a test project that matches
+no shipping project: `tests\TFM.Nucleus.DocSamples` holds the documentation's examples as code and
+the tests that run them. Everything else follows the scaffold, and every test project
+multi-targets `net8.0;net10.0` like the shipping packages.
+
+`TFM.Nucleus.DocSamples` is referenced by no other test project, deliberately: entity types are
+found by scanning the loaded assemblies, so its sample entities would join the schema of every
+stack in a process that loaded it. Its own tests run the samples against a SQLite file they
+create in the temp folder and delete, so they need no configuration and run in CI.
 
 `Directory.Build.props` suppresses one warning, IDE0040, and `tests\Directory.Build.props`
 suppresses xUnit1051. Both are mechanical style edits rather than defects; see
@@ -371,10 +378,10 @@ warning or an analyzer warning in new code fails CI.
   try/catch that rolls back, because disposing the context commits. If a store needs something the
   interface lacks, that is a Nucleus defect: add it to the interface rather than casting.
 - When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
-  record it in `docs/code-review-findings.md` and in the README's known limits) rather than
+  record it in `docs/code-review-findings.md` and in `docs/guide/known-limits.md`) rather than
   working around it in the consumer.
-- Every open finding that changes what a consumer must do is listed in the README under "Known
-  limits", not only in `docs/code-review-findings.md`.
+- Every open finding that changes what a consumer must do is listed in
+  `docs/guide/known-limits.md`, not only in `docs/code-review-findings.md`.
 
 ## Rules
 
@@ -457,8 +464,17 @@ warning or an analyzer warning in new code fails CI.
   scaffold. New code compiles clean.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name, such as `SoftDeleted`.
-- **Update `README.md` in the same commit** as any change to the public surface. It is packed into
-  all seven packages and is the reference documentation consumers see on the feed.
+- **Update the guide in the same commit** as any change to the public surface: the page under
+  `docs\guide\` that covers it, `behaviour-changes.md` when behaviour changes, and `README.md`
+  when it names the member. The README is packed into all seven packages and is what a consumer
+  sees on the feed, so it stays short (what Nucleus is, install, a quick start, the page index)
+  and its links are absolute, because a relative link is dead on the feed.
+- **An example in the documentation is a sample that runs.** Every C# block in the README and the
+  guide is a copy of a `#region` in `tests\TFM.Nucleus.DocSamples`, named by the
+  `<!-- sample: name -->` line above it. Write or change the example in the sample, run it, then
+  copy it across with `NUCLEUS_ACCEPT_GOLDENS=1` (`DocSampleTests.Accept...`). Never type code into
+  a page: `DocSampleTests` fails on a block with no sample, a block that differs from its sample,
+  and a sample no page shows.
 - **No em dashes in authored documentation.** Use hyphens.
 - **Examples are hypothetical; no real consumer is named.** No document, XML comment, test or
   message in this repo names a real application, site, customer, server or machine, and no

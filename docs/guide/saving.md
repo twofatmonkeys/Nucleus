@@ -1,0 +1,101 @@
+# Saving and deleting
+
+One save and one delete, for one object or a batch. Save the root and its graph follows.
+
+## Saving through a store
+
+An application service takes `IObjectDataManager`. A single type's batch is one call and one transaction; several types in one transaction use a caller-owned context, which commits when it is disposed unless it was rolled back:
+
+<!-- sample: store -->
+```csharp
+// What an application service or a store looks like: it takes the interface DI registers.
+public sealed class KeeperDesk(IObjectDataManager data)
+{
+    public Task<Monkey?> FindAsync(Guid id, CancellationToken ct) =>
+        data.LoadByIDAsync<Monkey>(id, ct);
+
+    public Task SaveAllAsync(IReadOnlyList<Monkey> monkeys, CancellationToken ct) =>
+        data.SaveAsync(monkeys, ct);                   // one transaction
+
+    // Two types in one transaction. Disposing the context commits, so roll back on failure.
+    public async Task WeighAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
+    {
+        await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
+        try
+        {
+            await context.SaveAsync(monkey, ct);       // validates, then writes
+            await context.SaveAsync(weighIn, ct);
+        }
+        catch
+        {
+            await context.RollbackAsync(ct);
+            throw;
+        }
+    }
+}
+```
+
+## Saving a batch
+
+<!-- sample: mixed-save -->
+```csharp
+// Objects of different types in one call: one transaction per provider that stores them.
+// A batch too large for ordinary statements goes to the provider's bulk engine by itself.
+await data.SaveAsync(new ICoreObject?[]
+{
+    new BananaVariety { Name = "Cavendish", Curvature = 7 },
+    new BananaVariety { Name = "Plantain", Curvature = 3 },
+    new WeighIn { MonkeyName = "Sir Reginald", WeightKg = 31.0m, Notes = "  no change  " },
+}, ct);
+```
+
+The synchronous `Save` never uses the bulk engine: over the provider's parameter limit it runs as
+several commands. `SaveAsync` is the path that hands a large batch to the bulk engine.
+
+## Unique violations
+
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` names the entity, `IndexName` the Nucleus index name, and `PropertyNames` and `ColumnNames` the index's key properties and columns in key order. For a `[DatabaseColumn(Unique = true)]` index, `PropertyName` and `ColumnName` name its one property and column, and `Is<T>(name)` tests for it by either. For a unique `[TableIndex]`, `DeclaredIndexName` is the name it was declared with and `IsIndex<T>(name)` tests for it; `PropertyName` and `ColumnName` are then null, even for one key. For an index Nucleus does not manage, such as a primary key, the names are null and the lists empty. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does. The manager's `Save` and `SaveAsync` throw it as it is, not wrapped, so the filters below work on them as they do on a context's save.
+
+<!-- sample: unique-violation -->
+```csharp
+try
+{
+    await data.SaveAsync(new Keeper { Name = "Colin", Email = "mavis@portlyprimate.example" }, ct);
+}
+catch (UniqueViolationException ex) when (ex.Is<Keeper>(nameof(Keeper.Email)))
+{
+    return true;                               // another keeper has that address
+}
+catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath"))
+{
+    return true;                               // a unique [TableIndex], by its declared name
+}
+```
+
+Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
+`catch (NucleusException)` catches the family: `UniqueViolationException`, `DataProviderException`
+and each provider's own, `DataContextException`, `InvalidQueryException`, `CoreObjectException` and
+the schema exceptions. Nucleus also throws the framework's own exceptions where they are the right
+ones (`ArgumentException`, `NotSupportedException`, `OperationCanceledException`); those are not
+wrapped.
+
+## Change notifications
+
+<!-- sample: change-subscription -->
+```csharp
+// SQL Server and PostgreSQL only: SQLite throws NotSupportedException.
+await using var subscription = await data.SubscribeToChangesAsync<BananaVariety>(ct);
+subscription.Changed += (_, e) => Console.WriteLine($"{e.EntityType.Name} changed outside this process: reload it.");
+subscription.Faulted += (_, e) => Console.WriteLine("The subscription died; subscribe again.");
+```
+
+## Features worth knowing
+
+- **Change tracking.** Every entity keeps committed and pending property dictionaries. Saves write only the columns that actually changed.
+- **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types automatically gain `IsDeleted` and `DeletedAt` columns.
+- **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
+- **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
+- **Change notifications.** `IObjectDataManager.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates. SQLite has none.
+- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
+- **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
+- **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.
