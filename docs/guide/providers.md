@@ -1,8 +1,23 @@
 # Providers
 
-What differs between SQL Server, PostgreSQL and SQLite, and each provider's options.
+The same entities and queries run on SQL Server, PostgreSQL and SQLite. An application picks its
+database by picking a provider package and registering it; nothing else in its code names the
+engine. This page lists what an application can see differ, then each provider's options.
+
+| | SQL Server | PostgreSQL | SQLite |
+|---|---|---|---|
+| Package | `TFM.Nucleus.Data.SQL` | `TFM.Nucleus.Data.PostgreSQL` | `TFM.Nucleus.Data.SQLite` |
+| Suits | A server database | A server database, version 16 or later | One file on a local disk |
+| Equality on text | Follows the collation, which by default ignores case | Exact | Exact |
+| Full-text search | `CONTAINS()` | A GIN index | None: a substring match |
+| Change notifications | Yes, with Service Broker enabled | Yes, with no setup | No |
+| Bulk engine | `SqlBulkCopy` | COPY BINARY | None: commands in turn |
+| `[TableIndex]` included columns | Yes | Yes | Keys only |
 
 ## SQL Server
+
+SQL Server is the engine Nucleus was first written for, so the rest of this guide describes its
+behaviour unless it says otherwise.
 
 <!-- sample: register-sqlserver -->
 ```csharp
@@ -17,9 +32,21 @@ services.AddNucleusSqlServerDataProvider(options =>
 
 ## PostgreSQL
 
-`TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16
-or later. Everything in this document applies on both providers, except where a section says
-otherwise. These are the differences an application can see:
+`TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16 or later.
+
+<!-- sample: register-postgres -->
+```csharp
+services.AddNucleusPostgresDataProvider(options =>
+{
+    options.Server = "localhost";              // host or host:port
+    options.Database = "portlyprimate";
+    options.Username = "sanctuary";            // or ConnectionString
+    options.Password = password;
+});
+```
+
+Everything in this guide applies to it, except where a section says otherwise. These are the
+differences an application can see:
 
 - **Equality is case-sensitive.** `x.Code == "abc"` and unique indexes compare exactly, as
   PostgreSQL always does; on SQL Server's default collation they ignore case. The pattern
@@ -57,9 +84,7 @@ behind. Adding a column, `IsDeleted` with its constant default included, is a ca
 
 `TFM.Nucleus.Data.SQLite` runs the same entities and queries on a SQLite database file, for
 desktop, edge and other single-machine applications. It uses the SQLite bundled with
-Microsoft.Data.Sqlite and refuses to start on one older than 3.35. Everything in this document
-applies to it, except where a section says otherwise. These are the differences an application can
-see:
+Microsoft.Data.Sqlite and refuses to start on one older than 3.35.
 
 <!-- sample: register-sqlite -->
 ```csharp
@@ -68,6 +93,9 @@ services.AddNucleusSqliteDataProvider(options =>
     options.Database = @"C:\ProgramData\PortlyPrimate\sanctuary.db";   // created with its folder when missing
 });
 ```
+
+Everything in this guide applies to it, except where a section says otherwise. These are the
+differences an application can see:
 
 - **The database is one file on a local disk.** `Database` is its path, created with its folder on
   initialise when it is missing and the schema is writable. An in-memory database is refused: it
@@ -78,9 +106,9 @@ services.AddNucleusSqliteDataProvider(options =>
   IMMEDIATE, taking the write lock at once, and any other writer, in this process or another,
   waits up to `BusyTimeoutSeconds` (30 by default) for it. SQLite does not queue its waiters, so a
   writer in one process can wait out its timeout while another process writes back to back; give
-  each process its own file, or one process the writing, when several write heavily. A write too large for one command runs
-  its commands one after another on its own transaction, so it still commits or rolls back whole.
-  There is no bulk engine; none is needed in-process.
+  each process its own file, or one process the writing, when several write heavily. A write too
+  large for one command runs its commands one after another on its own transaction, so it still
+  commits or rolls back whole. There is no bulk engine; none is needed in-process.
 - **No change notifications.** SQLite tells no other connection about a write, so
   `SubscribeToChangesAsync<T>()` throws `NotSupportedException` and `Capabilities` says so.
 - **No full-text index.** `string.Contains` on a `FullTextSearch` column is a substring match
@@ -119,6 +147,9 @@ transactional, so a failed update leaves nothing behind.
 
 ## Provider options
 
+Most options are shared: every provider's configuration derives from `RelationalProviderOptions`.
+Each table below lists what its provider accepts.
+
 ### SQLConfiguration
 
 | Option | Default | Meaning |
@@ -140,7 +171,12 @@ transactional, so a failed update leaves nothing behind.
 | `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](schema.md#table-names). |
 | `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](schema.md#table-names). |
 
-Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and `ConnectTimeoutSeconds` comes from `RelationalProviderOptions`, which every relational provider's configuration shares. Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The driver's connect retries reconnect a connection that broke while idle; they do not retry an open that times out.
+Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and
+`ConnectTimeoutSeconds` is one of the shared ones.
+
+Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The
+driver's connect retries reconnect a connection that broke while idle; they do not retry an open
+that times out.
 
 ### PostgresConfiguration
 

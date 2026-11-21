@@ -1,10 +1,15 @@
 # Saving and deleting
 
-One save and one delete, for one object or a batch. Save the root and its graph follows.
+There is one save and one delete, for one object or a batch. Save the root, and its graph follows:
+its child collections at every depth, the children removed from them, and the linked objects and
+linked collection members it holds. [Relationships](relationships.md) covers what a graph is; this
+page covers the save itself.
 
 ## Saving through a store
 
-An application service takes `IObjectDataManager`. A single type's batch is one call and one transaction; several types in one transaction use a caller-owned context, which commits when it is disposed unless it was rolled back:
+An application service takes `IObjectDataManager`. A batch of one type is one call and one
+transaction. Several types in one transaction use a caller-owned context, which commits when it is
+disposed unless it was rolled back:
 
 <!-- sample: store -->
 ```csharp
@@ -37,6 +42,9 @@ public sealed class KeeperDesk(IObjectDataManager data)
 
 ## Saving a batch
 
+A batch can hold objects of different types. Each is routed to the provider that stores it, and
+each provider's objects are saved in one transaction:
+
 <!-- sample: mixed-save -->
 ```csharp
 // Objects of different types in one call: one transaction per provider that stores them.
@@ -49,12 +57,28 @@ await data.SaveAsync(new ICoreObject?[]
 }, ct);
 ```
 
-The synchronous `Save` never uses the bulk engine: over the provider's parameter limit it runs as
-several commands. `SaveAsync` is the path that hands a large batch to the bulk engine.
+There is no separate bulk save to call. On the asynchronous path a batch too large for ordinary
+statements is written by the provider's bulk engine by itself. The synchronous `Save` never uses
+the bulk engine: over the provider's parameter limit it runs as several commands.
 
 ## Unique violations
 
-A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`, in the Abstractions package), whichever provider stores the data. `EntityType` names the entity, `IndexName` the Nucleus index name, and `PropertyNames` and `ColumnNames` the index's key properties and columns in key order. For a `[DatabaseColumn(Unique = true)]` index, `PropertyName` and `ColumnName` name its one property and column, and `Is<T>(name)` tests for it by either. For a unique `[TableIndex]`, `DeclaredIndexName` is the name it was declared with and `IsIndex<T>(name)` tests for it; `PropertyName` and `ColumnName` are then null, even for one key. For an index Nucleus does not manage, such as a primary key, the names are null and the lists empty. The message is the one an ordinary storage failure carries, and the provider's own exception is the inner exception, so code that caught `Exception` before still does. The manager's `Save` and `SaveAsync` throw it as it is, not wrapped, so the filters below work on them as they do on a context's save.
+A write that breaks a unique index throws `UniqueViolationException` (namespace `TFM.Nucleus.Data`,
+in the Abstractions package), whichever provider stores the data. It says which rule was broken:
+
+- **`EntityType`** names the entity, and `IndexName` the Nucleus index name.
+- **`PropertyNames` and `ColumnNames`** list the index's key properties and columns, in key order.
+- **For a `[DatabaseColumn(Unique = true)]` index,** `PropertyName` and `ColumnName` name its one
+  property and column, and `Is<T>(name)` tests for it by either.
+- **For a unique `[TableIndex]`,** `DeclaredIndexName` is the name it was declared with, and
+  `IsIndex<T>(name)` tests for it. `PropertyName` and `ColumnName` are then null, even for one key.
+- **For an index Nucleus does not manage,** such as a primary key, the names are null and the lists
+  empty.
+
+The message is the one an ordinary storage failure carries, and the provider's own exception is
+the inner exception, so code that caught `Exception` before still does. The manager's `Save` and
+`SaveAsync` throw it as it is, not wrapped, so the filters below work on them as they do on a
+context's save.
 
 <!-- sample: unique-violation -->
 ```csharp
@@ -72,14 +96,20 @@ catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath
 }
 ```
 
+## Exceptions
+
 Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
 `catch (NucleusException)` catches the family: `UniqueViolationException`, `DataProviderException`
 and each provider's own, `DataContextException`, `InvalidQueryException`, `CoreObjectException` and
-the schema exceptions. Nucleus also throws the framework's own exceptions where they are the right
-ones (`ArgumentException`, `NotSupportedException`, `OperationCanceledException`); those are not
-wrapped.
+the schema exceptions.
+
+Nucleus also throws the framework's own exceptions where they are the right ones
+(`ArgumentException`, `NotSupportedException`, `OperationCanceledException`). Those are not wrapped.
 
 ## Change notifications
+
+A subscription tells a process that rows of a type were changed by something else, so it can
+reload what it holds. SQL Server and PostgreSQL offer it; SQLite does not.
 
 <!-- sample: change-subscription -->
 ```csharp
@@ -89,13 +119,16 @@ subscription.Changed += (_, e) => Console.WriteLine($"{e.EntityType.Name} change
 subscription.Faulted += (_, e) => Console.WriteLine("The subscription died; subscribe again.");
 ```
 
-## Features worth knowing
+SQL Server uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER`
+and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. PostgreSQL listens on a channel that each
+table's trigger notifies, which needs nothing beyond the schema Nucleus creates.
+
+## How it works underneath
 
 - **Change tracking.** Every entity keeps committed and pending property dictionaries. Saves write only the columns that actually changed.
-- **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types automatically gain `IsDeleted` and `DeletedAt` columns.
+- **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types gain `IsDeleted` and `DeletedAt` columns.
 - **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
-- **Change notifications.** `IObjectDataManager.SubscribeToChangesAsync<T>()` returns a provider-neutral `IChangeSubscription`. The SQL Server implementation uses SqlDependency and Service Broker, which needs `ALTER DATABASE ... SET ENABLE_BROKER` and the `SUBSCRIBE QUERY NOTIFICATIONS` permission. The PostgreSQL implementation LISTENs on a channel each table's trigger notifies, which needs nothing beyond the schema Nucleus creates. SQLite has none.
 - **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
 - **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
 - **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.

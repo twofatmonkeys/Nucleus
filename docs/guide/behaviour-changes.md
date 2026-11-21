@@ -1,11 +1,15 @@
 # Behaviour changes
 
-What changed in behaviour, newest first. A consumer upgrading reads down from the top.
+What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
+from the top until you reach a section you have already taken.
 
-These came in with the naming clean-up, and they break a build. They are the one set of breaking
-changes made without a major version; `AGENTS.md` records why. Rebuild every package that holds
-entities or a store against this version: an assembly compiled against the old attribute names
-loses its attributes without an error.
+## The naming clean-up
+
+These changes break a build. They are the one set of breaking changes made without a major
+version; `AGENTS.md` records why.
+
+Rebuild every package that holds entities or a store against this version. An assembly compiled
+against the old attribute names loses its attributes without an error.
 
 - **Renamed.** Find and replace each in your code.
 
@@ -44,8 +48,10 @@ loses its attributes without an error.
 - **`IPropertySchema.Create` always throws,** and it and `PropertySchema.PropertyCreator` are
   obsolete: they made the v1 child collection of a `[LinkedChildCollection]` property.
 
-These came in with the API surface review. Nothing was removed: each replaced member still works
-and is marked obsolete, so a build that treats warnings as errors will stop on them.
+## The API surface review
+
+Nothing was removed here. Each replaced member still works and is marked obsolete, so a build that
+treats warnings as errors will stop on them.
 
 - **Names aligned.** The old name of each still works.
 
@@ -113,7 +119,7 @@ and is marked obsolete, so a build that treats warnings as errors will stop on t
   `DataSet.Bind` and `BindRows` are obsolete too: they bind rows without attaching children or
   running the load hook.
 
-These came in with the SQL Server deadlock fix.
+## The SQL Server deadlock fix
 
 - **SQL Server reads and deletes a graph one table per statement.** A child collection, included
   reference or linked collection query reached its parents through a subquery over the parent's
@@ -126,7 +132,7 @@ These came in with the SQL Server deadlock fix.
 - **`SQLConfiguration.ConnectTimeoutSeconds`.** The SQL Server connect timeout was a fixed 3
   seconds; it is now a setting, still 3 seconds by default.
 
-These came in with links to child types.
+## Links to child types
 
 - **A child loaded on its own reads its parent.** A child loaded by a `[LinkedObject]`, `LoadByID`
   or a query of its type held its parent's ID, and reading `Parent` threw `InvalidCastException`.
@@ -137,7 +143,7 @@ These came in with links to child types.
   and the other async operators were ambiguous with `System.Linq.AsyncEnumerable` (CS0121) unless
   a `Where` came first. They are now declared on `IObjectDataAdaptor<T>`, with the same results.
 
-These came in with the linked object read.
+## The linked object read
 
 - **A loaded `[LinkedObject]` reads as its entity.** A load stored the referenced entity's ID and
   the property cast it to the entity type, so every read of a loaded reference threw
@@ -150,7 +156,7 @@ These came in with the linked object read.
 - **`IObjectSchema.GetLinkedObjects` returns the links an object holds.** A link never read since
   the load is left out instead of being loaded (it used to throw).
 
-These came in with save validation and the parent index.
+## Save validation and the parent index
 
 - **Every save validates.** Only an entity's own `Save` and `SaveAsync` ran `Validate()`, so a save
   through `IObjectDataManager.SaveAsync`, the manager's `Save` or `BulkSave`, or a context's `Save`,
@@ -184,7 +190,7 @@ This came in with the PostgreSQL test pool cap.
   own options, so a test that needs more sets `MaxConnectionPoolSize` itself. A full pool waits for
   a free connection rather than failing. Nothing changes outside the test package.
 
-These came in with the manager interface fix.
+## The manager interface fix
 
 - **`IObjectDataManager.DataProvider` is obsolete.** It is the unrooted default provider, so a
   store that opened a context or subscribed through it wrote to the wrong database for a type under
@@ -197,7 +203,7 @@ These came in with the manager interface fix.
   `NotSupportedException`, so another implementation still compiles. `ObjectDataManager` implements
   them all.
 
-These came in with the audit fixes.
+## The audit fixes
 
 - **`OnAfterLoadFromDB()` runs.** It ran on no load path before, so an override never ran. It now
   runs once per loaded object on every load, children before their parent.
@@ -219,7 +225,7 @@ These came in with the audit fixes.
   nullable. It does not write the default, unlike `PropertyInfo.SetValue`, so a caller's null is
   never saved as 0.
 
-These came in with entity reference predicates.
+## Entity reference predicates
 
 - **A comparison written value first means what it says.** `3 < x.Quantity` used to render as
   `Quantity < 3`: the sides were swapped and the operator kept, so it selected the opposite range.
@@ -230,8 +236,9 @@ These came in with entity reference predicates.
   `InvalidOperationException`) naming the term. They used to fail too, with the "member access"
   message or an unbound parameter error.
 
-These came in with the child model: declared deletes, removal persistence, child validation,
-forceSave and lazy collections.
+## The child model
+
+Declared deletes, removal persistence, child validation, forceSave and lazy collections.
 
 - **Removing a stored child and saving deletes it, when declared.** It used to leave the row behind
   without a word. Without a declaration, removing a stored child now throws at the call; removing
@@ -255,7 +262,7 @@ forceSave and lazy collections.
 - **A child entity can hold a child collection.** `GetChildCollection` required the parent to be a
   root entity.
 
-These came in with unique `[TableIndex]`.
+## Unique `[TableIndex]`
 
 - **Nothing changes for existing entities.** A `[TableIndex]` without `Unique` is created and compared
   as before, so its `NIX_` index is left alone.
@@ -263,7 +270,7 @@ These came in with unique `[TableIndex]`.
   over existing duplicates, the logged error and the exception now name the index as well as the
   table and its columns, for a column's `UQ_` index too.
 
-These came in with table naming.
+## Table naming
 
 - **Nothing is renamed by default.** The default policy is the full name, `RenameFullNameTables` is
   off, and an entity without the new attributes keeps the table it had.
@@ -276,7 +283,7 @@ These came in with table naming.
   one of the provider's own tables found in another table's catalog (one an adopted table brought
   along) is dropped and recreated in its own.
 
-These came in with row reads and `[TableIndex]`.
+## Row reads and `[TableIndex]`
 
 - **Indexes named `NIX_*` are managed.** The schema check and sync now read, create and drop
   `NIX_<table>_<name>` indexes as well as `NCI_*` and `UQ_*`, so a hand-made index whose name
@@ -286,7 +293,7 @@ These came in with row reads and `[TableIndex]`.
   only `Where`, and its `CountAsync` still loads the rows it counts; use `Rows<T>(...).CountAsync()`
   for a count in the database.
 
-These came in with the fix for schema updates on large tables.
+## Schema updates on large tables
 
 - **New columns are added in place.** Adding a property used to rebuild its table, copying every
   row in one statement under the driver's 30 second timeout, so a large table failed to migrate
@@ -311,7 +318,7 @@ This came in with the keyword column fix.
   syntax near the keyword 'By'"), so the provider would not start once its entity changed. The
   rebuild's row copy brackets every name now. Nothing changes for other tables.
 
-These came in with the fixes for the save path findings.
+## The save path findings
 
 - **A cancelled save throws `OperationCanceledException`.** `INucleusRuntime.SaveAsync`, which
   `CoreObject.SaveAsync(CancellationToken)` routes through, dropped its token, so a save could not
@@ -336,7 +343,7 @@ These came in with the fixes for the save path findings.
 - **A save of new and existing objects over the limit no longer throws.** The bulk engine writes
   its inserts and its updates as two writes in the same transaction.
 
-These came in with the fixes for the SQL Server review findings.
+## The SQL Server review findings
 
 - **SQL Server selects read committed data.** `Query.WithNoLock` was inverted: every select ran
   `WITH(NOLOCK)` and read uncommitted rows unless the flag was set, which removed the hint. A
@@ -360,7 +367,7 @@ These came in with the fixes for the SQL Server review findings.
   and the client value written, and nothing was read back. Both now apply to every column on both
   providers.
 
-These came in with the shared provider layer.
+## The shared provider layer
 
 - **Provider types are internal.** `TFM.Nucleus.Data.SQL` exposes only `AddNucleusSqlServerDataProvider`,
   `SQLConfiguration` and `SqlDataProviderException`. `SQLDataProvider`, `SqlDataContext`, the query
@@ -377,8 +384,9 @@ These came in with the shared provider layer.
   surface wrapped in a plain `Exception` when the driver threw inside the command; it now
   propagates as thrown, after a transactional context is marked for rollback.
 
-These came in with delete by predicate and child collection exclusion. Each fixes a defect, but each
-can change what existing code sees.
+## Delete by predicate and child collection exclusion
+
+Each of these fixes a defect, but each can change what existing code sees.
 
 - **Predicates no longer drop terms.** A bare bool column (`x => x.IsArchived`) is now a condition;
   it used to be ignored and match every row. `x => false` matches nothing; it used to match

@@ -1,7 +1,9 @@
 # Entities
 
-How an entity is declared: its base class, the attributes that map its properties to columns, and
-the hooks it can override.
+An entity is a class that derives from a Nucleus base class and marks its stored properties with
+attributes. This page covers the base classes, how a property becomes a column, indexes, the hooks
+an entity can override, and soft delete, full-text search and caching. How one entity holds others
+is on the [Relationships](relationships.md) page.
 
 ## Entity base classes
 
@@ -11,15 +13,22 @@ the hooks it can override.
 | `CoreChildObject<T, TParent>` | A child entity that always belongs to a parent. Exposes `Parent` and participates in cascade saves and deletes. |
 | `CoreChildObject<TParent>` | The non self-referencing form of the above. |
 
-Every entity gets `ID` (a `Guid` primary key, assigned on construction) and `Timestamp` (a `DateTimeOffset` set by the server) for free. The server stamps the stored `Timestamp` on every insert and update, but the value is not read back: in memory it is the client clock at the object's first save, and a loaded object keeps the value it was loaded with. Reading it back on every write was measured at 10% to 65% slower for batched, split and bulk saves on both providers.
+Every entity has two properties it does not declare:
 
-## Attribute reference
+- **`ID`**, a `Guid` primary key, assigned when the object is constructed.
+- **`Timestamp`**, a `DateTimeOffset` the server stamps on every insert and update. The stamped
+  value is not read back. In memory it is the client clock at the object's first save, and a
+  loaded object keeps the value it was loaded with. Reading it back on every write was measured at
+  10% to 65% slower for batched, split and bulk saves.
 
-### Column mapping
+## Columns
 
-`[DatabaseColumn]` marks a property as persisted. Without it, a property is in-memory only. The column name defaults to the property name through `[CallerMemberName]`, so `[DatabaseColumn]` on its own is the common case.
+`[DatabaseColumn]` marks a property as stored. A property without it lives in memory only. The
+column takes the property's name, so `[DatabaseColumn]` on its own is the common case.
 
-Constructors: `()`, `(ColumnDataType)`, `(int? dataLength)`, `(ColumnDataType, int? dataLength)`, each with an optional trailing column name.
+The attribute has four constructors, each with an optional trailing column name: `()`,
+`(ColumnDataType)`, `(int? dataLength)` and `(ColumnDataType, int? dataLength)`. Everything else is
+set by name:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -37,7 +46,26 @@ Constructors: `()`, `(ColumnDataType)`, `(int? dataLength)`, `(ColumnDataType, i
 | `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
 | `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
-**Renaming.** To rename a property and keep its data, rename the property and set `ColumnName` to the old name: the table does not change. Changing `ColumnName` on a table that already has rows is different. The schema sync sees a missing column and adds it empty, so **the property reads null on every existing row**. The old column and its values stay in the table, but nothing reads them. If the same deployment also changes a column's type, the table is rebuilt instead, copying only the columns whose names the old and new tables share, and the old column's values are lost. Rename the column in the database yourself before deploying the new name. Two properties may not map to one column (names are compared without regard to case), `ID` and `Timestamp` keep their names, and no property may take `ClusterID`, or `IsDeleted` or `DeletedAt` on a soft-deletable type. Each of these fails at provider initialisation.
+### Renaming a column
+
+To rename a property and keep its data, rename the property and set `ColumnName` to the old name.
+The table does not change.
+
+Changing `ColumnName` on a table that already has rows is different, and loses sight of the data:
+
+- The schema sync sees a missing column and adds it empty, so **the property reads null on every
+  existing row**. The old column and its values stay in the table, but nothing reads them.
+- If the same deployment also changes a column's type, the table is rebuilt instead. A rebuild
+  copies only the columns whose names the old and new tables share, so the old column's values are
+  lost.
+
+Rename the column in the database yourself before deploying the new name.
+
+Some names are refused at provider initialisation: two properties mapped to one column (names are
+compared without regard to case), a property renamed to `ID` or `Timestamp`, any property named
+`ClusterID`, and `IsDeleted` or `DeletedAt` on a soft-deletable type.
+
+### Column types
 
 Each property maps to a column type by its CLR type, or by `ColumnDataType` when one is given:
 
@@ -57,13 +85,41 @@ Each property maps to a column type by its CLR type, or by `ColumnDataType` when
 | `byte[]` | `varbinary(max)` | `bytea` | `BLOB` |
 | a type named `TFMJsonString` | `json` | `jsonb` | `JSON_TEXT` |
 
-The attribute and server-function vocabulary is named for what it means, not for one engine's feature. `ColumnDataType.Unicode` means the string holds Unicode text, and a provider whose strings are always Unicode treats it like any string. The older SQL Server names (`NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex`, `Filestream`, `SYSDATETIME`) are gone; see [Behaviour changes](behaviour-changes.md#behaviour-changes) for the table of renames.
+The vocabulary is named for what it means, not for one engine's feature. `ColumnDataType.Unicode`
+means the string holds Unicode text, and a provider whose strings are always Unicode treats it like
+any string. The older SQL Server names (`NonClusteredIndex`, `IndexSortDESC`, `FullTextIndex`,
+`Filestream`, `SYSDATETIME`) are gone; [Behaviour changes](behaviour-changes.md#behaviour-changes)
+has the table of renames.
 
-`Unique` creates a filtered unique index named `UQ_<table>_<column>` with `WHERE [column] IS NOT NULL`, so any number of rows may leave the column NULL while every non-null value must be distinct. Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever index is created. A write that breaks the index throws a [`UniqueViolationException`](saving.md#unique-violations). On SQL Server the index is nonclustered, and because it is filtered, SQL Server requires `SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and therefore Nucleus, sets it on by default, but SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I` and some legacy ODBC connections do not and will fail with error 1934 until they do. For a rule over several columns together, declare a unique [`[TableIndex]`](#class-level-behaviour) instead.
+### Unique columns
 
-On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in the database with the entity model and drops or creates them to match, without rebuilding the table. Indexes with any other name are never touched. If an existing column is changed to `Unique`, or a `[TableIndex]` is made `Unique`, and existing rows already hold duplicate values, the unique index cannot be created: initialisation fails with a logged error naming the index, the table and its columns, no rows are modified, and the duplicates must be resolved by hand before initialising again. The sync drops the index being replaced before it builds the new one, so until then the table has neither.
+`Unique` creates a unique index named `UQ_<table>_<column>`, filtered to rows where the column is
+not null. Any number of rows may leave the column NULL; every non-null value must be distinct.
 
-### Class-level behaviour
+- Setting `Indexed` as well does not add a second index, and `IndexDescending` applies to whichever
+  index is created.
+- A write that breaks the index throws a [`UniqueViolationException`](saving.md#unique-violations).
+- For a rule over several columns together, declare a unique
+  [`[TableIndex]`](#indexes-over-several-columns) instead.
+
+On SQL Server the index is nonclustered and filtered, and a filtered index needs
+`SET QUOTED_IDENTIFIER ON` for every INSERT, UPDATE and DELETE against the table. SqlClient, and so
+Nucleus, sets it on by default. SQL Agent T-SQL steps, `bcp` without `-q`, `sqlcmd` without `-I`
+and some legacy ODBC connections do not, and fail with error 1934 until they do.
+
+### How indexes are kept in step
+
+At initialisation the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in the database
+with the entity model and drops or creates them to match, without rebuilding the table. Indexes
+with any other name are never touched.
+
+A unique index cannot be created over rows that already hold duplicates. That happens when an
+existing column is changed to `Unique`, or a `[TableIndex]` is made `Unique`. Initialisation then
+fails with a logged error naming the index, the table and its columns. No rows are modified, and
+the duplicates must be resolved by hand before initialising again. The sync drops the index being
+replaced before it builds the new one, so until then the table has neither.
+
+## Attributes on the class
 
 | Attribute | Effect |
 |---|---|
@@ -81,7 +137,10 @@ On initialise the provider compares the `NCI_*`, `UQ_*` and `NIX_*` indexes in t
 Deletion is opt-in. Nothing is deleted unless a `[Deletable]` declaration says so: on the type, on
 a child collection property, or on an owner above a child type. See [Deleting](relationships.md#deleting).
 
-`[TableIndex]` declares an index over several columns, by property name:
+### Indexes over several columns
+
+`[TableIndex]` declares an index over several columns, by property name. This entity has two, and
+also shows the table naming attributes, which [Tables and schema](schema.md#table-names) explains:
 
 <!-- sample: entity-naming -->
 ```csharp
@@ -112,13 +171,39 @@ public class GiftShopVisit : ShopRoot<GiftShopVisit>
 }
 ```
 
-The keys order the index, first to last, each ascending, so a read that filters on the first key, or on the first and a range of the second, finds its rows without scanning the table. The included columns are carried in the index without ordering it, so a read that needs only key and included columns (a [row read](querying.md#row-reads) of them, say) is answered from the index alone. Keys cannot be long text (`DataLength = -1`); included columns can. A name used twice on the type, a property that is not a stored column, a column named twice or a long text key fails when the schema is built. The index is created on SQL Server as a nonclustered index and on PostgreSQL (11 or later) with `INCLUDE`; it is compared and synced like a column index, so changing its keys or included columns drops and creates it again, and removing the attribute drops it. Creating one over a large table blocks writes to the table while it builds, and the time it took is logged.
+**Keys and included columns.** The keys order the index, first to last, each ascending. A read
+that filters on the first key, or on the first and a range of the second, finds its rows without
+scanning the table. The included columns are carried in the index without ordering it, so a read
+that needs only key and included columns (a [row read](querying.md#row-reads) of them, say) is
+answered from the index alone. SQLite has no included columns and creates the index over its keys.
 
-`Unique = true` makes the keys a unique rule taken together, the several-column form of a column's `Unique`, as `SessionPath` is above.
+**What is refused.** Keys cannot be long text (`DataLength = -1`); included columns can. A name
+used twice on the type, a property that is not a stored column, a column named twice or a long
+text key fails when the schema is built.
 
-No two rows may share every key value. The index is filtered to rows whose keys are all non-null (`WHERE [SessionId] IS NOT NULL AND [Path] IS NOT NULL`), so a row with any key left null is not constrained, the same on SQL Server and PostgreSQL. `Include` can be used with it. A write that breaks it throws a [`UniqueViolationException`](saving.md#unique-violations) naming the entity and the index. Turning `Unique` on or off drops and creates the index again, never the table. Existing duplicates fail initialisation as described above. With `ReadOnlySchema`, a missing index, or one whose uniqueness differs, reports the schema as not current and nothing is created. On SQL Server the index is filtered, so the `QUOTED_IDENTIFIER` requirement described for `Unique` above applies to the table.
+**How it is maintained.** The index is compared and synced like a column index. Changing its keys
+or included columns drops and creates it again, and removing the attribute drops it. Creating one
+over a large table blocks writes to the table while it builds, and the time it took is logged.
 
-### Relationships
+**Unique indexes.** `Unique = true` makes the keys a unique rule taken together, the several-column
+form of a column's `Unique`, as `SessionPath` is above. No two rows may share every key value.
+
+- The index is filtered to rows whose keys are all non-null
+  (`WHERE [SessionId] IS NOT NULL AND [Path] IS NOT NULL`), so a row with any key left null is not
+  constrained. `Include` can be used with it.
+- A write that breaks it throws a [`UniqueViolationException`](saving.md#unique-violations) naming
+  the entity and the index.
+- Turning `Unique` on or off drops and creates the index again, never the table. Existing
+  duplicates fail initialisation, as described under
+  [How indexes are kept in step](#how-indexes-are-kept-in-step).
+- With `ReadOnlySchema`, a missing index, or one whose uniqueness differs, reports the schema as
+  not current and nothing is created.
+- On SQL Server the index is filtered, so the `QUOTED_IDENTIFIER` requirement described under
+  [Unique columns](#unique-columns) applies to the table.
+
+### Relationship attributes
+
+The [Relationships](relationships.md) page explains these; this is the list.
 
 | Attribute | Applies to | Effect |
 |---|---|---|
@@ -135,11 +220,13 @@ No two rows may share every key value. The index is filtered to rows whose keys 
 | `[SuppressLogging]` | Omits the type or property from audit summaries. Note it is inherited, so applying it to a base class silences every descendant. |
 | `[AbbreviatedLogging]` | Records that the property changed without recording the values, for long or sensitive data. |
 | `[LinkWhenLogging]` | Marks a linked object whose type and ID are to be attached to the log entry's linked objects. Not applied yet: the attribute is read into the schema and nothing acts on it. See [Known limits](known-limits.md#known-limits). |
-| `[RetrieveOnDemand]` | On a child collection, makes it lazy (see [Relationships](#relationships)). On any other property it has no effect. |
+| `[RetrieveOnDemand]` | On a child collection, makes it lazy (see [Relationship attributes](#relationship-attributes)). On any other property it has no effect. |
 
-## Static API reference
+## The static API
 
-These live on `CoreObject` and forward to the runtime that `AddNucleusData()` publishes, so DI must be configured before they are used. Every generic argument is constrained to `where T : CoreObject<T>, new()`.
+These members live on `CoreObject`. They forward to the runtime that `AddNucleusData()` publishes
+when the manager is first resolved, so dependency injection must be set up before they are used.
+The generic argument of each load and delete is constrained to `where T : CoreObject<T>, new()`.
 
 | Member | Returns | Notes |
 |---|---|---|
@@ -168,7 +255,7 @@ Instance members on every entity:
 
 Equality, `GetHashCode` and the explicit conversion to `Guid` are all based on `ID`.
 
-## Lifecycle hooks
+## Hooks and validation
 
 Override these on an entity to run logic at defined points:
 
@@ -214,11 +301,10 @@ public class WeighIn : CoreObject<WeighIn>
 }
 ```
 
-## Validation
-
-`Validate()` runs at the start of every save, on every path, once per object saved, and a parent's
-runs its new and changed children's. Throw to refuse the save: nothing is written, and the
-exception reaches the caller as it was thrown. An override must call `base.Validate()`.
+`Validate()` is where an entity's rules go. Throw to refuse the save: nothing is written, and the
+exception reaches the caller as it was thrown. A parent's `Validate()` runs its new and changed
+children's, so a child's rule holds without the parent restating it. The order line here refuses a
+quantity of zero, and that stops a save of its order:
 
 <!-- sample: entity-order -->
 ```csharp
@@ -268,7 +354,11 @@ public enum OrderStatus { Placed, Ripening, Delivered, Eaten }
 
 ## Soft delete, full-text search and server-stamped values
 
-One entity shows all three. `[Deletable(DeleteBehavior.Soft)]` keeps a deleted row and hides it from ordinary reads; `FullTextSearch` indexes a text column; `SetValueOverride` has the database server stamp a value on every write.
+One entity shows all three:
+
+- `[Deletable(DeleteBehavior.Soft)]` keeps a deleted row and hides it from ordinary reads.
+- `FullTextSearch` indexes a text column.
+- `SetValueOverride` has the database server stamp a value on every write.
 
 <!-- sample: entity-mischief -->
 ```csharp
@@ -321,7 +411,8 @@ var lunches = await data.Get<MischiefReport>().IncludeDeleted().Where(r => r.Des
 
 ## Caching
 
-`[Cacheable]` holds the whole table in memory, for a small table read far more often than it changes:
+`[Cacheable]` holds the whole table in memory. It suits a small table that is read far more often
+than it changes:
 
 <!-- sample: entity-variety -->
 ```csharp
@@ -337,6 +428,8 @@ public class BananaVariety : CoreObject<BananaVariety>
     public int Curvature { get => GetValue<int>(); set => SetValue(value); }
 }
 ```
+
+Reads then come from memory, and a save or a delete of the type evicts the cache:
 
 <!-- sample: cacheable -->
 ```csharp

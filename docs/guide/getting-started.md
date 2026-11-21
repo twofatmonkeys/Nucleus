@@ -1,17 +1,20 @@
 # Getting started
 
-How to register Nucleus, define an entity and read and write it. The examples are set in the
-[Portly Primate Sanctuary](../sample-domain.md), and every one of them is compiled and run by the
-tests in `tests/TFM.Nucleus.DocSamples`.
+This page takes you from an empty project to saved and loaded entities, then lists every
+registration method and option. The examples are set in the
+[Portly Primate Sanctuary](../sample-domain.md), and each one is compiled and run by the tests in
+`tests/TFM.Nucleus.DocSamples`.
 
 ## Quick start
+
+### 1. Register and initialise
 
 Reference `TFM.Nucleus` and a provider package (see [Install](../../README.md#install)). A console
 application also needs `Microsoft.Extensions.DependencyInjection` and `Microsoft.Extensions.Logging`;
 a web application has them already.
 
-Register Nucleus, the data services and a provider, then initialise. This one uses SQLite, so it
-runs anywhere without a server:
+Three registrations are needed: Nucleus itself, the data services and a provider. Then initialise
+once at start-up. This example uses SQLite, so it runs anywhere without a server:
 
 <!-- sample: quick-start -->
 ```csharp
@@ -57,11 +60,31 @@ services.AddNucleusPostgresDataProvider(options =>
 });
 ```
 
-`InitializeDataProviderAsync` connects, then creates or migrates the database, tables, indexes and full-text indexes (and, on PostgreSQL, the change notification triggers) to match your entity classes. Set `NucleusOptions.ReadOnlySchema` to `true` to make it verify without writing.
+### 2. What initialising does
 
-How a table is migrated depends on what changed. A table that only lacks columns (a new property, or the soft-delete columns of a type newly made soft-deletable) has them added in place with `ALTER TABLE`. A new property's column is created NULL, so the change is metadata only and takes no time at any table size, and existing rows read the new column as null. The soft-delete flag is the exception: it is created `NOT NULL` with a default of 0 (see [Behaviour changes](behaviour-changes.md#behaviour-changes) for what that costs on SQL Server). A column whose type or size changed means a rebuild: the table is renamed, created again and its rows copied across in one transaction, which takes time in proportion to the table. A column the entity no longer has is left in the table either way. Each schema statement runs under `SchemaCommandTimeoutSeconds` (15 minutes by default).
+`InitializeDataProviderAsync` connects, then makes the database match your entity classes: it
+creates the database if it is missing, then the tables, indexes and full-text indexes, and on
+PostgreSQL the triggers that change notifications use. Set `NucleusOptions.ReadOnlySchema` to
+`true` and it checks the schema without changing anything.
 
-Define entities. Properties are backed by the framework's change-tracking dictionaries through `GetValue`/`SetValue` rather than by fields:
+How an existing table is brought up to date depends on what changed:
+
+- **A new property.** Its column is added in place with `ALTER TABLE`. The column is created NULL,
+  so the change is metadata only and takes no time at any table size. Existing rows read it as null.
+- **A type newly made soft-deletable.** Its two soft-delete columns are added in place too, but the
+  flag is `NOT NULL` with a default of 0. See [Behaviour changes](behaviour-changes.md#behaviour-changes)
+  for what that costs on SQL Server.
+- **A column whose type or size changed.** The table is rebuilt: renamed, created again and its
+  rows copied across in one transaction. That takes time in proportion to the table.
+- **A property that was removed.** Its column is left in the table.
+
+Each schema statement runs under `SchemaCommandTimeoutSeconds`, 15 minutes by default.
+
+### 3. Define entities
+
+An entity derives from `CoreObject<T>`, and each stored property carries `[DatabaseColumn]`. A
+property reads and writes through `GetValue` and `SetValue` instead of a field, which is how
+Nucleus knows what changed and writes only that:
 
 <!-- sample: entity-monkey -->
 ```csharp
@@ -80,6 +103,9 @@ public class Monkey : CoreObject<Monkey>
     public Mood Mood { get => GetValue<Mood>(); set => SetValue(value); }
 }
 ```
+
+Rows that belong to another entity are a child collection on it. An order owns its lines, and a
+line owns its substitutions:
 
 <!-- sample: entity-order -->
 ```csharp
@@ -127,6 +153,11 @@ public class LineSubstitution : CoreChildObject<LineSubstitution, BananaOrderLin
 public enum OrderStatus { Placed, Ripening, Delivered, Eaten }
 ```
 
+[Entities](entities.md) covers the attributes, and [Relationships](relationships.md) the three ways
+one entity holds others.
+
+### 4. Read and write
+
 There are two ways in, and both run the same code. The static API on `CoreObject` is the short one:
 
 <!-- sample: static-api -->
@@ -143,7 +174,8 @@ gerald.WeightKg = 14.6m;                       // only the changed column is wri
 await gerald.SaveAsync();
 ```
 
-The manager, through its LINQ adaptor, is the one an application service uses:
+The other is the manager, `IObjectDataManager`, which an application service takes from dependency
+injection. Its `Get<T>()` is a LINQ query:
 
 <!-- sample: queries -->
 ```csharp
@@ -162,12 +194,14 @@ Console.WriteLine($"{page.Count} of {page.TotalCount}, more to come: {page.HasMo
 var names = smug.OrderBy(m => m.Name).Select(m => m.Name).ToList();
 ```
 
-### The manager interface
+## The manager interface
 
-`IObjectDataManager` is the data surface DI registers, and it is what an application service or a
-store takes. Every call routes the entity type to the provider of its nearest registered root,
-runs in a transaction of its own, evicts the `[Cacheable]` cache when it commits and marks the
-objects saved. Do not cast it to `ObjectDataManager`.
+`IObjectDataManager` is what dependency injection registers, and what an application service or a
+store takes. Do not cast it to `ObjectDataManager`. Every call on it:
+
+- routes the entity type to the provider of its nearest registered root;
+- runs in a transaction of its own;
+- evicts the `[Cacheable]` cache when it commits, and marks the objects saved.
 
 | Member | Does |
 |---|---|
@@ -187,7 +221,8 @@ objects saved. Do not cast it to `ObjectDataManager`.
 | `InitializeDataProviderAsync()` | Creates or migrates every registered provider's schema. |
 | `Status` | The worst status among the registered providers; `Ok` only when every one is. |
 
-A load takes its extras as a `LoadOptions`, so the names cannot be passed in each other's place:
+A load takes its extras as a `LoadOptions`: what to leave out, what to bring in, and whether
+soft-deleted rows are seen.
 
 <!-- sample: load-options -->
 ```csharp
@@ -206,6 +241,10 @@ var page = await data.LoadPagedAsync<BananaOrder>(skip: 0, take: 20, o => o.Stat
 var firstOrder = orders.First();
 await firstOrder.Lines.LoadAsync(ct);
 ```
+
+A store built on the interface looks like this. A batch of one type is one call and one
+transaction. Several types in one transaction use a caller-owned context, which commits when it is
+disposed unless it was rolled back:
 
 <!-- sample: store -->
 ```csharp
@@ -236,15 +275,24 @@ public sealed class KeeperDesk(IObjectDataManager data)
 }
 ```
 
-`DataProvider` and `DataProviderStatus` are obsolete: they are the unrooted default provider and
-its status, so a context opened or a subscription made through `DataProvider` goes to the wrong
-database for a type under a rooted provider. Use the routed members and `Status`. The synchronous
-writes and loads stay on the concrete class for the static `CoreObject` API. `BulkSave` is
-obsolete everywhere: there is one save, and it picks the bulk engine by itself. On the concrete
-class the overloads that took two lists of names are obsolete in favour of `LoadOptions`, and a
-load that takes an untyped `Expression` accepts a predicate whole or as its `Body`.
+### Members to avoid
+
+Some older members still compile and are marked obsolete:
+
+- **`DataProvider` and `DataProviderStatus`.** They are the unrooted default provider and its
+  status. A context opened or a subscription made through `DataProvider` goes to the wrong database
+  for a type under a rooted provider. Use the routed members and `Status`.
+- **`BulkSave`.** There is one save, and it picks the bulk engine by itself.
+- **Loads taking two lists of names**, on the concrete class. Use `LoadOptions`.
+
+The synchronous writes and loads stay on the concrete class, where the static `CoreObject` API
+uses them. A load there that takes an untyped `Expression` accepts a predicate whole or as its
+`Body`.
 
 ## Registration reference
+
+Each provider has the same four overloads: from environment variables, from explicit options, and
+two that root the provider at a base type so one application can span several databases.
 
 | Method | Package | Purpose |
 |---|---|---|
@@ -255,7 +303,7 @@ load that takes an untyped `Expression` accepts a predicate whole or as its `Bod
 | `AddNucleusSqlServerDataProvider()` | `TFM.Nucleus.Data.SQL` | Configures from the `SQL_SERVER`, `SQL_DATABASE`, `SQL_USERNAME` and `SQL_PASSWORD` environment variables. |
 | `AddNucleusSqlServerDataProvider(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Configures explicitly. |
 | `AddNucleusSqlServerDataProvider<TRoot>(Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | Registers a provider rooted at `TRoot`, for spanning several databases. |
-| `AddNucleusSqlServerDataProvider(Type rootType, Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | The same for open-generic roots, for example `typeof(AppRoot<>)`. |
+| `AddNucleusSqlServerDataProvider(Type rootType, Action<SQLConfiguration>)` | `TFM.Nucleus.Data.SQL` | The same for open-generic roots, for example `typeof(ShopRoot<>)`. |
 | `AddNucleusPostgresDataProvider()` | `TFM.Nucleus.Data.PostgreSQL` | Configures from the `PG_SERVER`, `PG_DATABASE`, `PG_USERNAME` and `PG_PASSWORD` environment variables, and `PG_PORT` when set. |
 | `AddNucleusPostgresDataProvider(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Configures explicitly. |
 | `AddNucleusPostgresDataProvider<TRoot>(Action<PostgresConfiguration>)` | `TFM.Nucleus.Data.PostgreSQL` | Registers a provider rooted at `TRoot`. Roots on SQL Server and on PostgreSQL can live in one application. |
@@ -278,7 +326,8 @@ load that takes an untyped `Expression` accepts a predicate whole or as its `Bod
 
 ### Configuration from appsettings
 
-A provider's options and `NucleusOptions` bind from configuration like any other options class:
+`NucleusOptions` and a provider's options bind from configuration like any other options class.
+Keep the password out of the file:
 
 <!-- sample: register-configuration -->
 ```csharp
@@ -297,8 +346,9 @@ services.AddNucleusSqlServerDataProvider(options =>
 
 ### More than one database
 
-Register a provider for a root type, and every entity under that root is stored by it. Anything
-under no registered root goes to the provider registered without one:
+Register a provider for a base type, and every entity that derives from it is stored by that
+provider. An entity under no registered root goes to the provider registered without one. Each
+provider has its own connection, database and options:
 
 <!-- sample: register-rooted -->
 ```csharp

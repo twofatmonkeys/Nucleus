@@ -1,10 +1,28 @@
 # Tables and schema
 
-How tables are named, and how the schema is created and updated.
+Nucleus creates and updates tables from the entity classes. This page covers how a table gets its
+name, how to change a name without losing the rows, and what does and does not get a table.
+[Getting started](getting-started.md#2-what-initialising-does) describes what initialising does to
+an existing table's columns.
 
 ## Table names
 
-A table is named, in order of precedence, by the type's `[DatabaseTable]`, then by its own (or an inherited) `[TableNaming]` policy, then by its provider's `TableNaming` option. The default policy, `TableNamingPolicy.FullName`, gives every table the name it always had: `tbl_` and the type's full name with each `.` and `+` replaced by `_`, so `PortlyPrimate.Shop.GiftShopVisit` is `tbl_PortlyPrimate_Shop_GiftShopVisit`. `TableNamingPolicy.ObjectName(levels)` keeps only the last `levels` parts of the full name, a nested type's outer type counting as a part: `ObjectName(1)` names it `tbl_GiftShopVisit` and `ObjectName(2)` `tbl_Shop_GiftShopVisit`. More levels than the name has gives the full name.
+A table's name comes from the first of these that applies:
+
+1. `[DatabaseTable]` on the type.
+2. `[TableNaming]` on the type, or inherited from a base class.
+3. The `TableNaming` option of the provider that stores it.
+
+There are two policies:
+
+- **`TableNamingPolicy.FullName`**, the default, gives every table the name it always had: `tbl_`
+  and the type's full name with each `.` and `+` replaced by `_`. So
+  `PortlyPrimate.Shop.GiftShopVisit` is `tbl_PortlyPrimate_Shop_GiftShopVisit`.
+- **`TableNamingPolicy.ObjectName(levels)`** keeps only the last `levels` parts of the full name,
+  a nested type's outer type counting as a part. `ObjectName(1)` names it `tbl_GiftShopVisit` and
+  `ObjectName(2)` `tbl_Shop_GiftShopVisit`. More levels than the name has gives the full name.
+
+A provider's policy is set where it is registered:
 
 <!-- sample: register-rooted -->
 ```csharp
@@ -27,7 +45,8 @@ services.AddNucleusSqlServerDataProvider(typeof(ShopRoot<>), options =>
 });
 ```
 
-The policy can also be declared on a base class, and a single table named outright, with the names it had before:
+A policy can also be declared on a base class, and a single table named outright, with the names
+it had before:
 
 <!-- sample: entity-naming -->
 ```csharp
@@ -58,18 +77,57 @@ public class GiftShopVisit : ShopRoot<GiftShopVisit>
 }
 ```
 
-A `[DatabaseTable]` name is the whole table name, prefix included: letters, digits and underscores, starting with a letter or underscore, at most 128 characters. It is not inherited, because a root and the entities under it each have a table and an inherited name would give them one. `[TableNaming]` is inherited, since a policy still gives each type a name of its own, and a type's own attribute wins over its root's. Index and constraint names follow the table name (`NCI_<table>_<column>` and so on), and on PostgreSQL a name over 63 bytes is shortened as usual. Two types that end up with one table name, a `[LegacyTableNames]` entry that is another type's table, and an old name two types both claim each fail at provider initialisation, naming the types.
+The rules for these attributes:
 
-**Changing a name does not move the data by itself.** On a database that already has tables, a new name makes the schema sync look for a table that is not there, and by default it creates an empty one and leaves the old table, rows and all, where it was. Two things make it rename the old table instead, inside the schema transaction, keeping its rows and its object id (nothing is copied):
+- **`[DatabaseTable]`** gives the whole table name, prefix included: letters, digits and
+  underscores, starting with a letter or underscore, at most 128 characters. It is not inherited,
+  because a root and the entities under it each have a table, and an inherited name would give
+  them one between them.
+- **`[TableNaming]`** is inherited, since a policy still gives each type a name of its own. A
+  type's own attribute wins over its root's.
+- **Index and constraint names** follow the table name (`NCI_<table>_<column>` and so on). On
+  PostgreSQL a name over 63 bytes is shortened.
+- **Clashes fail at provider initialisation,** naming the types: two types that end up with one
+  table name, a `[LegacyTableNames]` entry that is another type's table, and an old name two types
+  both claim.
+
+## Changing a table's name
+
+**Changing a name does not move the data by itself.** On a database that already has tables, a new
+name makes the schema sync look for a table that is not there. By default it creates an empty one
+and leaves the old table, rows and all, where it was.
+
+Two things make it rename the old table instead. The rename happens inside the schema transaction
+and keeps the table's rows and its object id; nothing is copied.
 
 - `[LegacyTableNames]` on the entity lists the names its table had. It applies under any policy.
 - `RenameFullNameTables` on the provider adopts the table under the entity's full-name form, the name every table had before policies existed, whenever the configured name differs from it. Set it when turning on a shorter policy, or when adding `[DatabaseTable]` to an existing entity.
 
-The rename covers the table's primary key, constraints and Nucleus-named indexes, which take the new table's names, so no index is rebuilt (SQLite cannot rename an index, so there the index sync drops the old-named ones and creates them again under the new names); on PostgreSQL the old change notification trigger is dropped and the new one created. The table is then brought up to date like any existing table: columns it lacks are added in place, and a changed column type rebuilds it. On SQL Server a full-text index cannot change inside a transaction, so it moves with the table and is recreated in the new table's catalog by the full-text sync.
+What the rename does:
 
-If more than one of a missing table's old tables exists, nothing is renamed: initialisation fails, nothing is changed, and the error names the tables. Nucleus does not merge tables, because their rows can share IDs, their children point at parents by ID, and their columns can differ, so which rows to keep is a decision for a person. Move the rows you want into one of them, drop the others, and initialise again. If the entity's table exists and an old one does too, the old table is left alone and a warning is logged. Nothing is renamed while the schema is read-only; the check logs what an update would rename. Two processes starting together against a database that still needs a rename can both try it, and the second fails its initialisation and succeeds on its next start, as a racing table create does.
+- It covers the table's primary key, constraints and Nucleus-named indexes, which take the new
+  table's names, so no index is rebuilt. SQLite cannot rename an index, so there the index sync
+  drops the old-named ones and creates them again under the new names.
+- On PostgreSQL the old change notification trigger is dropped and the new one created.
+- On SQL Server a full-text index cannot change inside a transaction, so it moves with the table
+  and is recreated in the new table's catalog by the full-text sync.
+- The table is then brought up to date like any existing table: columns it lacks are added in
+  place, and a changed column type rebuilds it.
 
-## Rules for a table
+When it does not rename:
+
+- **Several old tables exist.** Initialisation fails, nothing is changed, and the error names the
+  tables. Nucleus does not merge tables: their rows can share IDs, their children point at parents
+  by ID, and their columns can differ, so which rows to keep is a decision for a person. Move the
+  rows you want into one of them, drop the others, and initialise again.
+- **The entity's table exists and an old one does too.** The old table is left alone and a warning
+  is logged.
+- **The schema is read-only.** Nothing is renamed; the check logs what an update would rename.
+
+Two processes starting together against a database that still needs a rename can both try it. The
+second fails its initialisation and succeeds on its next start, as a racing table create does.
+
+## What gets a table
 
 - An entity gets a table only when it has at least one column of its own beside `ID` and
   `Timestamp`. A class with child collections and no `[DatabaseColumn]` property is not stored.

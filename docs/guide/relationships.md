@@ -1,16 +1,23 @@
 # Relationships
 
-Three ways one entity holds others: rows it owns (a child collection), a reference to another root
-(a linked object), and roots that belong to it (a linked collection).
+There are three ways one entity holds others. Which one fits depends on whether the other rows
+have a life of their own:
+
+| The other rows | Use | Example |
+|---|---|---|
+| Are owned: created, changed and deleted with this entity | A [child collection](#child-collections) | An order's lines |
+| Are one separate entity this one points at | A [linked object](#linked-objects) | A resident's keeper |
+| Are many separate entities that belong to this one | A [linked collection](#linked-collections) | A troop's residents |
 
 ## Child collections
 
-Child collections are rows a parent owns: they are created with it, change with it and go with it
-(a banana order's lines, a resident's naps). Model them as a
-`NucleusChildCollection<TChild, TParent>` property on the parent, read through
-`GetChildCollection`, with the child deriving from `CoreChildObject<TChild, TParent>`. A child can
-own a collection of its own, so owned rows nest to any depth. A parent holds at most one collection
-of each child type; two fail when the schema is built.
+A child collection holds rows a parent owns: they are created with it, change with it and go with
+it, like a banana order's lines or a resident's naps.
+
+Declare it as a `NucleusChildCollection<TChild, TParent>` property on the parent, read through
+`GetChildCollection`, and derive the child from `CoreChildObject<TChild, TParent>`. A child can own
+a collection of its own, so owned rows nest to any depth. A parent holds at most one collection of
+each child type; two fail when the schema is built.
 
 <!-- sample: entity-order -->
 ```csharp
@@ -81,7 +88,7 @@ await data.SaveAsync(loaded, ct);
 // await data.DeleteAsync(loaded, ct);
 ```
 
-Nucleus then does the bookkeeping:
+Nucleus does the bookkeeping from there:
 
 - **Loading.** Every load of the parent brings its children in the same round trip, bound to the
   parent and unchanged: `LoadWhere`, `LoadByID`, paged loads and the async LINQ operators. When a
@@ -109,17 +116,24 @@ Nucleus then does the bookkeeping:
 - **Change notification.** A change to a child, or to the collection, raises `PropertyChanged` on
   the parent for the collection property's name.
 
-Do not keep owned rows as a separate entity with a hand-written parent ID column, a private list,
+Do not model owned rows as a separate entity with a hand-written parent ID column, a private list,
 or attach, remove and acknowledge methods. That rebuilds what the collection already does, and gets
-the transaction, the cascade or the cache eviction wrong. Use a separate entity with a plain ID
-reference only for rows that outlive the parent or that more than one parent shares.
+the transaction, the cascade or the cache eviction wrong. Rows that outlive the parent, or that
+more than one parent shares, are not owned: use a linked object or a linked collection for those.
 
 ### Deleting
 
 Nothing is deleted unless a declaration says so. `[Deletable]` can go in three places, on any or
 all of them:
 
-A resident's naps are declared deletable on the collection (the entity is shown under [Lazy collections](#lazy-collections)), so removing one and saving deletes its row:
+| Declared on | What it enables |
+|---|---|
+| The entity type | Its rows can be deleted directly (`Delete()`, `DeleteWhere`), and everything it owns goes with them. On a child type, removing one from its collection deletes it too. |
+| A child collection property | Removing a stored child from that collection and saving the parent deletes the child, with everything it owns. |
+| The parent (or any owner above) | Its own rows can be deleted, and every child type below it, at any depth, is deleted with it or when removed from its collection. |
+
+A resident's naps are declared deletable on the collection (the entity is shown under
+[Lazy collections](#lazy-collections)), so removing one and saving deletes its row:
 
 <!-- sample: remove-child -->
 ```csharp
@@ -129,19 +143,17 @@ resident.Naps.Remove(nap);
 await data.SaveAsync(resident, ct);
 ```
 
-| Declared on | What it enables |
-|---|---|
-| The entity type | Its rows can be deleted directly (`Delete()`, `DeleteWhere`), and everything it owns goes with them. On a child type, removing one from its collection deletes it too. |
-| A child collection property | Removing a stored child from that collection and saving the parent deletes the child, with everything it owns. |
-| The parent (or any owner above) | Its own rows can be deleted, and every child type below it, at any depth, is deleted with it or when removed from its collection. |
+How the declarations combine:
 
-A child type made deletable only by its collection or an owner is deleted through its owner and
-never on its own: `Delete()` on it throws. `[Deletable(false)]` on a child type forbids deleting its
-rows by any route, and wins: when a declaration above it would delete them, the schema fails to
-build, naming both declarations, rather than orphaning rows at delete time. `[Deletable(false)]` on
-a parent stops only the parent's own deletion; `[Deletable]` on its collection still makes removals
-delete. `[Deletable]` on a property that is not a child collection, and `[Deletable(false)]` on a
-collection, fail when the schema is built.
+- A child type made deletable only by its collection or an owner is deleted through its owner and
+  never on its own: `Delete()` on it throws.
+- `[Deletable(false)]` on a child type forbids deleting its rows by any route, and it wins. When a
+  declaration above it would delete them, the schema fails to build and names both declarations,
+  rather than leaving orphaned rows at delete time.
+- `[Deletable(false)]` on a parent stops only the parent's own deletion. `[Deletable]` on its
+  collection still makes removals delete.
+- `[Deletable]` on a property that is not a child collection, and `[Deletable(false)]` on a
+  collection, fail when the schema is built.
 
 **Hard or soft.** A type's own declaration decides. A child type without one takes the behaviour
 of the nearest declaration above it that enables deleting it (the collection's when it names one,
@@ -157,34 +169,45 @@ A child that was never saved can always be removed; it is simply dropped.
 every depth in one batch: deepest first, each level selecting by its parent's condition, and each
 type keeping its own hard or soft behaviour. It does not depend on which children were loaded.
 
-**Deleting by predicate.** `DeleteWhere` and `DeleteWhereAsync` exist on `CoreObject` (static), the
-object data manager (each in a transaction of its own, with cache eviction), and `IDataContext`
-(in a caller-owned context and transaction, without cache eviction). No row is loaded. The predicate
-uses the same translation as `LoadWhere`, with two guards: a predicate that matches every row, such
-as `x => true`, throws `ArgumentException`, and one that matches none, such as `x => false`,
-returns 0 without a round trip. Soft-deletable types are flagged, and only rows not already
-deleted count.
+**Deleting by predicate.** `DeleteWhere` and `DeleteWhereAsync` delete every matching row without
+loading any. They are on `CoreObject` (static) and on the manager, where each call runs in a
+transaction of its own and evicts the cache, and on `IDataContext`, where the caller owns the
+transaction and no cache is evicted. The predicate is translated as a load's is, with two guards:
+
+- a predicate that matches every row, such as `x => true`, throws `ArgumentException`;
+- one that matches none, such as `x => false`, returns 0 without a round trip.
+
+Rows of a soft-deletable type are flagged, and only rows not already deleted count.
 
 ### Leaving a collection out
 
-`Exclude(x => x.Items)` on a query, or the `exclude` selectors on `LoadByID` and `LoadWhere`, drop
-that collection's query. Its rows are never queried or transferred, and the collection comes back
-with `IsLoaded` false. Reading it (enumerating, `Count`, the indexer, `Contains`, `Remove`, `Clear`)
-throws `InvalidOperationException` rather than answering as if the parent had no children. Adding
-still works, and added children save with the parent. `collection.LoadAsync()` fetches the stored
-children by the parent's ID and merges them by ID with any added since;
-`IObjectDataManager.LoadChildCollectionAsync(collection)` does the same without the ambient
-runtime. An excluded load never reads from or populates the `[Cacheable]` cache. Serialising a
-parent whose collection is excluded throws for the same reason.
+A listing that does not need a parent's children can leave them out. `Exclude(x => x.Lines)` on a
+query, `LoadOptions.Exclude` on a manager load, or the `exclude` selectors on the static `LoadByID`
+and `LoadWhere`, drop that collection's query. Its rows are never queried or transferred.
+
+The collection comes back with `IsLoaded` false, and it will not pretend to be empty:
+
+- **Reading it throws.** Enumerating, `Count`, the indexer, `Contains`, `Remove` and `Clear` throw
+  `InvalidOperationException` rather than answering as if the parent had no children. Serialising
+  the parent throws for the same reason.
+- **Adding still works,** and added children save with the parent.
+- **It can be loaded later.** `collection.LoadAsync()` fetches the stored children by the parent's
+  ID and merges them by ID with any added since.
+  `IObjectDataManager.LoadChildCollectionAsync(collection)` does the same without the ambient
+  runtime.
+
+An excluded load never reads from or fills the `[Cacheable]` cache.
 
 ### Lazy collections
 
 `[RetrieveOnDemand]` on a child collection makes it lazy, for a collection that can grow large.
-Every load of the parent leaves its rows out, and the collection loads them the first time it is
-read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`, `Clear`, `Insert`), once,
-however many threads read it together. The read goes through the manager or data context that
-loaded the parent, on a connection of its own and outside any transaction the caller holds. Adding
-to an unread lazy collection does not load it, and the added children save with the parent.
+Every load of the parent leaves its rows out. The collection loads them the first time it is read
+(enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`, `Clear`, `Insert`), once,
+however many threads read it together.
+
+That first read goes through the manager or data context that loaded the parent, on a connection
+of its own and outside any transaction the caller holds. Adding to an unread lazy collection does
+not load it, and the added children save with the parent.
 
 <!-- sample: entity-resident -->
 ```csharp
@@ -224,10 +247,12 @@ public class NapLog : CoreChildObject<NapLog, Resident>
 }
 ```
 
-Reading a lazy collection is a round trip that the call site does not show, so a loop that reads it
-for each parent of a listing runs a query per parent. A listing that needs the children includes
-them, and they come for every returned parent in the same round trip. The example also saves a
-linked collection and includes a reference, both described further down:
+Reading a lazy collection is a round trip that the call site does not show, so a loop that reads
+it for each parent of a listing runs a query per parent. A listing that needs the children includes
+them, and they come for every returned parent in the same round trip.
+
+The example below does that. It also saves a linked collection and includes a reference, both
+described further down this page:
 
 <!-- sample: relationships -->
 ```csharp
@@ -257,10 +282,12 @@ var keeper = loaded!.Keeper;                   // loads the keeper
 var naps = loaded.Naps.Count();                // loads the naps
 ```
 
-`Include` and `Exclude` apply to every read through the adaptor, `FindAsync` and
-`ToPagedResultAsync` included. `Exclude` wins over lazy: an excluded lazy collection throws
-when read. A lazy collection always loads all of its rows; to read part of one, query the child
-type by its parent, which reads only the rows asked for and leaves the parent's collection unloaded:
+`Include` and `Exclude` apply to every read through `Get<T>()`, `FindAsync` and
+`ToPagedResultAsync` included. `Exclude` wins over lazy: an excluded lazy collection throws when
+read.
+
+A lazy collection always loads all of its rows. To read part of one, query the child type by its
+parent. That reads only the rows asked for and leaves the parent's collection unloaded:
 
 <!-- sample: child-query -->
 ```csharp
@@ -271,18 +298,22 @@ var longNaps = await data.Get<NapLog>()
 var total = await data.Rows<NapLog>(n => n.Parent == resident).CountAsync(ct);
 ```
 
-Serialising a parent reads its lazy collections. A `[Cacheable]` type cannot have one, because its cached instances are shared and
-loading the collection would change it for every caller; the schema fails to build.
+Two things to know. Serialising a parent reads its lazy collections. And a `[Cacheable]` type
+cannot have one: its cached instances are shared, and loading the collection would change it for
+every caller, so the schema fails to build.
 
 ## Linked objects
 
-A `[LinkedObject]` property stores the referenced entity's `ID`, and a load reads only that ID.
+A `[LinkedObject]` property is a reference from one entity to another root. It stores the
+referenced entity's `ID`, and a load reads only that ID.
+
 The first read of the property loads the entity, once, however many threads read it together, and
-keeps it, so the next read runs no query and the object is not made dirty. The read goes through
-the manager or data context that loaded the object, as a lazy collection's does: a manager loads it
-by ID from the provider that stores its type (from the cache for a `[Cacheable]` type), and a data
-context from its own provider, on a connection of its own. A row that no longer exists reads as
-`null`.
+keeps it. The next read runs no query, and the object is not made dirty. A row that no longer
+exists reads as `null`.
+
+That first read goes through whatever loaded the object, as a lazy collection's does. A manager
+loads it by ID from the provider that stores its type, or from the cache for a `[Cacheable]` type.
+A data context loads it from its own provider, on a connection of its own.
 
 `Resident.Keeper` above is one. The property carries `[DatabaseColumn]` as well as `[LinkedObject]`:
 without it the reference has no column and is not stored. The keeper is an ordinary root:
@@ -300,31 +331,37 @@ public class Keeper : CoreObject<Keeper>
 }
 ```
 
-Like a lazy collection, that read is a round trip the call site does not show, so a listing that
-reads the reference on every row includes it. The referenced entities come in the same round trip,
-selected by the reference column of exactly the rows returned (page and `TOP` included), and rows
-that refer to the same entity share one instance:
+### Including a reference
 
-`Include` of a reference works on every read the adaptor runs, on the manager's loads through
-`LoadOptions.Include` by property name, and with child collection includes in the same read. The
-referenced type must be stored by the same provider as the rows; including one stored elsewhere
-throws rather than leaving every row to load its own. A referenced entity included this way is
-loaded with its own child collections and runs its load hook.
+Like a lazy collection's, that first read is a round trip the call site does not show. A listing
+that reads the reference on every row includes it, as `.Include(r => r.Keeper)` does in the example
+under [Lazy collections](#lazy-collections). The referenced entities then come in the same round
+trip, selected by the reference column of exactly the rows returned (page and `TOP` included), and
+rows that refer to the same entity share one instance.
 
-A `[LinkedObject]` can name a child type. The child loads like any referenced entity, and its `Parent` holds the parent's ID
-until it is first read, which loads the parent the same way. The same goes for a child loaded on
-its own by `LoadByID` or a query of its type. The parent loads as `LoadByID` loads it, so its child
-collection holds instances of its own, not the one that read it. A child is saved through its
-parent, so `forceSave` on a link to one fails the schema; removing the child from its collection
-deletes it, and the link then reads `null`.
+- `Include` of a reference works on every read through `Get<T>()`, on the manager's loads through
+  `LoadOptions.Include` by property name, and alongside child collection includes in the same read.
+- The referenced type must be stored by the same provider as the rows. Including one stored
+  elsewhere throws rather than leaving every row to load its own.
+- A referenced entity included this way is loaded with its own child collections and runs its load
+  hook.
+
+### A reference to a child
+
+A `[LinkedObject]` can name a child type. The child loads like any referenced entity. Its `Parent`
+holds the parent's ID until it is first read, which loads the parent the same way. The same goes
+for a child loaded on its own by `LoadByID` or a query of its type.
+
+- The parent loads as `LoadByID` loads it, so its child collection holds instances of its own, not
+  the one that read it.
+- A child is saved through its parent, so `forceSave` on a link to one fails the schema.
+- Removing the child from its collection deletes it, and the link then reads `null`.
 
 ## Linked collections
 
 A `NucleusLinkedCollection<TMany, TOne>` is the many side of a one-to-many relationship between two
-root types, held on the one: a troop's residents, where each resident is a root of its own,
-loaded, saved and moved between troops without its troop. Rows a parent owns, with no life of their
-own, are a [child collection](#child-collections) instead, and a reference from one entity to
-another is a [linked object](#linked-objects).
+root types, held on the one. A troop's residents are the example: each resident is a root of its
+own, loaded, saved and moved between troops without its troop.
 
 The many type declares the key, the property holding the one's ID, and the collection names it:
 
@@ -347,33 +384,42 @@ public class Troop : CoreObject<Troop>
 ```
 
 The key is a stored, indexed `Guid`, `Guid?`, or a `[LinkedObject]` typed as the one. With a
-`[LinkedObject]` key, loaded members hold the one itself, so reading it runs no query. Because the
-many type declares its key, its table, its queries (`r => r.TroopId == id`) and its rules do not
-depend on the one. A many type can be the many side of several ones, with a key for each, and a one
-can hold several collections, two of them over one many type when each has its own key.
+`[LinkedObject]` key, loaded members hold the one itself, so reading it runs no query.
 
-**Loading.** Reading the property loads nothing. The whole collection loads, in one query, the first
-time a member is read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`, `Clear`,
-`Insert`, `CopyTo`), once however many threads read it, on the synchronous path and through the
-manager or data context that loaded the one. `await collection.LoadAsync()` loads it without
-blocking a thread. Adding does not load it, and the collection of a new one starts loaded and
-empty. A listing includes the collection, which loads every row's members in the same round trip,
-selected by the key of exactly the rows returned (page and `TOP` included):
+Because the many type declares its key, its table, its queries (`r => r.TroopId == id`) and its
+rules do not depend on the one. A many type can be the many side of several ones, with a key for
+each. A one can hold several collections, two of them over one many type when each has its own key.
 
-A linked collection is never part of a read unless it is included; there is no `[RetrieveOnDemand]`
-and no `Exclude` for one.
+**Loading.** Reading the property loads nothing. The whole collection loads, in one query, the
+first time a member is read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`,
+`Clear`, `Insert`, `CopyTo`). It loads once however many threads read it, on the synchronous path,
+through the manager or data context that loaded the one.
+
+- `await collection.LoadAsync()` loads it without blocking a thread.
+- Adding does not load it, and the collection of a new one starts loaded and empty.
+- A listing includes the collection, as `.Include(t => t.Residents)` does in the example under
+  [Lazy collections](#lazy-collections). That loads every row's members in the same round trip,
+  selected by the key of exactly the rows returned (page and `TOP` included).
+- A linked collection is never part of a read unless it is included. There is no
+  `[RetrieveOnDemand]` and no `Exclude` for one.
 
 **Saving.** Adding a member sets its key to the one. Saving the one writes the new and changed
-members it holds, after the one, in the same transaction, and runs each one's `Validate()` first;
-saving a member on its own still works as for any root. Removing a stored member deletes its row
-with the one's save when the many type is `[Deletable]`, and throws at the call otherwise (point
-its key at another one and save it instead). Removing a member that was never saved just drops it.
+members it holds, after the one, in the same transaction, and runs each member's `Validate()`
+first. Saving a member on its own still works, as for any root.
+
+Removing a stored member deletes its row with the one's save when the many type is `[Deletable]`,
+and throws at the call otherwise: point its key at another one and save it instead. Removing a
+member that was never saved just drops it.
 
 **Deleting the one** is refused while it has members, on every delete path: the delete throws
 naming the collection and deletes nothing. Delete the members, or point them elsewhere, first.
 
-**Refused when the schema is built:** a collection without `[LinkedBy]`; a key the many type does
-not have, that is not a stored column, that is not indexed, or that is not a `Guid`, `Guid?` or
-`[LinkedObject]` of the one; two collections on one type with the same key; a many type that is a
-child type; a one that is a child type or `[Cacheable]`; and a many type stored by a different
-provider from the one.
+**Refused when the schema is built:**
+
+- a collection without `[LinkedBy]`;
+- a key the many type does not have, that is not a stored column, that is not indexed, or that is
+  not a `Guid`, `Guid?` or `[LinkedObject]` of the one;
+- two collections on one type with the same key;
+- a many type that is a child type;
+- a one that is a child type or `[Cacheable]`;
+- a many type stored by a different provider from the one.
