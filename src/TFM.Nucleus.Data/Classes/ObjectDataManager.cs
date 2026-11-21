@@ -327,44 +327,36 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// Saves the objects in one transaction, as <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
         /// does. Each object is validated first, and a rule that fails is thrown as it is. A
-        /// failure after that rolls back; the failures <see cref="PassesThrough"/> names are thrown
-        /// as they are, any other is wrapped. The objects are marked saved once the transaction
-        /// has committed.
+        /// failure after that rolls back and is thrown as the context threw it. The objects are
+        /// marked saved once the transaction has committed.
         /// </summary>
         public INucleusCollection<T>? Save<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(objs);
             var list = objs as IList<T> ?? objs.ToList();
             SaveChecks.Run(list);
-            try
+            var provider = ProviderFor<T>();
+            var linkTypes = LinkTypes(list);
+            var queries = provider.CreateSaveQueries(list);
+            if (queries.Count == 0)
+                return null;
+            // The objects are marked saved only once the context has committed.
+            using (var context = provider.CreateContext(ContextOptions.Transactional))
             {
-                var provider = ProviderFor<T>();
-                var linkTypes = LinkTypes(list);
-                var queries = provider.CreateSaveQueries(list);
-                if (queries.Count == 0)
-                    return null;
-                // The objects are marked saved only once the context has committed.
-                using (var context = provider.CreateContext(ContextOptions.Transactional))
+                try
                 {
-                    try
-                    {
-                        foreach (var query in queries)
-                            context.ExecuteQuery(query);
-                        context.Commit();
-                    }
-                    catch
-                    {
-                        context.TryRollback();
-                        throw;
-                    }
+                    foreach (var query in queries)
+                        context.ExecuteQuery(query);
+                    context.Commit();
                 }
-                MarkSaved(list, [typeof(T), .. linkTypes]);
-                return new NucleusCollection<T>(list);
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
             }
-            catch (Exception ex) when (!PassesThrough(ex))
-            {
-                throw new Exception("Error saving objects", ex);
-            }
+            MarkSaved(list, [typeof(T), .. linkTypes]);
+            return new NucleusCollection<T>(list);
         }
 
         /// <summary>
@@ -379,14 +371,6 @@ namespace TFM.Nucleus.Data
             foreach (var type in writtenTypes)
                 EvictCache(type);
         }
-
-        /// <summary>
-        /// The failures a save throws as they are, as its context does: a unique violation, a
-        /// cancellation, and the provider's and the context's own exceptions. A save wraps any other
-        /// in "Error saving objects".
-        /// </summary>
-        private static bool PassesThrough(Exception ex) =>
-            ex is UniqueViolationException or OperationCanceledException or DataProviderException or DataContextException;
 
         /// <summary>
         /// The types of the forceSave links and linked collection members a save writes or deletes,
@@ -414,46 +398,39 @@ namespace TFM.Nucleus.Data
         /// stored children removed from them) and the forceSave links they reach. Each object is
         /// validated first (<c>Validate()</c>, then <c>PreSave()</c>), and a rule that fails is
         /// thrown as it is. A failure after that rolls back, keeping the pending changes and
-        /// removals for a retry. A <see cref="UniqueViolationException"/>, an
-        /// <see cref="OperationCanceledException"/>, a <see cref="DataProviderException"/> and a
-        /// <see cref="DataContextException"/> are thrown as they are; any other failure is wrapped.
-        /// The objects are marked saved once the transaction has committed.
+        /// removals for a retry, and is thrown as the context threw it: a database failure as a
+        /// <see cref="DatabaseException"/> (a <see cref="UniqueViolationException"/> for a broken
+        /// unique index), a cancellation as an <see cref="OperationCanceledException"/>. The
+        /// objects are marked saved once the transaction has committed.
         /// </summary>
         public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(objs);
             var list = objs as IList<T> ?? objs.ToList();
             SaveChecks.Run(list);
-            try
-            {
-                var provider = ProviderFor<T>();
-                var linkTypes = LinkTypes(list);
-                var queries = provider.CreateSaveQueries(list);
-                if (queries.Count == 0)
-                    return null;
+            var provider = ProviderFor<T>();
+            var linkTypes = LinkTypes(list);
+            var queries = provider.CreateSaveQueries(list);
+            if (queries.Count == 0)
+                return null;
 
-                // The objects are marked saved only once the context has committed.
-                await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
-                {
-                    try
-                    {
-                        foreach (var query in queries)
-                            await context.ExecuteQueryAsync(query, token);
-                        await context.CommitAsync(token);
-                    }
-                    catch
-                    {
-                        context.TryRollback();
-                        throw;
-                    }
-                }
-                MarkSaved(list, [typeof(T), .. linkTypes]);
-                return new NucleusCollection<T>(list);
-            }
-            catch (Exception ex) when (!PassesThrough(ex))
+            // The objects are marked saved only once the context has committed.
+            await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
             {
-                throw new Exception("Error saving objects", ex);
+                try
+                {
+                    foreach (var query in queries)
+                        await context.ExecuteQueryAsync(query, token);
+                    await context.CommitAsync(token);
+                }
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
             }
+            MarkSaved(list, [typeof(T), .. linkTypes]);
+            return new NucleusCollection<T>(list);
         }
 
 

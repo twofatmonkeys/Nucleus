@@ -35,6 +35,25 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public bool WatchForChanges { get; init; }
 
+        private readonly int? _statementTimeoutSeconds;
+
+        /// <summary>
+        /// The time limit of each statement the context runs, in seconds, in place of the
+        /// provider's <c>StatementTimeoutSeconds</c>: for a context that runs a long report or job.
+        /// 0 means no limit. Null, the default, takes the parent context's, or else the provider's.
+        /// An engine whose driver has no statement time limit ignores it, as it does the provider's.
+        /// </summary>
+        public int? StatementTimeoutSeconds
+        {
+            get => _statementTimeoutSeconds;
+            init
+            {
+                if (value is { } seconds)
+                    ArgumentOutOfRangeException.ThrowIfNegative(seconds, nameof(StatementTimeoutSeconds));
+                _statementTimeoutSeconds = value;
+            }
+        }
+
         /// <summary>The old name of <see cref="WatchForChanges"/>.</summary>
         [Obsolete("Use WatchForChanges.")]
         public bool UseDependency

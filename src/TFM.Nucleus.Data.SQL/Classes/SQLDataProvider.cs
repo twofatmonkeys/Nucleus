@@ -95,6 +95,8 @@ namespace TFM.Nucleus.Data.SQL
             return false;
         }
 
+        protected override DatabaseErrorClass ClassifyFailure(Exception exception) => SqlServerErrors.Classify(exception);
+
         // 334: SQL Server refuses an OUTPUT clause without INTO on a table with an enabled
         // trigger. Nucleus writes one for every column marked ReturnOutputToProperty.
         protected override Exception? TranslateEngineFailure(string message, Exception exception)

@@ -15,9 +15,6 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
 
 - **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
   aligning the relationship attributes.
-- **`ConnectAttempts` is PostgreSQL's alone.** SQL Server and SQLite open once. It was not lifted
-  to the shared options, because that would switch a retry on for engines whose transient
-  failures nobody has classified.
 - **A test stack does not publish the ambient runtime.** `NucleusRuntime.Current` is one per
   process and several stacks share a test process, so the static `CoreObject` API under a test
   stack uses whichever runtime was published last, if any. Tests use the stack's manager.
@@ -359,7 +356,67 @@ every query whose `TableSchema` is null, so none of them runs and nothing says s
 schema, so only a hand-built query passed to `ExecuteQueryAsync` is affected. Verified by reading
 the code; no test reaches it.
 
+### Failures and retries, what is left (November 2026)
+
+What the failure contract below ("A database failure was a bare Exception") does not do yet:
+
+- **Nucleus retries only opening a connection.** A statement or a commit that fails is reported at
+  once; the caller retries the whole operation when `IsTransient` says so. An opt-in retry policy
+  for the manager's operations that own their transaction is planned, off by default, never inside
+  a caller's context, never after a commit was sent and never for a stream that has returned rows.
+  Until then each caller writes the loop, and its attempts multiply `ConnectAttempts`.
+- **A failed write on a context with no transaction always reports `MayHaveBeenApplied`.** Each
+  statement commits as it runs and a command can hold several, so Nucleus does not know how much
+  ran. That is true even of a lock wait that ran out before the first statement, which therefore
+  is not transient. Cover: `SqliteBusyWaitTests`.
+- **`CommitOutcomeUnknown` leaves the objects unsaved.** The manager marks objects saved only once
+  the commit returns, so after a commit whose outcome is unknown they are new or changed again,
+  though the rows may be there. A blind re-save of a new object then fails on its key. Cover:
+  `PostgresCommitFailureTests`.
+- **SQLite has no statement time limit.** Microsoft.Data.Sqlite's command timeout is the wait for
+  the write lock, not a limit on a running statement, and a cancelled token does not stop a
+  statement under way (measured: a 4 s read with a 1 s timeout and a 1 s cancellation ran to its
+  end). The provider leaves the command timeout at `BusyTimeoutSeconds` and ignores
+  `StatementTimeoutSeconds`.
+
 ## Fixed
+
+### A database failure was a bare Exception (November 2026)
+
+Found while writing the same operations with a time limit, a transient retry and translated
+exceptions against Nucleus and three other data libraries. Hardening a Nucleus save or read took as
+much code as it did over raw ADO.NET, and the Nucleus version did not work:
+
+- `RelationalDataProvider.TranslateFailure` returned `new Exception(message, exception)` for every
+  failure but a unique violation, so `catch (NucleusException)` missed almost every database
+  failure, contrary to `NucleusException`'s own documentation.
+- The manager's `Save` and `SaveAsync` wrapped that again in `Exception("Error saving objects")`,
+  which put the driver's exception two levels down.
+- A connection that failed to open threw the driver's exception, or `ConnectionOpener`'s
+  `TimeoutException`, untranslated; a failed commit or rollback threw the driver's exception; a
+  failure reading a streamed row reached the caller as the driver's exception.
+- Catalog reads, schema statements and change subscriptions threw bare `Exception`s, and the
+  PostgreSQL subscription wrapped the caller's own cancellation in one.
+- `DataProviderErrorKind.DatabaseUnavailable` was never thrown, so a check for it never matched.
+- SqlClient and Microsoft.Data.Sqlite do not override `DbException.IsTransient`, which is always
+  false for them (checked by reflection on SqlClient 6.0.1 and Microsoft.Data.Sqlite 10.0.15), so a
+  caller's check of the driver's flag never retried on SQL Server or SQLite. Nothing classified
+  their errors, which is also why `ConnectAttempts` was PostgreSQL's alone.
+- Ordinary statements had no time limit of Nucleus's own, only the driver's default. The bulk
+  engines and schema statements set their timeouts on the context's shared command and left them
+  there, so later statements on that context ran with 60 or 900 seconds.
+
+Now a database failure is a `DatabaseException` (Abstractions) one level over the driver's, with
+`Kind`, `IsTransient`, `MayHaveBeenApplied`, `Operation` and `Attempts`, and
+`UniqueViolationException` derives from it. Each provider classifies its engine's errors in one
+place (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, through
+`RelationalDataProvider.ClassifyFailure`); `DatabaseFailures` (Data) decides from what Nucleus was
+doing what a failed commit and a failed open are and whether the operation may have been applied.
+Anything that is not a database failure propagates as it was thrown, and the manager's save no
+longer wraps. `ConnectAttempts` is a shared option, retried by the provider's classification.
+`StatementTimeoutSeconds` (30, the drivers' default) limits every statement, set as each one is
+prepared, and a context can take its own. Cover: `DatabaseFailureTests` and the classifier tests,
+`SaveFailureTests`, and `DatabaseFailureIntegrationTests` on every provider.
 
 ### A provider held two connection pools of MaxConnectionPoolSize each (November 2026)
 
@@ -747,6 +804,10 @@ itself, on every provider.
 Left as it is on purpose: any other failure is still wrapped. That includes the plain
 `Exception(message, inner)` the context throws for a database error it does not translate, which a
 manager save therefore wraps a second time.
+
+Superseded by "A database failure was a bare Exception" (November 2026): the context translates
+every database error into a `DatabaseException`, and a manager save no longer wraps anything, so
+`PassesThrough` is gone.
 
 ### Found by the benchmarks, fixed (November 2026)
 

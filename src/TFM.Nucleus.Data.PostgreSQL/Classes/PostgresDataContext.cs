@@ -47,10 +47,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection();
 
-        protected override bool IsTransientOpenFailure(Exception exception) => PostgresErrors.IsTransient(exception);
-
-        protected override int OpenAttempts => Math.Max(1, Config.ConnectAttempts);
-
         protected override DbParameter CreateParameter(DbCommand command, string name, object? value, IQueryParameter source)
         {
             var column = (source as Parameter)?.ColumnSchema as ColumnSchema;

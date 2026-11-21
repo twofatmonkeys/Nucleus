@@ -14,6 +14,13 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresConnectionLimitIntegrationTests(PostgresFixture fixture) : ConnectionLimitIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresDatabaseFailureIntegrationTests(PostgresFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        // Port 1 on the loopback address: nothing listens there, so the connection is refused.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.Server = "127.0.0.1:1";
+    }
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresContextSaveIntegrationTests(PostgresFixture fixture) : ContextSaveIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

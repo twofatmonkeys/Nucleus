@@ -69,6 +69,8 @@ namespace PortlyPrimate
             Assert.Empty(reloaded!.Naps);
 
             Assert.True(await Samples.UniqueViolationAsync(Ct));
+            Assert.Equal("Gerald", (await Samples.FindWithRetryAsync(gerald.ID, Ct))!.Name);
+            await Samples.StatementTimeoutAsync(Ct);
             Assert.Equal(1, await Samples.DeletesAsync(Ct));
             Assert.Equal(1, await Samples.SearchAsync(Ct));
 

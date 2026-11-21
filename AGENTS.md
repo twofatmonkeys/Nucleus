@@ -95,8 +95,13 @@ included, so the driver keeps one pool. The startup connections (`master`, the P
 maintenance database) are unpooled. With nothing enlisting, a transactional root opened inside an
 ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
 `ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
-timeout. The defaults fail fast and alike: nothing waits more than 3 s (pool wait, connect,
-SQLite busy timeout). A transactional context is
+timeout, and retries an open `ConnectAttempts` times (a shared option) when the provider's
+`ClassifyFailure` calls the failure transient. The defaults fail fast and alike: nothing waits
+more than 3 s (pool wait, connect, SQLite busy timeout). Every statement a context runs gets
+`StatementTimeoutSeconds` (30, the drivers' default), or its `ContextOptions.StatementTimeoutSeconds`,
+set as each command is prepared, because the command is shared and the bulk engines and schema
+statements set their own on it; SQLite's command timeout is its busy wait, so its context opts out
+(`DbDataContext.AppliesStatementTimeout`). A transactional context is
 committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
 operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
 through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A context
@@ -113,7 +118,17 @@ are created and compared by their keys alone. I/O in the dialect interfaces take
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
-the rule once, on the failure path only. A `[TableIndex]` can be `Unique`, filtered to rows whose
+the rule once, on the failure path only. It derives from `DatabaseException` (Abstractions), which
+every database failure is, on every path (open, read, write, delete, commit, rollback, schema,
+subscription), one level over the driver's exception: `Kind`, `IsTransient` (worth another
+attempt and nothing applied), `MayHaveBeenApplied`, `Operation` and `Attempts`. A provider names its
+engine's errors once (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, through
+`RelationalDataProvider.ClassifyFailure`), because SqlClient and Microsoft.Data.Sqlite never set
+`DbException.IsTransient`; `DatabaseFailures` (Data) decides from the operation what a failed commit
+(`CommitOutcomeUnknown` unless the engine rejected the transaction) and a failed open are, and
+`DbDataContext.Failure` that a write may have been applied only without a transaction. A failure
+that is not the database's (`DatabaseFailures.IsDatabaseFailure`) propagates as it was thrown, and
+the manager's save wraps nothing. A `[TableIndex]` can be `Unique`, filtered to rows whose
 keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
 fails initialisation without touching the rows. A child's parent column is always indexed:
 `ColumnSchema` sets `Indexed` for the `[ParentObject]` property, so it is an ordinary column index
@@ -451,7 +466,20 @@ warning or an analyzer warning in new code fails CI.
 - **Spell identity `ID` and database `DB` in member names** (`LoadByID`, `IsDBColumn`). Existing
   members that spell them otherwise stay as they are; do not add a second name to match.
 - **Every exception Nucleus defines derives from `NucleusException`** (Abstractions). A new one
-  does too, and reports what failed through a `Kind` where it has several causes.
+  does too, and reports what failed through a `Kind` where it has several causes. A database
+  failure is a `DatabaseException`, never a bare `Exception`; a new path that reaches the database
+  translates its failures through the provider (`TranslateFailure`, or `DatabaseFailures` with the
+  provider's classifier), and lets anything else propagate as it was thrown.
+- **Nucleus retries only opening a connection.** This is the library's retry design; what a caller
+  retries is in the guide's [Retries](docs/guide/saving.md#retries). An open is retried up to `ConnectAttempts`
+  times, only for a failure the provider classifies as transient, all within the connection's
+  connect timeout. No statement, commit or rollback is retried: its failure is reported at once as
+  a `DatabaseException` whose `IsTransient` and `MayHaveBeenApplied` let the caller decide, because
+  only the caller knows whether the operation is worth repeating, and a hidden retry could repeat a
+  write whose outcome is unknown. An opt-in retry policy for the manager's operations that own
+  their transaction is planned (off by default; never inside a caller's context, after a commit
+  was sent, or for a stream that has returned rows); it changes this entry when it lands, not
+  before.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
   SQL Server names were removed in the November 2026 naming clean-up.

@@ -3,6 +3,50 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A database failure is a DatabaseException, and statements have a time limit
+
+- **A database failure is a `DatabaseException`**, on every engine and every path, with the
+  driver's exception as its inner exception. It used to be a bare `System.Exception`, which
+  `catch (NucleusException)` did not catch, with the driver's exception one level down on a read or
+  a delete and two levels down on a manager save. Code that walked `InnerException.InnerException`
+  to find the driver's exception now finds it one level down; code that caught `Exception` still
+  catches it. See [Failures](saving.md#failures).
+- **A failure says whether to retry.** `IsTransient` (worth another attempt, and nothing was
+  applied), `MayHaveBeenApplied`, `Kind`, `Operation` and `Attempts`. A check of the driver's own
+  `DbException.IsTransient` never retried on SQL Server or SQLite, whose drivers always say false.
+- **The manager's `Save` and `SaveAsync` no longer wrap a failure in "Error saving objects".**
+  Whatever the context threw reaches the caller as it was thrown. A failure that is not the
+  database's (a defect, an `InvalidOperationException`) used to be wrapped in a bare `Exception`
+  and is now thrown as it is.
+- **A failed open, commit or rollback is translated too.** Opening a connection used to throw the
+  driver's exception or a `TimeoutException`; it is a `DatabaseException` of operation `Open`, kind
+  `ConnectionFailed` or `Timeout`. A failed commit used to throw the driver's exception; it is
+  `CommitOutcomeUnknown`, which may have been applied and is not transient, unless the engine
+  rejected the transaction (a deadlock, a serialization failure, a constraint checked at commit).
+- **A failure reading a streamed row is translated** like a failed read; it used to reach the
+  caller as the driver's exception.
+- **A non-database failure of a read or a write propagates as it was thrown.** A defect in reading
+  a row, or one of Nucleus's own exceptions such as `MissingResultSet`, used to be wrapped in a bare
+  `Exception`.
+- **Every statement has a time limit, `StatementTimeoutSeconds`**, 30 seconds by default, which is
+  the drivers' own default, so nothing changes unless you set it. A context can take its own
+  (`ContextOptions.StatementTimeoutSeconds`). SQLite ignores it; its only limit is still
+  `BusyTimeoutSeconds`.
+- **A bulk write's or a schema statement's timeout no longer carries over.** Each set its timeout on
+  the context's shared command and left it there, so later statements on the same context ran with
+  60 or 900 seconds. Each statement now gets its own limit.
+- **`ConnectAttempts` is a shared option.** It moved from `PostgresConfiguration` to
+  `RelationalProviderOptions`, so SQL Server and SQLite retry a transient failure to open too, 3
+  attempts by default within the same connect timeout. They used to make one attempt. Code that set
+  `PostgresConfiguration.ConnectAttempts` still compiles.
+- **A change subscription that fails to start** is a `DatabaseException`, or a
+  `DataProviderException` when the engine refused for a missing prerequisite, instead of a bare
+  `Exception`. A cancelled start is an `OperationCanceledException`. On PostgreSQL, any failure now
+  releases the subscription's connection slot; only some did.
+- **A catalog read or schema statement that fails** is a `DatabaseException` of operation `Schema`
+  instead of a bare `Exception`. A SQLite file that cannot be put in write-ahead log mode, or whose
+  folder cannot be created, is a `SqliteDataProviderException`.
+
 ## MaxConnectionPoolSize is the one connection limit, and the defaults fail fast
 
 - **A provider holds at most `MaxConnectionPoolSize` connections to its database.** On SQL Server

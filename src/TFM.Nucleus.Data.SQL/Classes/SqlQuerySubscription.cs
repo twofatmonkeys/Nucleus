@@ -69,7 +69,10 @@ namespace TFM.Nucleus.Data.SQL
                 await connection.DisposeAsync();
                 QueryNotificationHost.Release(subscription._connectionString);
                 slot.Dispose();
-                throw new Exception($"Unable to register a query-notification subscription for {typeof(T).FullName}. {ex.Message}", ex);
+                if (DatabaseFailures.IsDatabaseFailure(ex))
+                    throw DatabaseFailures.Translate($"Unable to register a query-notification subscription for {typeof(T).FullName}. {ex.Message}", ex,
+                        SqlServerErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
+                throw;
             }
         }
 
@@ -93,9 +96,10 @@ namespace TFM.Nucleus.Data.SQL
                     // Drain only: the registration needs the statement fully executed.
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Unable to execute the query-notification select for {typeof(T).FullName}. {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Unable to execute the query-notification select for {typeof(T).FullName}. {ex.Message}", ex,
+                    SqlServerErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
             }
         }
 

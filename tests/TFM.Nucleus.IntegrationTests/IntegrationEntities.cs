@@ -156,6 +156,13 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
 
+    /// <summary>The table the failure suite locks by hand, so that holding its lock stalls no other suite.</summary>
+    public class IntFailureProbe : CoreObject<IntFailureProbe>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     public class IntUniqueItem : CoreObject<IntUniqueItem>
     {
         [DatabaseColumn(Unique = true)]

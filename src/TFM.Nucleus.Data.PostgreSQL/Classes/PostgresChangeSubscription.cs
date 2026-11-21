@@ -43,11 +43,15 @@ namespace TFM.Nucleus.Data.PostgreSQL
             {
                 await subscription.ConnectAsync(token);
             }
-            catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException or TimeoutException or OperationCanceledException)
+            catch (Exception ex)
             {
+                // Whatever failed, the connection and the slot are released before it propagates.
                 await subscription.DisposeConnectionAsync();
                 slot.Dispose();
-                throw new Exception($"Unable to register a change subscription for {typeof(T).FullName}. {ex.Message}", ex);
+                if (DatabaseFailures.IsDatabaseFailure(ex))
+                    throw DatabaseFailures.Translate($"Unable to register a change subscription for {typeof(T).FullName}. {ex.Message}", ex,
+                        PostgresErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
+                throw;
             }
             subscription._listening = Task.Run(subscription.ListenAsync);
             return subscription;
