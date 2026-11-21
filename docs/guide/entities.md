@@ -250,7 +250,7 @@ Instance members on every entity:
 | Member | Notes |
 |---|---|
 | `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Validates as every save does (`Validate()`, which also validates the new and changed children and the forceSave links, then `PreSave()`), then writes only the changed columns, the child collections (deleting removed children) and the forceSave links, in one transaction. |
-| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction, validating first; the caller commits or rolls back. |
+| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction, validating first; the caller commits or rolls back. The object is marked saved as the writes run, and put back as it was if the transaction does not commit. |
 | `Delete()`, `DeleteAsync(CancellationToken)` | Types with their own `[Deletable]` only. Removes the object's child collection rows at every depth in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is stored by another provider. |
 | `IsNew`, `IsReadOnly`, `HasChanges`, `DataChanged` | Change-tracking state. |
 | `ToJson()`, `DisplayName` | Serialisation and display helpers. |

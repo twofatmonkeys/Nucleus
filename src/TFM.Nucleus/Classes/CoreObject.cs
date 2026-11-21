@@ -75,18 +75,22 @@ namespace TFM.Nucleus
 
 
 
-        private void CommitChanges(bool makeReadOnly, ILogger? logger = null) => CommitChanges(makeReadOnly, true, logger);
+        private void CommitChanges(bool makeReadOnly, ILogger? logger = null) => CommitChanges(makeReadOnly, true, logger, null);
         /// <summary>
         /// Makes pending changes committed once a save has written them. A root also commits the
         /// forceSave links the save wrote (read from the same <see cref="SaveGraph"/> the save
         /// was built from, before anything here is committed); every object commits its held
-        /// children and forgets the removals the save deleted.
+        /// children and forgets the removals the save deleted. With an <paramref name="undo"/>
+        /// log, each object records what it changes first, so a transaction that does not commit
+        /// can put it back.
         /// </summary>
-        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger = null)
+        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger, CommitUndoLog? undo)
         {
             var graph = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]) : null;
             var links = graph?.Links ?? [];
             var members = graph?.Members ?? [];
+            var record = undo?.GetOrAdd(this, () => new CommitUndo(this));
+            record?.BeforeCommit();
             LogChanges(logger);
             if (makeReadOnly)
                 _isReadOnly = true;
@@ -104,34 +108,126 @@ namespace TFM.Nucleus
             if (ObjectSchema.HasNucleusChildCollections)
                 foreach (var coll in NucleusChildCollections)
                 {
+                    record?.BeforeAcknowledge(coll, coll.RemovedObjects);
                     coll.AcknowledgeRemovals();
                     foreach (var child in coll.ChildObjects)
                     {
                         // Not as a root: the root's graph already holds the links below its children.
                         if (child is CoreObject coreChild)
-                            coreChild.CommitChanges(false, false);
+                            coreChild.CommitChanges(false, false, null, undo);
                         else
-                            child.CommitChanges();
+                            CommitDependent(child, undo);
                     }
                 }
             if (ObjectSchema.HasLinkedCollections)
                 foreach (var collection in NucleusLinkedCollections)
+                {
+                    record?.BeforeAcknowledge(collection, collection.RemovedMembers);
                     collection.AcknowledgeRemovals();
+                }
             foreach (var link in links)
             {
                 if (link is CoreObject coreLink)
-                    coreLink.CommitChanges(makeReadOnly, false);
+                    coreLink.CommitChanges(makeReadOnly, false, null, undo);
                 else
-                    link.CommitChanges();
+                    CommitDependent(link, undo);
             }
             // Members are roots of their own, committed as links are: the root's graph holds
             // everything below them.
             foreach (var member in members)
             {
                 if (member is CoreObject coreMember)
-                    coreMember.CommitChanges(makeReadOnly, false);
+                    coreMember.CommitChanges(makeReadOnly, false, null, undo);
                 else
-                    member.CommitChanges();
+                    CommitDependent(member, undo);
+            }
+        }
+
+        /// <summary>Commits a dependent that is not a <see cref="CoreObject"/>, recording it when the commit is undoable.</summary>
+        private static void CommitDependent(ICoreObject dependent, CommitUndoLog? undo)
+        {
+            if (undo == null)
+                dependent.CommitChanges();
+            else
+                dependent.CommitChangesInTransaction(undo);
+        }
+
+        /// <summary>
+        /// What the commits of one object inside a transaction changed, from before the first, so
+        /// the object can be put back if the transaction does not commit. A property written by any
+        /// of the commits gets its stored value back and its current value as a pending change,
+        /// unless the two are equal; a property no commit wrote is left alone. The removals each
+        /// commit forgot are put back in their collections.
+        /// </summary>
+        private sealed class CommitUndo(CoreObject owner) : ICommitUndo
+        {
+            private readonly bool _wasNew = owner._isNew;
+            private readonly bool _hadTimestamp = owner._properties.ContainsKey(nameof(Timestamp));
+            // The stored value of each property a commit wrote, from before the first commit;
+            // HadValue false when the property held nothing. Only for an object that was not new:
+            // one that was new goes back to holding every value as a change.
+            private Dictionary<string, (bool HadValue, object? Value)>? _originals;
+            private List<(object Collection, List<ICoreObject> Removed)>? _removals;
+
+            /// <summary>Records the stored value of each pending property not recorded by an earlier commit.</summary>
+            public void BeforeCommit()
+            {
+                if (_wasNew || owner._newProperties.Count == 0)
+                    return;
+                _originals ??= [];
+                foreach (var key in owner._newProperties.Keys)
+                    if (!_originals.ContainsKey(key))
+                        _originals[key] = owner._properties.TryGetValue(key, out var value) ? (true, value) : (false, null);
+            }
+
+            /// <summary>Records the removals a collection is about to forget.</summary>
+            public void BeforeAcknowledge(object collection, IEnumerable<ICoreObject> removed)
+            {
+                List<ICoreObject>? list = null;
+                foreach (var obj in removed)
+                    (list ??= []).Add(obj);
+                if (list != null)
+                    (_removals ??= []).Add((collection, list));
+            }
+
+            public void Revert()
+            {
+                if (_wasNew)
+                {
+                    // The edits made since the commit are pending; a new object holds them all.
+                    foreach (var pending in owner._newProperties)
+                        owner._properties[pending.Key] = pending.Value;
+                    owner._newProperties.Clear();
+                    if (!_hadTimestamp)
+                        owner._properties.Remove(nameof(Timestamp));
+                    owner._isNew = true;
+                }
+                else if (_originals != null)
+                {
+                    foreach (var (key, original) in _originals)
+                    {
+                        var current = owner._newProperties.TryGetValue(key, out var pending)
+                            ? pending
+                            : owner._properties.GetValueOrDefault(key);
+                        if (original.HadValue)
+                            owner._properties[key] = original.Value;
+                        else
+                            owner._properties.Remove(key);
+                        if (original.HadValue && Equals(current, original.Value))
+                            owner._newProperties.Remove(key);
+                        else
+                            owner._newProperties[key] = current;
+                    }
+                }
+                owner._isValidated = false;
+                if (_removals != null)
+                    foreach (var (collection, removed) in _removals)
+                    {
+                        if (collection is INucleusChildCollection children)
+                            children.RestoreRemovals(removed);
+                        else if (collection is INucleusLinkedCollection linked)
+                            linked.RestoreRemovals(removed);
+                    }
             }
         }
 
@@ -451,6 +547,12 @@ namespace TFM.Nucleus
 
         void ICoreObject.CommitChanges(ILogger? logger) => CommitChanges(false, logger);
 
+        void ICoreObject.CommitChangesInTransaction(CommitUndoLog undo, ILogger? logger)
+        {
+            ArgumentNullException.ThrowIfNull(undo);
+            CommitChanges(false, true, logger, undo);
+        }
+
         #endregion
 
 
@@ -746,13 +848,13 @@ namespace TFM.Nucleus
 
         /// <summary>
         /// Saves within a caller-owned context (and transaction); the context validates the object
-        /// first, and the caller commits or rolls back.
+        /// first, and the caller commits or rolls back. The context marks the object saved as its
+        /// writes run, and puts it back as it was if the transaction rolls back or its commit fails.
         /// </summary>
-        public virtual async Task SaveAsync(IDataContext dataContext, CancellationToken token = default)
+        public virtual Task SaveAsync(IDataContext dataContext, CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(dataContext);
-            await dataContext.SaveAsync(this, token);
-            CommitChanges(false);
+            return dataContext.SaveAsync(this, token);
         }
 
         private void EnsureSaveable()

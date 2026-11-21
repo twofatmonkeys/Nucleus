@@ -33,6 +33,13 @@ public sealed class KeeperDesk(IObjectDataManager data)
 }
 ```
 
+An object saved through a context is marked saved as its writes run, so saving it twice in the
+same context updates it the second time. If the transaction rolls back, a failure dooms it, or the
+commit fails, every object saved in it is put back as it was before its first save there: a new
+object is new again, a loaded one has its changes pending again, and its removed children are
+pending deletion again. Changes made since the save are kept. Save the objects again without
+reloading them.
+
 ## Saving a batch
 
 A batch can hold objects of different types. Each is routed to the provider that stores it, and
