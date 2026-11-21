@@ -138,7 +138,8 @@ namespace TFM.Nucleus.Data.SQLite
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
-                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
+                // No schema timeout: the driver's command timeout is the wait for the write lock,
+                // which stays BusyTimeoutSeconds, as for every other statement.
                 foreach (var bound in ParameterBinding.Bind(statement.Parameters))
                     command.Parameters.AddWithValue($"@{bound.Key}", SqliteValues.ToDb(bound.Value, null));
                 if (async)
@@ -203,12 +204,9 @@ namespace TFM.Nucleus.Data.SQLite
             }
         }
 
-        private static async ValueTask Open(SqliteConnection connection, bool async, CancellationToken cancellationToken)
-        {
-            if (async)
-                await connection.OpenAsync(cancellationToken);
-            else
-                connection.Open();
-        }
+        // Retried like a context's open: ConnectAttempts times for a transient failure (a locked
+        // file), all within the connection's own connect timeout.
+        private ValueTask Open(SqliteConnection connection, bool async, CancellationToken cancellationToken) =>
+            ConnectionOpener.OpenAsync(connection, async, Math.Max(1, Config.ConnectAttempts), SqliteErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), cancellationToken);
     }
 }

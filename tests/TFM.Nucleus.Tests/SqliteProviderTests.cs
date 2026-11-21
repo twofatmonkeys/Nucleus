@@ -385,4 +385,45 @@ namespace TFM.Nucleus.Tests
             Assert.Throws<SqliteDataProviderException>(() => config.FilePath);
         }
     }
+
+    /// <summary>
+    /// SQLite's command timeout is the wait for another connection's write lock. A schema
+    /// statement keeps BusyTimeoutSeconds like every other statement: given
+    /// SchemaCommandTimeoutSeconds it waited 15 minutes behind a writer.
+    /// </summary>
+    public class SqliteSchemaStatementTests
+    {
+        [Fact]
+        public async Task ASchemaStatement_WaitsTheBusyTimeoutForTheWriteLock_NotTheSchemaTimeout()
+        {
+            var token = TestContext.Current.CancellationToken;
+            var file = Path.Combine(Path.GetTempPath(), $"nucleus-schema-wait-{Guid.NewGuid():N}.db");
+            var config = new SqliteConfiguration { Database = file, BusyTimeoutSeconds = 1 };
+            Assert.Equal(900, config.SchemaCommandTimeoutSeconds);
+            var catalog = new SqliteCatalogReader(() => config);
+            try
+            {
+                await using var writer = config.BuildConnection(create: true);
+                await writer.OpenAsync(token);
+                await using (var begin = writer.CreateCommand())
+                {
+                    begin.CommandText = "BEGIN IMMEDIATE";
+                    await begin.ExecuteNonQueryAsync(token);
+                }
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+
+                var failure = await Assert.ThrowsAsync<DatabaseException>(async () =>
+                    await catalog.ExecuteAsync("CREATE TABLE \"Waited\" (\"A\" INTEGER)", async: true, token));
+
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"The schema statement waited {clock.Elapsed.TotalSeconds:0.0} s for the write lock.");
+                Assert.Equal(DatabaseErrorKind.Timeout, failure.Kind);
+                Assert.Equal(DatabaseOperation.Schema, failure.Operation);
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(file);
+            }
+        }
+    }
 }

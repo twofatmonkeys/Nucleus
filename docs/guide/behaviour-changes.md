@@ -3,6 +3,20 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A cancelled commit rolls back, and every open is retried
+
+- **A commit or rollback given a cancelled token rolls the transaction back.** `CommitAsync` threw
+  `OperationCanceledException` and left the context unmarked, so without `RequireCommit` disposing
+  it committed the work the caller had just cancelled. `RollbackAsync` threw before it rolled back,
+  with the same result. Both now mark the transaction for rollback and then throw.
+- **The schema check's connections and SQL Server's change subscriptions retry a transient failure
+  to open**, `ConnectAttempts` times within the connect timeout, as a context's connection does.
+  They made one attempt on SQL Server and SQLite; PostgreSQL already retried.
+- **A SQLite schema statement waits `BusyTimeoutSeconds` for the write lock.** It was given
+  `SchemaCommandTimeoutSeconds` as its command timeout, which on SQLite is the wait for another
+  connection's write lock, so an index created at start waited up to 15 minutes behind a writer.
+  SQLite now ignores `SchemaCommandTimeoutSeconds`, as it does `StatementTimeoutSeconds`.
+
 ## An opt-in retry policy for the manager's own operations
 
 - **`RetryAttempts` on every provider's options, 1 by default.** Set above 1, a manager save,
@@ -83,13 +97,16 @@ from the top until you reach a section you have already taken.
   and PostgreSQL its transactional connections and the rest had connection strings that differed
   by `Enlist`, and the drivers pool by connection string, so a provider kept two pools of that
   size and the server could see twice the setting. Every connection now has one connection string,
-  so there is one pool. A server sized for twice the setting can be sized for the setting.
+  so there is one pool. A server sized for twice the setting can be sized for the setting. One
+  connection is outside it on SQL Server: the driver's query notification listener, while anything
+  watches for changes (see the known limits).
 - **A raw `ConnectionString` gets the limit too.** Its `Max Pool Size` (`Maximum Pool Size` on
   PostgreSQL) is replaced with `MaxConnectionPoolSize`, and its `Enlist` with `false`. It used to
   keep the driver's default of 100 whatever the setting said.
 - **Change subscriptions count against the limit.** Each live subscription holds one connection
   and now one slot, beside the open contexts. With every slot held, a new context or subscription
-  waits `PoolWaitTimeoutSeconds` and fails with `PoolExhausted`, instead of passing the check and
+  waits `PoolWaitTimeoutSeconds` (on the asynchronous path; the synchronous path never waits) and
+  fails with `PoolExhausted`, instead of passing the check and
   timing out in the driver's pool. Raise `MaxConnectionPoolSize` by the number of subscriptions an
   application keeps open if it ran close to the limit.
 - **Each provider has a budget of its own.** The count of open contexts was shared by every provider
@@ -255,7 +272,7 @@ treats warnings as errors will stop on them.
 - **One exception base.** Every Nucleus exception derives from `NucleusException`. Each still
   derives from `Exception` through it, so existing catch clauses are unaffected.
 - **PostgreSQL's connect timeout is a setting.** `PostgresConfiguration.ConnectTimeoutSeconds`,
-  15 seconds as before.
+  15 seconds as before. (Since lowered to 3; see the connection limit section above.)
 - **The static API loads asynchronously.** `CoreObject.LoadByIDAsync`, `LoadAllAsync` and
   `LoadFirstWhereAsync`. A context has `RollbackAsync`.
 - **A test stack's manager resolves from its services** as `IObjectDataManager`, the type
@@ -517,7 +534,7 @@ This came in with the keyword column fix.
   never matched them. A `UniqueViolationException`, an `OperationCanceledException` (the synchronous
   `Save` wrapped it too), a `DataProviderException` (with each provider's subclass) and a
   `DataContextException` now reach the caller unwrapped, as they do from a context. Any other
-  failure is still wrapped. Code that caught `Exception` still does; code that read
+  failure is still wrapped. (No longer: see the `DatabaseException` section above.) Code that caught `Exception` still does; code that read
   `InnerException` to find one of these four gets the exception itself instead.
 - **A loaded parent saves its child collections on every path.** Only the manager's `SaveAsync` set
   the object's `DataProvider`, which its child collections build their writes through, so a loaded
@@ -560,7 +577,8 @@ This came in with the keyword column fix.
   `SqlDataContextException` are gone from the public surface; the query and schema model are in
   `TFM.Nucleus.Data.Queries` and `TFM.Nucleus.Data.Schema`. `IDataConnection` and `IDataService`,
   which nothing implemented, are deleted.
-- **A unique violation is a `UniqueViolationException`.** It derives from `Exception`, keeps the old
+- **A unique violation is a `UniqueViolationException`.** It derives from `Exception` (since
+  changed: it is now a `DatabaseException`, itself a `NucleusException`), keeps the old
   message and carries the SQL Server exception as its inner exception.
 - **A context that fails to open releases its pool slot**, and an async dispose removes the context
   from the pool, as a sync dispose always did. Before, each held a slot or an entry for the life of

@@ -96,15 +96,18 @@ maintenance database) are unpooled. With nothing enlisting, a transactional root
 ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
 `ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
 timeout, and retries an open `ConnectAttempts` times (a shared option) when the provider's
-`ClassifyFailure` calls the failure transient. The defaults fail fast and alike: nothing waits
+`ClassifyFailure` calls the failure transient. Every open goes through it: a context's, a change
+subscription's and a catalog reader's. The defaults fail fast and alike: nothing waits
 more than 3 s (pool wait, connect, SQLite busy timeout). Every statement a context runs gets
 `StatementTimeoutSeconds` (30, the drivers' default), or its `ContextOptions.StatementTimeoutSeconds`,
 set as each command is prepared, because the command is shared and the bulk engines and schema
 statements set their own on it; SQLite's command timeout is its busy wait, so its context opts out
-(`DbDataContext.AppliesStatementTimeout`). A transactional context is
+(`DbDataContext.AppliesStatementTimeout`) for statements and schema statements alike, and its
+catalog reader sets none. A transactional context is
 committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
 operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
-through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A context
+through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A commit or
+rollback given a cancelled token marks it too, before it throws. A context
 disposed without a commit rolls back under `RelationalProviderOptions.RequireCommit` and
 otherwise still commits with a warning (until v3, which makes rolling back the only behaviour).
 Every Nucleus caller commits explicitly. A child (`ContextOptions.Parent`) runs on its root's

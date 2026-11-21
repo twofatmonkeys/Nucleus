@@ -806,7 +806,13 @@ namespace TFM.Nucleus.Data.Providers
                     DataContextErrorKind.TransactionDoomed);
             }
             // A commit is not abandoned half way, so the token is honoured only before it starts.
-            cancellationToken.ThrowIfCancellationRequested();
+            // A cancelled commit marks the tree like any other failure of the context's own
+            // operations, or disposing the context would commit what the caller just cancelled.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Rollback();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             _committed = true;
             await EndTransaction(commit: true, async).ConfigureAwait(false);
         }
@@ -928,6 +934,16 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The exception for a failure of a schema read or statement run on this context, as <see cref="Failure(string, Exception, DatabaseOperation, CancellationToken)"/> gives it.</summary>
         internal Exception SchemaFailure(string message, Exception exception, CancellationToken token) =>
             Failure(message, exception, DatabaseOperation.Schema, token);
+
+        /// <summary>
+        /// Gives a command the schema statement time limit, where the engine's command timeout is
+        /// one. Where it is the wait for a lock instead, the command keeps that wait.
+        /// </summary>
+        private void ApplySchemaTimeout(DbCommand command)
+        {
+            if (AppliesStatementTimeout)
+                command.CommandTimeout = Options.SchemaCommandTimeoutSeconds;
+        }
 
         /// <summary>Gives a command this context's statement time limit, where the engine's command timeout is one.</summary>
         private void ApplyStatementTimeout(DbCommand command)
@@ -1082,7 +1098,7 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
-                command.CommandTimeout = Options.SchemaCommandTimeoutSeconds;
+                ApplySchemaTimeout(command);
                 var reader = async ? await command.ExecuteReaderAsync(CommandBehavior.Default, token) : command.ExecuteReader();
                 if (!reader.HasRows)
                 {
@@ -1304,7 +1320,7 @@ namespace TFM.Nucleus.Data.Providers
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
-                command.CommandTimeout = Options.SchemaCommandTimeoutSeconds;
+                ApplySchemaTimeout(command);
                 if (async)
                     await command.ExecuteNonQueryAsync(token);
                 else

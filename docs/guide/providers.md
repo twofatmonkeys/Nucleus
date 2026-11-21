@@ -99,7 +99,8 @@ differences an application can see:
 
 - **The database is one file on a local disk.** `Database` is its path, created with its folder on
   initialise when it is missing and the schema is writable. An in-memory database is refused: it
-  ends with its connection, and Nucleus closes a connection after each read. Keep the file off
+  ends with its connection, and Nucleus keeps no connection between operations. So is any `file:`
+  URI, one that names a file on disk included. Keep the file off
   network shares, where SQLite's locking, and write-ahead logging, are not safe.
 - **One connection writes at a time.** Initialise puts the file in write-ahead log mode
   (`UseWriteAheadLog`), so reads run while another connection writes. A save begins its transaction
@@ -175,7 +176,7 @@ inside a scope as before.
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `3` | How long opening a context or a change subscription on the asynchronous path waits for a free connection under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a statement timeout; that is `StatementTimeoutSeconds`. `CommandTimeoutSeconds` is its obsolete name. |
 | `StatementTimeoutSeconds` | `30` | The time limit of each read, write and delete a context runs, the driver's own default. A statement over it fails with a `DatabaseException` of kind `Timeout`. A context can take its own (`ContextOptions.StatementTimeoutSeconds`). `0` means no limit; a negative value is refused. See [Time limits](saving.md#time-limits). |
-| `ConnectAttempts` | `3` | Attempts at opening a connection when the failure is transient, the first included, with an exponential back-off. Every attempt shares the connect timeout, so retries never make an open wait longer than it: a quick failure, such as a refused connection while the server restarts, is retried within it. |
+| `ConnectAttempts` | `3` | Attempts at opening a connection (a context's, a change subscription's, or one the schema check reads the catalog on) when the failure is transient, the first included, with an exponential back-off. Every attempt shares the connect timeout, so retries never make an open wait longer than it: a quick failure, such as a refused connection while the server restarts, is retried within it. |
 | `RetryAttempts` | `1` | Attempts at an operation the manager runs on a context of its own (a save, a delete, a load, a row read) when it fails transiently having applied nothing, the first included, with the same back-off. `1` attempts each once, so the policy is off until set. Never applied on a caller-owned context. See [Retries](saving.md#retries). |
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
@@ -188,10 +189,16 @@ inside a scope as before.
 Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and
 `ConnectTimeoutSeconds` is one of the shared ones.
 
-Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. The
+Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. A raw
+`ConnectionString` keeps its own settings for those, for `PacketSize` and for the connect timeout;
+only its pool size and `Enlist` are replaced. The
 driver's connect retries reconnect a connection that broke while idle; they do not retry an open.
 `ConnectAttempts` does, for an open whose error number the provider classifies as transient (a
 network error, a server failing over or paused); SqlClient itself never says an error is transient.
+
+`AppName` on a provider's options is not a setting: it is filled from `NucleusOptions.AppName` at
+registration, replacing any value set on the provider, and is sent to SQL Server and PostgreSQL as
+the application name when the provider builds the connection string.
 
 ### PostgresConfiguration
 
@@ -234,7 +241,8 @@ network error, a server failing over or paused); SqlClient itself never says an 
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once. |
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
 | `PoolWaitTimeoutSeconds` | `3` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
-| `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
+| `SchemaCommandTimeoutSeconds` | `900` | Ignored, like `StatementTimeoutSeconds`: a schema statement waits `BusyTimeoutSeconds` for the write lock and then runs until it finishes. |
+| `BulkTimeoutSeconds` | `60` | Ignored: there is no bulk engine. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |
 | `RequireCommit` | `false` | As for SQL Server. |

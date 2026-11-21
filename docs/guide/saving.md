@@ -72,8 +72,8 @@ in the Abstractions package), whichever provider stores the data. It says which 
   property and column, and `Is<T>(name)` tests for it by either.
 - **For a unique `[TableIndex]`,** `DeclaredIndexName` is the name it was declared with, and
   `IsIndex<T>(name)` tests for it. `PropertyName` and `ColumnName` are then null, even for one key.
-- **For an index Nucleus does not manage,** such as a primary key, the names are null and the lists
-  empty.
+- **For an index Nucleus does not manage,** such as a primary key, `IndexName` is the engine's own
+  name for it, the other names are null and the lists empty.
 
 It is a [`DatabaseException`](#failures) of kind `UniqueViolation`, never transient, with the
 provider's own exception as its inner exception. The manager's `Save` and `SaveAsync` throw it as
@@ -100,7 +100,11 @@ catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath
 When the database fails an operation, Nucleus throws a `DatabaseException` (namespace
 `TFM.Nucleus.Data`, in the Abstractions package), on every engine, with the driver's own exception
 as its inner exception, one level down. It says what happened in terms that do not depend on the
-engine:
+engine. Two cases differ. An open that ran out its connect timeout on the asynchronous path has a
+`TimeoutException` as its inner exception, with the driver's inside that. And on SQL Server a write
+that reads a value back from a table with an enabled trigger is refused by the engine (error 334)
+and reported as the provider's own exception, a `DataProviderException`, whose message says what
+to change.
 
 - **`Kind`**: `ConnectionFailed`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
   `ForeignKeyViolation`, `NotNullViolation`, `ValueTooLong`, `CommitOutcomeUnknown` or `Other`.
@@ -120,11 +124,14 @@ when the engine reports the cancelled command as its own error.
 ### Retries
 
 Opening a connection is always retried when the failure is transient, up to the provider's
-`ConnectAttempts` (3 by default), all within the connection's connect timeout.
+`ConnectAttempts` (3 by default), all within the connection's connect timeout. That holds for a
+context's connection, a change subscription's and the connections the schema check reads the
+catalog on.
 
 Everything else is retried only when you switch it on. With the provider's `RetryAttempts` above
-1, an operation the manager runs on a context of its own (a save, a delete, a load, a streamed
-load until its first row, a row read, and the read of a lazy collection or a linked object) that
+1, an operation the manager runs on a context of its own (a save, a delete by object or by
+predicate, a load, a paged load, a streamed load until its first row, a row read, and the read of a
+lazy collection, a linked collection or a linked object) that
 fails with `IsTransient` true is attempted again from the start, on a new connection, 200 ms, then
 400 ms, then 800 ms later. A save's rules and `PreSave` run once, before the first attempt.
 
@@ -201,8 +208,9 @@ await context.CommitAsync(ct);
 A limit on the whole operation, retries included, is a `CancellationToken` with `CancelAfter`.
 Schema statements have their own limit (`SchemaCommandTimeoutSeconds`), and so do bulk writes
 (`BulkTimeoutSeconds`). SQLite has no limit on a running statement: its driver's command timeout is
-the wait for another connection's write lock, which stays `BusyTimeoutSeconds`, so
-`StatementTimeoutSeconds` is ignored there.
+the wait for another connection's write lock, which stays `BusyTimeoutSeconds` for every statement,
+schema statements included, so `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds` are
+ignored there.
 
 ### Other exceptions
 
@@ -213,7 +221,7 @@ its kind `PoolExhausted`), `InvalidQueryException`, `CoreObjectException` and th
 
 Nucleus also throws the framework's own exceptions where they are the right ones
 (`ArgumentException`, `NotSupportedException`, `InvalidOperationException`,
-`OperationCanceledException`). Those, and a rule your `Validate()` throws, reach the caller as they
+`OperationCanceledException`, and `ReadOnlyException` for a save of a read-only object). Those, and a rule your `Validate()` throws, reach the caller as they
 were thrown, not wrapped.
 
 ## Change notifications
@@ -241,4 +249,4 @@ table's trigger notifies, which needs nothing beyond the schema Nucleus creates.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
 - **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
 - **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
-- **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver. JSON uses the in-box `System.Text.Json`.
+- **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver (the SQL Server package also pins a patched `System.Security.Cryptography.Pkcs`, which its driver brings in). JSON uses the in-box `System.Text.Json`.

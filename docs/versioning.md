@@ -136,7 +136,7 @@ release notes, the tag and the packages all agree, and a consumer pinning
 `TFM.Widgets.Server 1.26.241.3` knows exactly which `TFM.Widgets.Core` it was built against.
 
 The cost is that a package with no changes still gets republished on a new version. `--skip-duplicate`
-makes that harmless, and the alternative was four versions nobody could reason about.
+makes that harmless, and the alternative was a version per package that nobody could reason about.
 
 ## Bumping the major
 

@@ -55,8 +55,9 @@ namespace TFM.Nucleus.Data.SQL
         /// <summary>
         /// Seconds to wait for a connection to open before failing, 3 by default. A busy server
         /// can take longer than that to complete a login, and the open then fails with a
-        /// connection timeout; it is not retried (the driver's connect retries reconnect a broken
-        /// idle connection, not a first open). 0 waits indefinitely. Ignored when
+        /// connection timeout that has used up the time <c>ConnectAttempts</c> retries within (the
+        /// driver's own connect retries reconnect a broken idle connection, not a first open). 0
+        /// waits indefinitely. Ignored when
         /// <see cref="RelationalProviderOptions.ConnectionString"/> is set, which carries its own.
         /// </summary>
         public int ConnectTimeoutSeconds

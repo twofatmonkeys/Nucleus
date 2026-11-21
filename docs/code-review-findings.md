@@ -8,18 +8,62 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
+### Limits by design that a consumer must allow for (November 2026)
+
+Not defects, but each changes what a consumer writes, so each is in the guide's known limits and
+recorded here so that page's list and this one agree.
+
+- **A child context shares its root's connection.** A tree is one transaction on one connection,
+  so its contexts cannot run commands concurrently.
+- **A row read sees live rows only.** `Rows<T>()` has no counterpart to `LoadOptions.IncludeDeleted`.
+- **A lazy collection's first read is a synchronous round trip**, on a connection of its own, as a
+  linked collection's is. Both have `LoadAsync()`.
+- **A transactional context cannot join a `TransactionScope`.** No connection enlists, so it is
+  refused with `AmbientTransaction` (see "A provider held two connection pools" under Fixed).
+- **SQL Server's notification listener is one connection outside `MaxConnectionPoolSize`.** The
+  driver opens it for as long as anything watches for changes. That it is unpooled is the driver's
+  behaviour and was not measured here.
+- **SQLite takes a file path only.** `SqliteConfiguration.FilePath` refuses `:memory:` and every
+  `file:` URI, one naming a file on disk included.
+
+### Found by the documentation review, what is left (November 2026)
+
+A check of the guide against the code before beta was merged to master. The three defects it
+found are fixed (see "Found by the documentation review" under Fixed). Still open:
+
+- **Nucleus throws a bare `Exception` in seven places**, against the rule that a failure is never
+  a bare `Exception`: a type with no table schema (`RelationalDataProvider`, twice) and five
+  context states in `DbDataContext`. Each wants a typed
+  exception with a `Kind`.
+- **A column's length cannot be set without its type.** `DatabaseColumnAttribute(int?)`, the
+  `(ColumnDataType, int?)` constructor and the `DataLength` field are nullable, which attribute
+  syntax does not accept, so `[DatabaseColumn(ColumnDataType.Unicode, 200)]` is the one form that
+  sets a length. Read from the language rule, not compiled. Listed in the guide's known limits.
+- **A failed open that ran out its connect timeout carries the driver's exception two levels
+  down.** `ConnectionOpener` wraps it in a `TimeoutException`, which the `DatabaseException` wraps.
+  Documented in the guide's Failures section.
+- **SQL Server error 334 is a `SqlDataProviderException`, not a `DatabaseException`.** It is
+  deliberate (the message says what to change), and the one database failure that is not one.
+  Documented in the guide's Failures section.
+- **`[LinkWhenLogging]` on a property that is not an entity fails the schema build**, though the
+  attribute does nothing else yet.
+- **Not tested: the retried opens of the catalog readers and the SQL Server subscription.** They
+  go through `ConnectionOpener`, which has its own cover, but no test makes one of those opens fail
+  transiently.
+
 ### API surface review, what is left (November 2026)
 
 A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
 "Fixed"). Still open:
 
 - **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
-  aligning the relationship attributes.
+  aligning the relationship attributes. Listed in the guide's known limits.
 - **A test stack does not publish the ambient runtime.** `NucleusRuntime.Current` is one per
   process and several stacks share a test process, so the static `CoreObject` API under a test
   stack uses whichever runtime was published last, if any. Tests use the stack's manager.
-- **The test stack's start methods take no cancellation token**, because
-  `IDataProvider.InitializeAsync` takes none.
+- **The test stack's start methods do not pass a cancellation token to initialisation**, because
+  `IDataProvider.InitializeAsync` takes none. `StartSharedStackAsync` takes one, which reaches
+  only its wait for the schema lock.
 - **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
   `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
   consumer calls them, and an overload beside them would make a call without arguments ambiguous.
@@ -36,7 +80,8 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
   a call without arguments already reads correctly, so it was left.
 - **A load on the manager for every row of a `[Cacheable]` type does not use the cache.**
   `LoadAsync<T>()` with no predicate reads the table; `Load<T>()` on the concrete manager and
-  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill.
+  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill. Listed in the
+  guide's known limits.
 
 ### Save, load and schema audit (November 2026)
 
@@ -61,19 +106,18 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
 - **P2. Cache `ObjectSchema.NucleusChildCollectionProperties`.** Verified. It builds a new array on
   every read (`[.. _nucleusChildCollectionProperties.Values]`), and it is read per object on every
   walk, commit, query build, `ClearChanges` and lazy marking. Build it once in the constructor, as
-  `LinkedObjectProperties` already is; the same for the obsolete aliases, `LinkedObjectSchemas`,
-  `ChildCollectionSchemas`, `AllProperties` and `AllDBColumns`.
+  `LinkedObjectProperties` already is; the same for `LinkedObjectSchemas`, `AllProperties` and
+  `AllDBColumns`.
 - **P3. Return early from `NucleusChildCollection.RemovedObjects`.** Verified. It runs a LINQ
   filter and builds a list on every call, even with nothing removed, and every walk calls it per
   collection. Return an empty array when `_removedChildren` is empty.
 - **P4. Guard `LogChanges`.** Verified; fixed with B2. Return before building any text when there
   is no logger, the type is suppressed, or the logger is not enabled for Information, and skip
   objects with nothing to commit.
-- **P5. Stop allocating per streamed row and per added row.** Verified.
-  `ObjectDataManager.LoadStreamAsync` calls `MarkUnloaded([obj], excluded)` per row, allocating an
-  array before `MarkUnloaded`'s own empty check; `NucleusCollection.Add` builds
+- **P5. Stop allocating per added row.** Verified. `NucleusCollection.Add` builds
   `NotifyCollectionChangedEventArgs` per item with no subscriber, and a load's collection
-  expression binds to that `Add`.
+  expression binds to that `Add`. The other half, an array per streamed row in
+  `ObjectDataManager.LoadStreamAsync`, went with the audit bugs.
 - **P6. Bind rows without wrapper objects.** Read. `DataSet.BindRows` builds a `DataSetRow`, a
   `DataSetValue[]` and a `DataSetValue` per column for every row (about 450 B a row at 10 columns);
   `Bind<T>()` in the same file already loops the row array by index. Presize each object's property
@@ -102,7 +146,7 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   per row; parameter lists are rebuilt several times per command; each `Query` allocates about seven
   collections it may never use.
 - **P12. Use the compiled getter in the binder.** Read. `ChildGraphBinder.CollectionOf` and
-  `ObjectDataManager` call `property.Getter.Invoke` (reflection) per object where
+  `LinkedCollectionOf` call `property.Getter.Invoke` (reflection) per object where
   `IPropertySchema.GetValue` has a compiled delegate; `MarkLazy` allocates a closure per lazy
   property per object; `AttachLoaded` builds a set of IDs even when the collection is empty.
 - **P13. Smaller per-call costs.** Read. `SetValue` boxes value types to compare them;
@@ -113,7 +157,8 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   property for every integer column of every row.
 - **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable load every match and its
   children.** Read. They stream the whole result through `LoadStreamAsync`, which first runs every
-  child query. First and Any should take one row; Count should count in the database.
+  child query. First and Any should take one row; Count should count in the database. Listed in
+  the guide's known limits.
 - **P15. The SQLite write path allocates five to eight times what the others do.** Measured: the
   1,000-row split save allocates about 97 MB on SQLite against 13-14 MB elsewhere, the 20,000-row
   bulk save about 2.5 GB against 120-135 MB. SQLite has no bulk engine, so each row is a statement in
@@ -127,8 +172,6 @@ rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
 
 ### Found with the child model (November 2026)
 
-- **A save through a caller-owned context committed in memory before the caller committed.**
-  Fixed (November 2026); see "A context save did not follow its transaction in memory" under Fixed.
 - **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
   `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
   clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
@@ -144,90 +187,26 @@ rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
   a root, because a parent's cascade deletes children without loading them. Cover:
   `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
 
-### Found with the linked object read, fixed (November 2026)
+### A linked object's first read is synchronous (November 2026)
 
-Found while designing linked collections, by an integration test
-that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
+The first read of a `[LinkedObject]` is synchronous, like a lazy collection's and a linked
+collection's, on a connection of its own, and there is no asynchronous form for a reference. Rows
+that read the same reference without `Include` each load their own instance, unless the type is
+`[Cacheable]` and the manager loaded the rows, which answers from the cache. Listed in the guide's
+known limits. Found with the linked object read (see Fixed).
 
-- **A loaded `[LinkedObject]` could not be read.** A load stored the referenced entity's ID, and
-  `CoreObject.GetValue<T>` cast it to the entity type: `InvalidCastException: Unable to cast object of
-  type 'System.Guid'`. No test read a reference after a reload; the existing ones only saved new
-  objects and filtered by the reference. The first read now loads the entity through the loader of
-  the stack that loaded the object (`ILinkedObjectLoader`), and `Include` loads references with the
-  rows in the same round trip. Cover: `LinkedObjectReadTests`, and the `ALinkedObject_*` and
-  `Include_*` tests of `ChildModelIntegrationTests` on every provider.
-- **A loaded object with a `forceSave` link could not be saved.** `SaveGraph.VisitLinks` read each
-  link through its property, so the same cast threw on every save of a loaded object of such a
-  type, on every save path. It now reads the link as held, and a link never read since the load is
-  skipped without being loaded. `ObjectSchema.GetLinkedObjects` had the same read and now returns
-  held links only. Cover: `LinkedObjectReadTests.ASaveWalk_*` and
-  `ALoadedObject_WithAForceSaveLinkNobodyRead_SavesItsOwnChange`, confirmed failing on the commit
-  before the fix.
+### On SQL Server, reads wait behind saves (November 2026)
 
-Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
-same reference without `Include` each load their own instance. Listed in the guide's known limits.
-
-### SQL Server deadlocks under concurrent saves, fixed (November 2026)
-
-Seen once as a deadlocked cleanup delete in `ChildModelIntegrationTests` (the net8.0 and net10.0
-runs share the database), then reproduced with `SqlServer\DeadlockStressTests`: 16 workers each
-saving, reading, removing from and deleting a roster with lines and breaks deadlocked 6 to 11 times
-per 480 cycles on the SQL Server 2008 R2 test server and on SQL Server 2025 (LocalDB).
-
-- **Root cause.** Child queries and cascade deletes reached their parents through a subquery over
-  the parent's table (`[Parent] IN (SELECT [ID] FROM parent WHERE ...)`). On small tables both
-  servers ran that from the child side: a clustered scan of the child table, probing the parent for
-  each row. The statement held a lock on a child row of some other parent while it waited for that
-  parent's row; a save of that parent held the parent row (X) and then asked for its own child
-  row: the opposite order. Captured as 74 deadlock graphs on LocalDB (every one a parent save
-  against a cascade delete or a child-collection read, including plain loads), and on 2008 R2 by
-  polling `sys.dm_tran_locks` during the stress (its `system_health` ring buffer XML is cut off
-  before recent events): there the grandchild query held a break row while it read the break's line,
-  against a save holding the line and converting to X on the break. With 20,000 rosters the
-  optimizer drove from the parent and seeked the `Parent` index, and 960 cycles ran clean, which is
-  why it shows on new and small tables, or on plans compiled while they were small.
-- **Fix.** `SqlServerQueryRenderer` keeps each level's keys in a table variable read from that
-  level's table alone, and the next level selects by them; a delete keeps each level's IDs the same
-  way and evaluates its condition once (previously once per level, so a parent committed between
-  statements could, by reading, be deleted without its children; not tested). No statement reads
-  two user tables, so none can hold one table's row while waiting on another's, whatever the plan.
-  After the fix: 0 deadlocks in 3,360 cycles plus three rounds of 48 workers alongside every SQL
-  Server suite on 2008 R2, and 0 in five such rounds on LocalDB. Cover: `SqlServerKeptIdsTests`
-  (every statement names one table), the goldens, and the opt-in stress test. Hints (`FORCESEEK`,
-  forced join order) were rejected: version-dependent, and `FORCESEEK` fails outright (8622) when
-  the parent index is missing.
-- **Connect timeout.** The same load made connection opens fail after `SQLConfiguration`'s fixed
-  3 second connect timeout (`SqlException -2` in the post-login phase), 282 of 1,440 cycles in one
-  LocalDB round. It is now `ConnectTimeoutSeconds`, still 3 by default. The README claimed "4
-  connect retries"; the driver's `ConnectRetryCount` only reconnects a broken idle connection and
-  does not retry a first open, so the README now says so. Whether the server or the client's thread
-  pool was the bottleneck was not isolated.
-
-Open: readers still wait (not deadlock) behind saves, because locking read committed scans an
+Readers still wait (not deadlock) behind saves, because locking read committed scans an
 unindexed predicate's table and waits on any row a save holds. READ_COMMITTED_SNAPSHOT on the
-database removes that wait; Nucleus does not set it.
+database removes that wait; Nucleus does not set it. Listed in the guide's known limits. What is
+left of the deadlocks under concurrent saves (see Fixed).
 
-### Found with links to child types, fixed (November 2026)
+### `IPropertySchema.SkipOnDbRead` is read by nothing (November 2026)
 
-Raised by a consumer that needed a root to refer to another root's child, a child type.
-Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
-
-- **A child loaded on its own could not read its parent.** A child loaded by a link, by `LoadByID`
-  or by a query of its type held its parent's ID under `Parent` (the parent column is bound like
-  any other; `IPropertySchema.SkipOnDbRead` is set for it but nothing reads it), and the read cast
-  the ID to the parent type: `InvalidCastException`. `CoreObject.StoredValueAs` now resolves a
-  stored ID under a `[ParentObject]` as it does under a `[LinkedObject]`, and `ChildGraphBinder`
-  binds the stack's loader to every child type it completes, so the parent comes from the manager
-  or context that loaded the child. Cover: the child tests in `LinkedObjectReadTests`, and the
-  `ALinkToAChild_*`, `AChild*_Reads*Parent*` and `Include_LoadsALinkedChildInTheSameRead` tests of
-  `ChildModelIntegrationTests` on every provider.
-- **A `forceSave` link to a child would save the child as a root.** The link path validates a
-  link as a dependent, so the child's own refusal of a root save was skipped, and
-  `CreateSaveQueries` wrote it outside its parent. `SchemaManager.BuildSchema` now refuses it.
-  Cover: `LinkedObjectReadTests.AForceSaveLinkToAChild_FailsAtSchemaBuild`.
-
-Open: `IPropertySchema.SkipOnDbRead` is set for a `[ParentObject]` and read by nothing. It is public
-surface, so it stays until a major version.
+`IPropertySchema.SkipOnDbRead` is set for a `[ParentObject]` and read by nothing. It is marked
+obsolete; it is public surface, so it stays until a major version. Found with links to child types
+(see Fixed).
 
 ### Timestamp in memory is the client clock (decided October 2026)
 
@@ -272,7 +251,7 @@ on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCL
   statement by searching every parameter of the command, so a command of N single-row statements
   over P parameters costs about N x P. At 30000 parameters an oversized save held the write lock for
   33 s, long enough for the other target framework's run to time out on the shared file; at 2000 it
-  took 0.3 s. `SqliteConfiguration` therefore defaults `MaxParametersPerQuery` to 2000. Raising it
+  took 0.3 s. `SqliteConfiguration` therefore defaults `MaxParametersPerCommand` to 2000. Raising it
   is the first thing to measure if SQLite saves look slow.
 - **A lower SQLite limit would write faster still, but deletes stop it.** At 500 parameters a command
   the oversized saves measured about five times faster again (a late unique violation over 12001
@@ -290,8 +269,8 @@ and migration against the target database.
 **Deliberately not changed.** Two production sites already call it and depend on the migration
 behaviour; flipping the default would silently stop their schema updates, which is a worse failure
 than the surprise. Changing it is a product decision, and the safe route is an explicit
-`AddNucleus(o => o.ReadOnlySchema = true)` at the call sites first. The behaviour is now called out
-in the registration reference in `README.md`.
+`AddNucleus(o => o.ReadOnlySchema = true)` at the call sites first. The behaviour is called out
+in the registration reference in `docs/guide/getting-started.md` and in the guide's known limits.
 
 ### IDE0040, roughly 450 occurrences
 
@@ -309,8 +288,10 @@ in `tests/Directory.Build.props`. Worth doing, but it is a test-wide edit.
 - `[RetrieveOnDemand]` makes a child collection lazy (November 2026). On any other property it still
   marks lazy per-property loading, which nothing implements; the dead `TryRetrievePropertyFromDB`
   that pretended to back it has been deleted.
-- `[InitializePriority]` is parsed into `ObjectSchema<T>.Priority`, but the ordering code that
-  consumed it is still commented out.
+- `[InitializePriority]` is parsed into `ObjectSchema<T>.Priority`, which nothing reads; the
+  ordering code that consumed it is gone.
+
+Both are listed in the guide's known limits, with `[LinkedObject]`'s `linkedIDProperty`.
 
 ### The legacy ChangeCollection is vestigial
 
@@ -321,7 +302,8 @@ safe to call, but removing it is a public API change and was left for a major ve
 
 ### Commented-out code
 
-Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs` and `DBColumn.cs`.
+Sizeable commented blocks remain in `PropertySchema.cs` and `DBColumn.cs`, and single commented
+lines in `IObjectSchema.cs`.
 
 ### A caller-owned context commits on dispose and evicts no cache (November 2026)
 
@@ -376,9 +358,106 @@ What the failure contract below ("A database failure was a bare Exception") does
   the write lock, not a limit on a running statement, and a cancelled token does not stop a
   statement under way (measured: a 4 s read with a 1 s timeout and a 1 s cancellation ran to its
   end). The provider leaves the command timeout at `BusyTimeoutSeconds` and ignores
-  `StatementTimeoutSeconds`.
+  `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
 
 ## Fixed
+
+### Found by the documentation review (November 2026)
+
+Three places where the code fell short of what the guide said, found by checking the guide against
+the code.
+
+- **A cancelled commit committed on dispose.** `DbDataContext.CommitCore` threw on a cancelled
+  token without marking the transaction, so without `RequireCommit` disposing the context committed
+  what the caller had just cancelled. `IDataContext.RollbackAsync` threw before it rolled back,
+  with the same result. Both now mark the transaction and then throw. Cover:
+  `TransactionCommitIntegrationTests.ACancelledCommit_RollsBack_RatherThanCommitOnDispose` and
+  `ACancelledRollback_StillRollsBack`, on every provider.
+- **Three opens were not retried.** The SQL Server and SQLite catalog readers and the SQL Server
+  change subscription opened their connection once; only contexts, and PostgreSQL's reader and
+  subscription, went through `ConnectionOpener`. All do now, with `ConnectAttempts` and the
+  provider's own classifier (`SqlServerErrors.IsTransient`, `SqliteErrors.IsTransient`). No test
+  of its own (see Open).
+- **A SQLite schema statement waited 15 minutes for the write lock.** Schema statements set
+  `SchemaCommandTimeoutSeconds` as the command timeout, which on SQLite is the wait for another
+  connection's write lock. `DbDataContext` now sets it only where `AppliesStatementTimeout` is
+  true, and `SqliteCatalogReader` not at all, so the wait stays `BusyTimeoutSeconds`. Cover:
+  `SqliteSchemaStatementTests`.
+
+### Found with the linked object read (November 2026)
+
+Found while designing linked collections, by an integration test
+that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
+
+- **A loaded `[LinkedObject]` could not be read.** A load stored the referenced entity's ID, and
+  `CoreObject.GetValue<T>` cast it to the entity type: `InvalidCastException: Unable to cast object of
+  type 'System.Guid'`. No test read a reference after a reload; the existing ones only saved new
+  objects and filtered by the reference. The first read now loads the entity through the loader of
+  the stack that loaded the object (`ILinkedObjectLoader`), and `Include` loads references with the
+  rows in the same round trip. Cover: `LinkedObjectReadTests`, and the `ALinkedObject_*` and
+  `Include_*` tests of `ChildModelIntegrationTests` on every provider.
+- **A loaded object with a `forceSave` link could not be saved.** `SaveGraph.VisitLinks` read each
+  link through its property, so the same cast threw on every save of a loaded object of such a
+  type, on every save path. It now reads the link as held, and a link never read since the load is
+  skipped without being loaded. `ObjectSchema.GetLinkedObjects` had the same read and now returns
+  held links only. Cover: `LinkedObjectReadTests.ASaveWalk_*` and
+  `ALoadedObject_WithAForceSaveLinkNobodyRead_SavesItsOwnChange`, confirmed failing on the commit
+  before the fix.
+
+### SQL Server deadlocks under concurrent saves (November 2026)
+
+Seen once as a deadlocked cleanup delete in `ChildModelIntegrationTests` (the net8.0 and net10.0
+runs share the database), then reproduced with `SqlServer\DeadlockStressTests`: 16 workers each
+saving, reading, removing from and deleting a roster with lines and breaks deadlocked 6 to 11 times
+per 480 cycles on the SQL Server 2008 R2 test server and on SQL Server 2025 (LocalDB).
+
+- **Root cause.** Child queries and cascade deletes reached their parents through a subquery over
+  the parent's table (`[Parent] IN (SELECT [ID] FROM parent WHERE ...)`). On small tables both
+  servers ran that from the child side: a clustered scan of the child table, probing the parent for
+  each row. The statement held a lock on a child row of some other parent while it waited for that
+  parent's row; a save of that parent held the parent row (X) and then asked for its own child
+  row: the opposite order. Captured as 74 deadlock graphs on LocalDB (every one a parent save
+  against a cascade delete or a child-collection read, including plain loads), and on 2008 R2 by
+  polling `sys.dm_tran_locks` during the stress (its `system_health` ring buffer XML is cut off
+  before recent events): there the grandchild query held a break row while it read the break's line,
+  against a save holding the line and converting to X on the break. With 20,000 rosters the
+  optimizer drove from the parent and seeked the `Parent` index, and 960 cycles ran clean, which is
+  why it shows on new and small tables, or on plans compiled while they were small.
+- **Fix.** `SqlServerQueryRenderer` keeps each level's keys in a table variable read from that
+  level's table alone, and the next level selects by them; a delete keeps each level's IDs the same
+  way and evaluates its condition once (previously once per level, so a parent committed between
+  statements could, by reading, be deleted without its children; not tested). No statement reads
+  two user tables, so none can hold one table's row while waiting on another's, whatever the plan.
+  After the fix: 0 deadlocks in 3,360 cycles plus three rounds of 48 workers alongside every SQL
+  Server suite on 2008 R2, and 0 in five such rounds on LocalDB. Cover: `SqlServerKeptIdsTests`
+  (every statement names one table), the goldens, and the opt-in stress test. Hints (`FORCESEEK`,
+  forced join order) were rejected: version-dependent, and `FORCESEEK` fails outright (8622) when
+  the parent index is missing.
+- **Connect timeout.** The same load made connection opens fail after `SQLConfiguration`'s fixed
+  3 second connect timeout (`SqlException -2` in the post-login phase), 282 of 1,440 cycles in one
+  LocalDB round. It is now `ConnectTimeoutSeconds`, still 3 by default. The README claimed "4
+  connect retries"; the driver's `ConnectRetryCount` only reconnects a broken idle connection and
+  does not retry a first open, so the README now says so. Whether the server or the client's thread
+  pool was the bottleneck was not isolated.
+
+### Found with links to child types (November 2026)
+
+Raised by a consumer that needed a root to refer to another root's child, a child type.
+Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
+
+- **A child loaded on its own could not read its parent.** A child loaded by a link, by `LoadByID`
+  or by a query of its type held its parent's ID under `Parent` (the parent column is bound like
+  any other; `IPropertySchema.SkipOnDbRead` is set for it but nothing reads it), and the read cast
+  the ID to the parent type: `InvalidCastException`. `CoreObject.StoredValueAs` now resolves a
+  stored ID under a `[ParentObject]` as it does under a `[LinkedObject]`, and `ChildGraphBinder`
+  binds the stack's loader to every child type it completes, so the parent comes from the manager
+  or context that loaded the child. Cover: the child tests in `LinkedObjectReadTests`, and the
+  `ALinkToAChild_*`, `AChild*_Reads*Parent*` and `Include_LoadsALinkedChildInTheSameRead` tests of
+  `ChildModelIntegrationTests` on every provider.
+- **A `forceSave` link to a child would save the child as a root.** The link path validates a
+  link as a dependent, so the child's own refusal of a root save was skipped, and
+  `CreateSaveQueries` wrote it outside its parent. `SchemaManager.BuildSchema` now refuses it.
+  Cover: `LinkedObjectReadTests.AForceSaveLinkToAChild_FailsAtSchemaBuild`.
 
 ### A failed save kept the values the server returned (November 2026)
 

@@ -50,7 +50,7 @@ namespace TFM.Nucleus.Data.SQL
             var subscription = new SqlQuerySubscription<T>(selectText, connection) { Slot = slot };
             try
             {
-                await connection.OpenAsync(token);
+                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, provider.SqlConfig.ConnectAttempts), SqlServerErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), token);
 
                 // Query notifications require ARITHABORT ON; it is the one required SET option
                 // that defaults OFF over TDS.

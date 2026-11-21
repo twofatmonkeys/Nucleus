@@ -69,6 +69,40 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         [Fact]
+        public async Task ACancelledCommit_RollsBack_RatherThanCommitOnDispose()
+        {
+            fixture.RequireSettings();
+            var widget = NewWidget("commit-cancelled");
+            using var cancelled = new CancellationTokenSource();
+
+            await using (var context = await fixture.Provider!.CreateContextAsync(ContextOptions.Transactional, Ct))
+            {
+                await context.SaveAsync(widget, Ct);
+                cancelled.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.CommitAsync(cancelled.Token));
+            }
+
+            Assert.False(await StoredAsync(widget));
+        }
+
+        [Fact]
+        public async Task ACancelledRollback_StillRollsBack()
+        {
+            fixture.RequireSettings();
+            var widget = NewWidget("rollback-cancelled");
+            using var cancelled = new CancellationTokenSource();
+
+            await using (var context = await fixture.Provider!.CreateContextAsync(ContextOptions.Transactional, Ct))
+            {
+                await context.SaveAsync(widget, Ct);
+                cancelled.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.RollbackAsync(cancelled.Token));
+            }
+
+            Assert.False(await StoredAsync(widget));
+        }
+
+        [Fact]
         public async Task Commit_OnTheSynchronousPath_StoresTheWork()
         {
             fixture.RequireSettings();

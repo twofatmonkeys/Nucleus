@@ -145,7 +145,8 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>
         /// The command timeout of each schema statement, in seconds: a table rebuild's row copy, an
         /// added column, an index created or dropped. 0 means no limit. A rebuild copies every row
-        /// of a table, and the driver's default of 30 seconds is far too short for a large one.
+        /// of a table, and the driver's default of 30 seconds is far too short for a large one. An
+        /// engine whose command timeout is the wait for a lock, not a limit on a statement, ignores it.
         /// </summary>
         public int SchemaCommandTimeoutSeconds
         {

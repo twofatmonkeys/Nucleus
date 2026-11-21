@@ -3,6 +3,20 @@
 What Nucleus does not do yet, or does in a way a consumer has to allow for. Each is an open
 finding in [`docs/code-review-findings.md`](../code-review-findings.md), which has the detail.
 
+## Registration and entities
+
+- **The parameterless `AddNucleus()` makes the schema writable.** `ReadOnlySchema` is `true` by
+  default, but that overload sets it `false`, so the shortest registration creates and updates
+  tables. Use `AddNucleus(o => o.ReadOnlySchema = true)` where the schema must not change.
+- **`Timestamp` in memory is the client's clock.** The server stamps the column on every write, and
+  the stamped value is not read back. See [Entities](entities.md).
+- **A column's length cannot be set without its type.** `[DatabaseColumn(ColumnDataType.Unicode, 200)]`
+  is the one form that sets a length: the length-only constructor and the `DataLength` field are
+  nullable, which attribute syntax does not accept.
+- **Three declarations are accepted and do nothing.** The `linkedIDProperty` argument of
+  `[LinkedObject]`; `[RetrieveOnDemand]` on a property that is not a child collection; and
+  `[InitializePriority]`.
+
 ## Saving
 
 - **A caller-owned context disposed without a commit still commits, until v3.** Commit it with
@@ -49,7 +63,13 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   `Include` or `LoadAsync()` where that matters.
 - **A `[LinkedObject]`'s first read is a synchronous round trip** too, with no asynchronous form.
   Use `Include` where that matters. Rows that read the same reference this way each load their own
-  instance; included references share one.
+  instance, unless the referenced type is `[Cacheable]` and the rows were loaded through the
+  manager, which answers from the cache; included references share one.
+- **`FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on `Get<T>()` load every match**, with its
+  children, and work on the rows in memory. For one row use a paged load (`LoadPagedAsync`), and
+  to count use `Rows<T>(...).CountAsync()`, which counts in the database.
+- **`LoadAsync<T>()` for every row of a `[Cacheable]` type reads the table.** `LoadByIDAsync`
+  answers from the cache; the cache has no asynchronous fill for a load of every row.
 - **A row read sees live rows only.** `Rows<T>()` has no counterpart to `IncludeDeleted`.
 - **On SQL Server, reads wait behind saves.** Under the default locking read committed, a load
   whose condition has no index scans its table and waits for any row a concurrent save holds,
@@ -76,4 +96,7 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   context's transaction the unit of work: open it with `CreateContextAsync<T>` and commit it.
 - **`[LinkWhenLogging]` does nothing yet.** It is meant to attach the linked object's type and ID
   to the log entry's linked objects. The implementation did not come across from the library
-  Nucleus grew out of and is to be restored; until then the attribute is accepted and ignored.
+  Nucleus grew out of and is to be restored; until then the attribute is checked (on a property
+  whose type is not an entity it fails the schema build) and otherwise ignored.
+- **SQLite takes a file path only.** An in-memory database and any `file:` URI, one naming a file
+  on disk included, are refused.
