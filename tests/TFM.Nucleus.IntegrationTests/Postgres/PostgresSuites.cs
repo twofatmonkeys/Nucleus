@@ -11,6 +11,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresTransactionCommitIntegrationTests(PostgresFixture fixture) : TransactionCommitIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresConnectionLimitIntegrationTests(PostgresFixture fixture) : ConnectionLimitIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresContextSaveIntegrationTests(PostgresFixture fixture) : ContextSaveIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

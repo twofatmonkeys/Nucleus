@@ -33,10 +33,17 @@ namespace TFM.Nucleus.Data.Providers
             _nucleusOptions = nucleusOptions;
             _logger = logger;
             _schemaLogger = schemaLogger;
+            ConnectionSlots = new ConnectionSlots(this);
         }
 
         /// <summary>The provider's current options.</summary>
         public abstract RelationalProviderOptions Options { get; }
+
+        /// <summary>
+        /// This provider's connection budget, shared by its open root contexts and its live change
+        /// subscriptions. A subscription takes its slot before it opens its connection.
+        /// </summary>
+        public ConnectionSlots ConnectionSlots { get; }
 
         /// <summary>The provider's logger, which its contexts report through.</summary>
         internal ILogger? Logger => _logger;

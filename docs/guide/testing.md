@@ -39,9 +39,9 @@ Three things to know when using it:
   code under test the stack's `Manager`.
 
 A PostgreSQL stack sets `MaxConnectionPoolSize` to 20 before the test's own options run, so a test
-can still change it. At the provider default of 100, one process could hold 200 connections. The
-net8.0 and net10.0 runs of a suite share a server whose default `max_connections` is 100, so
-overlapping runs failed with 53300 "too many clients".
+can still change it. At the provider default of 100, one process could take every connection the
+server allows. The net8.0 and net10.0 runs of a suite share a server whose default
+`max_connections` is 100, so overlapping runs failed with 53300 "too many clients".
 
 ## An xunit fixture
 

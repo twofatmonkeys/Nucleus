@@ -47,10 +47,14 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Connections and logging
 
-- **A provider can hold twice `MaxConnectionPoolSize` connections** on SQL Server and PostgreSQL.
-  Transactional and other connections differ by `Enlist`, so the driver keeps a pool of that size
-  for each. Size the server's connection limit for twice the setting per process, or lower the
-  setting.
+- **SQL Server's notification listener is one connection outside `MaxConnectionPoolSize`.** A
+  provider whose contexts or subscriptions watch for changes starts the driver's query
+  notification listener, which opens one connection of its own, unpooled, for as long as anything
+  watches. Every other connection the provider holds is within the limit.
+- **A transactional context cannot join a `TransactionScope`.** No connection enlists in an
+  ambient transaction, so opening a transactional context, or saving or deleting through the
+  manager, inside a scope fails with `DataContextException` of kind `AmbientTransaction`. Make the
+  context's transaction the unit of work: open it with `CreateContextAsync<T>` and commit it.
 - **`[LinkWhenLogging]` does nothing yet.** It is meant to attach the linked object's type and ID
   to the log entry's linked objects. The implementation did not come across from the library
   Nucleus grew out of and is to be restored; until then the attribute is accepted and ignored.

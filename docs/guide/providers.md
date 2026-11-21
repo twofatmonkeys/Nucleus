@@ -104,7 +104,7 @@ differences an application can see:
 - **One connection writes at a time.** Initialise puts the file in write-ahead log mode
   (`UseWriteAheadLog`), so reads run while another connection writes. A save begins its transaction
   IMMEDIATE, taking the write lock at once, and any other writer, in this process or another,
-  waits up to `BusyTimeoutSeconds` (30 by default) for it. SQLite does not queue its waiters, so a
+  waits up to `BusyTimeoutSeconds` (3 by default) for it. SQLite does not queue its waiters, so a
   writer in one process can wait out its timeout while another process writes back to back; give
   each process its own file, or one process the writing, when several write heavily. A write too
   large for one command runs its commands one after another on its own transaction, so it still
@@ -150,6 +150,16 @@ transactional, so a failed update leaves nothing behind.
 Most options are shared: every provider's configuration derives from `RelationalProviderOptions`.
 Each table below lists what its provider accepts.
 
+The defaults fail fast and alike on every provider: nothing waits more than 3 seconds (for a free
+connection, a connection to open, or SQLite's write lock) before the failure goes back to the
+caller, who decides whether to wait longer or retry. They suit an average application; a busy one
+raises them.
+
+No connection enlists in an ambient transaction. A transactional context opened inside a
+`TransactionScope` fails with a `DataContextException` of kind `AmbientTransaction`, because its own
+transaction would commit even if the scope rolled back. Reads, which are not transactional, run
+inside a scope as before.
+
 ### SQLConfiguration
 
 | Option | Default | Meaning |
@@ -158,12 +168,12 @@ Each table below lists what its provider accepts.
 | `Database` | none | Initial catalog. |
 | `Username`, `Password` | none | SQL authentication credentials. |
 | `UseIntegratedSecurity` | `false` | Use Windows authentication and ignore the credentials above. |
-| `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. |
-| `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
+| `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. Its `Max Pool Size` is replaced with `MaxConnectionPoolSize` and its `Enlist` with `false`. |
+| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with `PoolExhausted`. |
 | `PacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | Obsolete and ignored. An oversized write the bulk engine cannot take runs its commands one after another on its own transaction. |
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `PoolWaitTimeoutSeconds` | `10` | How long opening a context on the asynchronous path waits for a free slot under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a command timeout: queries and saves use the driver's default of 30 seconds. `CommandTimeoutSeconds` is its obsolete name. |
+| `PoolWaitTimeoutSeconds` | `3` | How long opening a context or a change subscription on the asynchronous path waits for a free connection under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a command timeout: queries and saves use the driver's default of 30 seconds. `CommandTimeoutSeconds` is its obsolete name. |
 | `SchemaCommandTimeoutSeconds` | `900` | The command timeout of each schema statement at initialise: a rebuild's row copy, an added column, an index created or dropped. `0` means no limit; a negative value is refused. |
 | `BulkTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
@@ -189,13 +199,13 @@ that times out.
 | `Username`, `Password` | none | Credentials. |
 | `Schema` | `public` | The schema the tables live in. Created when missing. |
 | `SslMode` | driver default | `Disable`, `Allow`, `Prefer`, `Require`, `VerifyCA` or `VerifyFull`. |
-| `ConnectionString` | none | A raw Npgsql connection string that bypasses the builder. `Database` still names the database to create and read. |
-| `ConnectAttempts` | `3` | Attempts at opening a connection when the failure is transient, the first included, with an exponential back-off. `ConnectRetryCount` is its obsolete name. |
-| `ConnectTimeoutSeconds` | `15` | How long opening a connection waits before it fails. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
-| `MaxConnectionPoolSize` | `100` | The most contexts open at once, and the size of each of the driver's two connection pools (transactional and not), so the server can see up to twice this many connections from one process. See the known limits. |
+| `ConnectionString` | none | A raw Npgsql connection string that bypasses the builder. `Database` still names the database to create and read. Its `Maximum Pool Size` is replaced with `MaxConnectionPoolSize` and its `Enlist` with `false`. |
+| `ConnectAttempts` | `3` | Attempts at opening a connection when the failure is transient, the first included, with an exponential back-off. Every attempt shares the connect timeout, so retries never make an open wait longer than it: a quick failure, such as a refused connection while the server restarts, is retried within it. `ConnectRetryCount` is its obsolete name. |
+| `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails, retries included. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set, whose own `Timeout` is used the same way. |
+| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with `PoolExhausted`. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server: obsolete and ignored. |
 | `MaxParametersPerCommand` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
+| `PoolWaitTimeoutSeconds` | `3` | As for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `BulkTimeoutSeconds` | `60` | Timeout for each COPY and bulk statement. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
@@ -211,10 +221,10 @@ that times out.
 | `Password` | none | Refused: the bundled SQLite does not encrypt, and ignoring a password would leave the file readable. |
 | `Server`, `Username` | none | Ignored. |
 | `UseWriteAheadLog` | `true` | Puts the file in write-ahead log mode on initialise, so reads run while one connection writes. The mode is kept in the file. |
-| `BusyTimeoutSeconds` | `30` | How long a command waits for another connection's write lock before it fails. |
+| `BusyTimeoutSeconds` | `3` | How long a command waits for another connection's write lock before it fails. Raise it when several connections or processes write heavily. |
 | `MaxConnectionPoolSize` | `100` | The most contexts open at once. |
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries; a larger write is split into commands run one after another on one transaction. SQLite allows 32,766 a statement, but a command of many statements binds slower as it grows, and holds the write lock while it does. |
-| `PoolWaitTimeoutSeconds` | `10` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
+| `PoolWaitTimeoutSeconds` | `3` | How long an async context waits for a free slot under `MaxConnectionPoolSize`, as for SQL Server. |
 | `SchemaCommandTimeoutSeconds` | `900` | As for SQL Server. |
 | `TableNaming` | `TableNamingPolicy.FullName` | As for SQL Server. |
 | `RenameFullNameTables` | `false` | As for SQL Server. |

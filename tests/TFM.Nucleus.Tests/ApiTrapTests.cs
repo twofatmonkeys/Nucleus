@@ -95,7 +95,7 @@ namespace TFM.Nucleus.Tests
         public void PoolWaitTimeout_IsWhatTheOldNameSet()
         {
             var options = new SQLConfiguration();
-            Assert.Equal(10, options.PoolWaitTimeoutSeconds);
+            Assert.Equal(3, options.PoolWaitTimeoutSeconds);
 
 #pragma warning disable CS0618 // the obsolete name is the subject of the test
             options.CommandTimeoutSeconds = 25;
@@ -111,7 +111,7 @@ namespace TFM.Nucleus.Tests
         {
             var options = new SQLConfiguration { Server = "db", Username = "user", Password = "secret", AppName = "tests" };
 
-            var ex = Assert.Throws<SqlDataProviderException>(() => options.BuildNewSQLConnection(useTransaction: false));
+            var ex = Assert.Throws<SqlDataProviderException>(() => options.BuildNewSQLConnection());
 
             Assert.Equal(DataProviderErrorKind.NotConfigured, ex.Kind);
             Assert.Contains("database name", ex.Message);

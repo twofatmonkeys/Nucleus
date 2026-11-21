@@ -21,6 +21,13 @@ namespace TFM.Nucleus.Data.Providers
 
         public Type EntityType => typeof(T);
 
+        /// <summary>
+        /// The provider connection slot the subscription's connection holds, taken before the
+        /// connection opens. Given back when the subscription is disposed, after the engine's
+        /// resources are released.
+        /// </summary>
+        protected ConnectionSlot? Slot { get; init; }
+
         /// <summary>The error that faulted the subscription, or null while it is live.</summary>
         public Exception? Fault { get; private set; }
         public bool IsFaulted => Fault != null;
@@ -97,7 +104,14 @@ namespace TFM.Nucleus.Data.Providers
             {
                 _gate.Release();
             }
-            await DisposeCoreAsync();
+            try
+            {
+                await DisposeCoreAsync();
+            }
+            finally
+            {
+                Slot?.Dispose();
+            }
             GC.SuppressFinalize(this);
         }
 

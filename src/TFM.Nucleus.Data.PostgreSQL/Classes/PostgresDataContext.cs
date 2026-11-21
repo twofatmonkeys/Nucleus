@@ -45,7 +45,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
             return context;
         }
 
-        protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection(useTransaction);
+        protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection();
 
         protected override bool IsTransientOpenFailure(Exception exception) => PostgresErrors.IsTransient(exception);
 

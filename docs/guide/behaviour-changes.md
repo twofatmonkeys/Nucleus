@@ -3,6 +3,43 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## MaxConnectionPoolSize is the one connection limit, and the defaults fail fast
+
+- **A provider holds at most `MaxConnectionPoolSize` connections to its database.** On SQL Server
+  and PostgreSQL its transactional connections and the rest had connection strings that differed
+  by `Enlist`, and the drivers pool by connection string, so a provider kept two pools of that
+  size and the server could see twice the setting. Every connection now has one connection string,
+  so there is one pool. A server sized for twice the setting can be sized for the setting.
+- **A raw `ConnectionString` gets the limit too.** Its `Max Pool Size` (`Maximum Pool Size` on
+  PostgreSQL) is replaced with `MaxConnectionPoolSize`, and its `Enlist` with `false`. It used to
+  keep the driver's default of 100 whatever the setting said.
+- **Change subscriptions count against the limit.** Each live subscription holds one connection
+  and now one slot, beside the open contexts. With every slot held, a new context or subscription
+  waits `PoolWaitTimeoutSeconds` and fails with `PoolExhausted`, instead of passing the check and
+  timing out in the driver's pool. Raise `MaxConnectionPoolSize` by the number of subscriptions an
+  application keeps open if it ran close to the limit.
+- **Each provider has a budget of its own.** The count of open contexts was shared by every provider
+  of one engine in a process, so two SQL Server providers took slots from each other. Each now
+  counts its own, matching its own driver pool.
+- **The startup connections are not pooled.** The `master` connection (SQL Server) and the
+  maintenance database connection (PostgreSQL), which find and create the database at initialise,
+  close when they are done instead of waiting idle in a pool of their own.
+- **A transactional context inside a `TransactionScope` is refused**, on every engine, with a
+  `DataContextException` of kind `AmbientTransaction`. That covers the manager's saves and deletes,
+  which open one. No connection enlists in an ambient transaction any more, so such a context would
+  have committed even if the scope rolled back. Before, it failed on PostgreSQL, joined the scope on
+  SQL Server for one connection and failed on a second, and ignored the scope on SQLite. Reads, which
+  are not transactional, run inside a scope as before.
+- **No default waits more than 3 seconds.** The failure goes back to the caller, who decides
+  whether to wait longer or retry. A busy application raises these:
+  - `PoolWaitTimeoutSeconds`, on every provider: 10 to 3.
+  - PostgreSQL `ConnectTimeoutSeconds`: 15 to 3, matching SQL Server.
+  - PostgreSQL opens, retries included: every attempt now shares the connect timeout. A timeout
+    used to be retried `ConnectAttempts` times, about 45 seconds in all at the old defaults. A quick
+    failure is still retried within the timeout.
+  - SQLite `BusyTimeoutSeconds`: 30 to 3. SQLite does not queue writers, so more writes fail under
+    contention; raise it where several connections or processes write heavily.
+
 ## A context save follows its transaction in memory
 
 - **An object saved through a caller-owned context is put back if the transaction does not
