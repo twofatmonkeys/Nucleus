@@ -36,8 +36,18 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The most contexts open at once across the process.</summary>
         public int MaxConnectionPoolSize { get; set; } = 100;
 
-        /// <summary>The most parallel contexts one oversized write fans out to.</summary>
+        /// <summary>No longer used: an oversized write runs its parts in order on its own context.</summary>
+        [Obsolete("No longer used. An oversized write the bulk engine cannot take runs its parts in order on its own context, so it commits or rolls back whole.")]
         public int MaxThreadsForLargeQuery { get; set; } = 12;
+
+        /// <summary>
+        /// Whether a transactional context must be committed with <see cref="IDataContext.Commit"/>
+        /// or <see cref="IDataContext.CommitAsync"/>. When set, a context disposed without a commit
+        /// rolls back. When not set (the default in v2), it commits as it always did and logs a
+        /// warning; v3 makes rolling back the only behaviour, so turn this on once every context
+        /// commits.
+        /// </summary>
+        public bool RequireCommit { get; set; }
 
         /// <summary>
         /// The most parameters one command binds; a larger write is split, or handed to the bulk

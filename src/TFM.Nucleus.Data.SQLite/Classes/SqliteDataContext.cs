@@ -46,12 +46,6 @@ namespace TFM.Nucleus.Data.SQLite
 
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection();
 
-        /// <summary>Never used: <see cref="AllowsConcurrentWriters"/> keeps oversized writes on this context.</summary>
-        protected override Task<SqliteDataContext> CreateChildContextAsync(CancellationToken token) =>
-            CreateAsync(_sqliteProvider, this, HasTransaction, WatchesForChanges, token);
-
-        protected override bool AllowsConcurrentWriters => false;
-
         protected override DbParameter CreateParameter(DbCommand command, string name, object? value, IQueryParameter source)
         {
             var column = (source as Parameter)?.ColumnSchema as ColumnSchema;

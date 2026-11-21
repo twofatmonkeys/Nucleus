@@ -9,6 +9,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using TFM.Nucleus.Data.Queries;
 using TFM.Nucleus.Data.Schema;
 
@@ -17,11 +18,12 @@ namespace TFM.Nucleus.Data.Providers
     /// <summary>
     /// The <see cref="IDataContext"/> every relational provider shares, over System.Data.Common:
     /// one connection, one command and an optional transaction per context; a tree of child
-    /// contexts whose transactions commit or roll back with their root; a process-wide limit on
-    /// open contexts; reads into <see cref="DataSet"/> with child collection result sets; deletes
-    /// that report the rows they affected; and the two write paths (split by parameter count on
-    /// the sync path; grouped by table, then bulk copied, fanned out or run as one command on the
-    /// async path). A provider supplies the connection and overrides the hooks its engine needs.
+    /// contexts on their root's connection and transaction, which commits or rolls back whole; a
+    /// process-wide limit on open contexts; reads into <see cref="DataSet"/> with child collection
+    /// result sets; deletes that report the rows they affected; and the two write paths (split by
+    /// parameter count on the sync path; grouped by table, then bulk copied or run as commands in
+    /// order on the async path). A provider supplies the connection and overrides the hooks its
+    /// engine needs.
     /// </summary>
     /// <typeparam name="TSelf">The provider's context type; each type keeps its own pool of open contexts.</typeparam>
     public abstract class DbDataContext<TSelf> : IDataContext, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
@@ -33,11 +35,18 @@ namespace TFM.Nucleus.Data.Providers
         private bool _useDependency = false;
         private bool _useTransaction = false;
         private bool _disposed = false;
+        // On a root, whether the tree is doomed: a failure, or a rollback asked for anywhere in it.
         private bool _needsRollback = false;
+        // On a child, whether it committed its part; on a root, whether it committed the tree.
+        private bool _committed = false;
+        // On a root, whether its transaction has ended, committed or rolled back.
+        private bool _completed = false;
         private bool _isInitialized = false;
         private DbTransaction? _transaction;
         private DbCommand? _command;
         private TSelf? _parent;
+        // The root of a child's tree, whose connection and transaction it uses; null on a root.
+        private TSelf? _root;
         private DbConnection? _connection;
 
         /// <summary>Identifies this context in the pool and in diagnostics.</summary>
@@ -53,9 +62,14 @@ namespace TFM.Nucleus.Data.Providers
 
         protected RelationalProviderOptions Options => _provider.Options;
 
-        protected DbConnection? Connection => _connection;
-        protected DbTransaction? Transaction => _transaction;
+        /// <summary>The context's connection; a child's is its root's.</summary>
+        protected DbConnection? Connection => Root._connection;
+        /// <summary>The context's transaction; a child's is its root's. Null once it has ended.</summary>
+        protected DbTransaction? Transaction => Root._transaction;
         protected DbCommand? Command => _command;
+
+        /// <summary>The context whose connection and transaction this one runs on: itself, unless it is a child.</summary>
+        private TSelf Root => _root ?? (TSelf)this;
 
         public bool HasTransaction => _useTransaction;
         public bool WatchesForChanges => _useDependency;
@@ -71,8 +85,10 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>A new, closed connection; a non-transactional one must not enlist in an ambient transaction.</summary>
         protected abstract DbConnection BuildConnection(bool useTransaction);
 
-        /// <summary>A child context on this context's transaction, for the parallel write path.</summary>
-        protected abstract Task<TSelf> CreateChildContextAsync(CancellationToken token);
+        /// <summary>No longer called: there is no parallel write path.</summary>
+        [Obsolete("No longer called. An oversized write runs its parts in order on its own context; a child context is opened with ContextOptions.Parent.")]
+        protected virtual Task<TSelf> CreateChildContextAsync(CancellationToken token) =>
+            throw new NotSupportedException("There is no parallel write path; open a child with ContextOptions.Parent.");
 
         /// <summary>The connection is open; start whatever the dependency option needs.</summary>
         protected virtual void OnOpened() { }
@@ -159,16 +175,12 @@ namespace TFM.Nucleus.Data.Providers
         protected virtual Task ExecuteBulkAsync(Query query, CancellationToken token) =>
             throw new NotSupportedException($"{GetType().Name} has no bulk engine.");
 
-        /// <summary>
-        /// False for an engine that lets one connection write at a time. An oversized write the
-        /// bulk engine cannot take then runs as commands one after another on this context, as the
-        /// sync path does, instead of fanning out to child contexts: a child's connection would wait
-        /// on this context's write lock until it timed out.
-        /// </summary>
+        /// <summary>No longer read: every engine runs an oversized write's parts in order on one context.</summary>
+        [Obsolete("No longer read. Every engine runs an oversized write the bulk engine cannot take as commands in order on its own context.")]
         protected virtual bool AllowsConcurrentWriters => true;
 
         /// <summary>The connection in diagnostics.</summary>
-        protected virtual string DescribeConnection() => _connection?.GetHashCode().ToString() ?? "null connection";
+        protected virtual string DescribeConnection() => Connection?.GetHashCode().ToString() ?? "null connection";
 
         #region Opening
 
@@ -188,6 +200,11 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (_isInitialized)
                 throw new Exception("Context has already been initialized");
+            if (parent != null)
+            {
+                OpenChild(parent);
+                return;
+            }
 
             if (async)
             {
@@ -203,10 +220,7 @@ namespace TFM.Nucleus.Data.Providers
                 throw PoolExhausted("and the synchronous path does not wait");
             Debug.WriteLine($"Data Context Info: {ConnectionsAvailable} connections currently available from {_contextCache.Count} total in cache"
                 , "Database");
-            if (parent != null && parent.GetType() != GetType())
-                throw new Exception("Parent object must be of type DataContext");
 
-            _parent = parent;
             _useTransaction = useTransaction;
             _useDependency = useDependency;
             _connection = BuildConnection(useTransaction);
@@ -232,11 +246,9 @@ namespace TFM.Nucleus.Data.Providers
                 _connection = null;
                 throw;
             }
-            TryEnlistParent(parent);
             if (_useDependency)
                 OnOpened();
-            Debug.WriteLine($"Created database object {ContextId} using connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff} {(HasTransaction ? "Using a transaction." : "")}" +
-                $"{(_parent != null ? $"Using parent object {_parent.ContextId} with {_parent._childContexts.Count} child conections" : "")}"
+            Debug.WriteLine($"Created database object {ContextId} using connection {DescribeConnection()} at {DateTime.Now:H:mm:ss.ff} {(HasTransaction ? "Using a transaction." : "")}"
                 , "Database");
             _isInitialized = true;
         }
@@ -244,15 +256,32 @@ namespace TFM.Nucleus.Data.Providers
         private ValueTask OpenConnection(bool async, CancellationToken token) =>
             ConnectionOpener.OpenAsync(_connection!, async, OpenAttempts, IsTransientOpenFailure, token);
 
-        private void TryEnlistParent(TSelf? parent)
+        /// <summary>
+        /// Opens a child on its root's connection and transaction, so the tree commits or rolls
+        /// back as one transaction. It takes no pool slot and owns neither; it has a command of
+        /// its own, and must not be used while another context of the tree is running one.
+        /// </summary>
+        private void OpenChild(TSelf parent)
         {
-            if (parent != null)
-            {
-                if (!parent.HasTransaction)
-                    throw new Exception("Unable to enlist transaction from parent Database object. HasTransaction is false.");
-                _parent = parent;
-                _parent._childContexts.TryAdd(ContextId, (TSelf)this);
-            }
+            if (parent.GetType() != GetType())
+                throw new Exception("Parent object must be of type DataContext");
+            if (!parent.HasTransaction)
+                throw new Exception("Unable to enlist transaction from parent Database object. HasTransaction is false.");
+            var root = parent.Root;
+            ObjectDisposedException.ThrowIf(root._disposed, root);
+            root.EnsureActive();
+            _parent = parent;
+            _root = root;
+            _useTransaction = true;
+            _useDependency = root._useDependency;
+            _command = root._connection!.CreateCommand();
+            _command.Transaction = root._transaction;
+            // The root counts every open context of the tree; a parent below it, its own.
+            root._childContexts.TryAdd(ContextId, (TSelf)this);
+            if (parent != root)
+                parent._childContexts.TryAdd(ContextId, (TSelf)this);
+            Debug.WriteLine($"Created database object {ContextId} on the connection of {root.ContextId}, with {root._childContexts.Count} child contexts", "Database");
+            _isInitialized = true;
         }
 
         #endregion
@@ -312,9 +341,17 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private List<Query> BuildSaveQueries(ICoreObject obj)
         {
-            ArgumentNullException.ThrowIfNull(obj, nameof(obj));
-            obj.PrepareForSave();
-            return _provider.CreateSaveQueries([obj]);
+            EnsureActive();
+            try
+            {
+                ArgumentNullException.ThrowIfNull(obj, nameof(obj));
+                obj.PrepareForSave();
+                return _provider.CreateSaveQueries([obj]);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         /// <summary>
@@ -323,37 +360,71 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private List<Query> BuildBatchSaveQueries(IEnumerable<ICoreObject?>? objects)
         {
-            var list = objects as IList<ICoreObject?> ?? objects?.ToList();
-            SaveChecks.Run(list);
-            return _provider.CreateSaveQueries(list, separateOperations: true);
+            EnsureActive();
+            try
+            {
+                var list = objects as IList<ICoreObject?> ?? objects?.ToList();
+                SaveChecks.Run(list);
+                return _provider.CreateSaveQueries(list, separateOperations: true);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         /// <summary>The object's row and every row of its child collections, loaded or not.</summary>
         private DeleteWhereQuery BuildDeleteQuery(ICoreObject obj)
         {
-            ArgumentNullException.ThrowIfNull(obj, nameof(obj));
-            var tableSchema = _provider.GetTableSchema(obj.GetType());
-            if (!tableSchema.ObjectSchema.IsDeletable)
-                throw new NotSupportedException($"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
-            return _provider.CreateDeleteByIdQuery(tableSchema, [obj.ID])!;
+            EnsureActive();
+            try
+            {
+                ArgumentNullException.ThrowIfNull(obj, nameof(obj));
+                var tableSchema = _provider.GetTableSchema(obj.GetType());
+                if (!tableSchema.ObjectSchema.IsDeletable)
+                    throw new NotSupportedException($"Type {tableSchema.ObjectSchema.FullName} is not [Deletable]; deletion is opt-in.");
+                return _provider.CreateDeleteByIdQuery(tableSchema, [obj.ID])!;
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         int IDataContext.DeleteWhere<T>(Expression<Func<T, bool>> predicate)
         {
-            ArgumentNullException.ThrowIfNull(predicate);
-            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
-                return 0;
-            return ExecuteDelete(_provider.CreateDeleteWhereQuery<T>(predicate.Body));
+            EnsureActive();
+            try
+            {
+                ArgumentNullException.ThrowIfNull(predicate);
+                if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                    return 0;
+                return ExecuteDelete(_provider.CreateDeleteWhereQuery<T>(predicate.Body));
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         async Task<int> IDataContext.DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken token)
         {
-            ArgumentNullException.ThrowIfNull(predicate);
-            if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
-                return 0;
-            return await ExecuteDeleteAsync(_provider.CreateDeleteWhereQuery<T>(predicate.Body), token);
+            EnsureActive();
+            try
+            {
+                ArgumentNullException.ThrowIfNull(predicate);
+                if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
+                    return 0;
+                return await ExecuteDeleteAsync(_provider.CreateDeleteWhereQuery<T>(predicate.Body), token);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
+        void IDataContext.Commit() => Commit();
+        Task IDataContext.CommitAsync(CancellationToken cancellationToken) => CommitAsync(cancellationToken);
         void IDataContext.Rollback() => Rollback();
         void IDataContext.TryRollback() => TryRollback();
         Task IDataContext.TryRollbackAsync() { TryRollback(); return Task.CompletedTask; }
@@ -401,19 +472,35 @@ namespace TFM.Nucleus.Data.Providers
         IEnumerable<T> IDataContext.Load<T>(Expression expression) => Load<T>(expression);
         public INucleusCollection<T> Load<T>(Expression expression) where T : ICoreObject<T>, new()
         {
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
-                return new NucleusCollection<T>();
-            var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query), LoadLazyCollection, LinkLoader, []);
+            EnsureActive();
+            try
+            {
+                if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                    return new NucleusCollection<T>();
+                var query = _provider.ParseSelectExpression<T>(expression);
+                return ChildGraphBinder.BuildCollection<T>(query, GetDataSet(query), LoadLazyCollection, LinkLoader, []);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         async Task<IEnumerable<T>> IDataContext.LoadAsync<T>(Expression expression) => await LoadAsync<T>(expression);
         public async Task<INucleusCollection<T>> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new()
         {
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
-                return new NucleusCollection<T>();
-            var query = _provider.ParseSelectExpression<T>(expression);
-            return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None), LoadLazyCollection, LinkLoader, []);
+            EnsureActive();
+            try
+            {
+                if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+                    return new NucleusCollection<T>();
+                var query = _provider.ParseSelectExpression<T>(expression);
+                return ChildGraphBinder.BuildCollection<T>(query, await GetDataSetAsync(query, CancellationToken.None), LoadLazyCollection, LinkLoader, []);
+            }
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
         #endregion
 
@@ -442,28 +529,24 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         /// <summary>
-        /// A transactional child leaves its connection to its root, which commits or rolls back
-        /// the whole tree when it is disposed: rolled back when any context in the tree asked.
+        /// A child leaves the connection and the transaction to its root, and only reports whether
+        /// it committed its part. A root ends its transaction if a commit has not, then closes the
+        /// connection and leaves the pool.
         /// </summary>
         private async ValueTask DisposeCore(bool async)
         {
-            if (_useDependency && _connection != null)
-                OnDisposing();
             // Disposed even when the commit throws: FinallyDispose has released everything by
             // then, and a second dispose must not try again.
             try
             {
-                if (HasTransaction)
-                {
-                    if (HasChildren)
-                        foreach (var db in _childContexts.Values)
-                            if (db._needsRollback)
-                                _needsRollback = true;
-                    if (_parent == null)
-                        await FinallyDispose(async).ConfigureAwait(false);
-                }
+                if (_root != null)
+                    LeaveTree();
                 else
+                {
+                    if (_useDependency && _connection != null)
+                        OnDisposing();
                     await FinallyDispose(async).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -473,51 +556,40 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         /// <summary>
-        /// Commits or rolls back the transaction tree, then closes the connection and leaves the
-        /// pool. A commit or rollback that throws still releases the transaction, the connection
-        /// and the pool slot before its failure propagates, so a failed commit cannot leak them.
+        /// A child that did not commit its part dooms the tree when commits are required, as a
+        /// scope left without completing does. Otherwise the root decides, as it always has.
+        /// </summary>
+        private void LeaveTree()
+        {
+            var root = _root!;
+            if (!_committed && !root._completed && Options.RequireCommit)
+                root._needsRollback = true;
+            root._childContexts.TryRemove(ContextId, out _);
+            _parent?._childContexts.TryRemove(ContextId, out _);
+        }
+
+        /// <summary>
+        /// Ends a transaction a commit has not already ended, then closes the connection and leaves
+        /// the pool. A context marked for rollback rolls back. One never committed rolls back when
+        /// commits are required, and otherwise commits, as every context once did, with a warning.
+        /// A commit or rollback that throws still releases the transaction, the connection and the
+        /// pool slot before its failure propagates, so a failed one cannot leak them.
         /// </summary>
         private async ValueTask FinallyDispose(bool async)
         {
             var finished = false;
             try
             {
-                if (HasTransaction)
+                if (HasTransaction && !_completed)
                 {
-                    foreach (var db in _childContexts.Values)
-                    {
-                        db._needsRollback = _needsRollback;
-                        await db.FinallyDispose(async).ConfigureAwait(false);
-                    }
-                    _childContexts.Clear();
-
-                    if (_transaction != null)
-                    {
-                        try
-                        {
-                            if (_needsRollback)
-                            {
-                                if (async)
-                                    await _transaction.RollbackAsync().ConfigureAwait(false);
-                                else
-                                    _transaction.Rollback();
-                                Debug.WriteLine($"Database object {ContextId} rolled back at {DateTime.Now:H:mm:ss.ff}", "Database");
-                            }
-                            else if (async)
-                                await _transaction.CommitAsync().ConfigureAwait(false);
-                            else
-                                _transaction.Commit();
-                        }
-                        finally
-                        {
-                            if (async)
-                                await _transaction.DisposeAsync().ConfigureAwait(false);
-                            else
-                                _transaction.Dispose();
-                            _transaction = null;
-                        }
-                    }
+                    var commit = !_needsRollback && !Options.RequireCommit;
+                    if (commit)
+                        _provider.Logger?.LogWarning(
+                            "A transactional context was disposed without Commit or Rollback, so it committed. " +
+                            "Call Commit or CommitAsync when the work is done: with RequireCommit set, or from v3, a context disposed without a commit rolls back.");
+                    await EndTransaction(commit, async).ConfigureAwait(false);
                 }
+                _childContexts.Clear();
                 finished = true;
             }
             finally
@@ -544,12 +616,112 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
+        /// <summary>
+        /// Commits or rolls back a root's transaction and marks it ended, so nothing runs on the
+        /// tree after it. Ended even when the commit or rollback throws: the transaction cannot be
+        /// used again, and disposing it lets the server roll back whatever it still holds.
+        /// </summary>
+        private async ValueTask EndTransaction(bool commit, bool async)
+        {
+            _completed = true;
+            var transaction = _transaction;
+            if (transaction == null)
+                return;
+            try
+            {
+                if (commit)
+                {
+                    if (async)
+                        await transaction.CommitAsync().ConfigureAwait(false);
+                    else
+                        transaction.Commit();
+                }
+                else
+                {
+                    if (async)
+                        await transaction.RollbackAsync().ConfigureAwait(false);
+                    else
+                        transaction.Rollback();
+                    Debug.WriteLine($"Database object {ContextId} rolled back at {DateTime.Now:H:mm:ss.ff}", "Database");
+                }
+            }
+            finally
+            {
+                if (async)
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                else
+                    transaction.Dispose();
+                _transaction = null;
+            }
+        }
+
+        /// <inheritdoc cref="IDataContext.Commit"/>
+        public void Commit() => CommitCore(async: false, CancellationToken.None).GetAwaiter().GetResult();
+
+        /// <inheritdoc cref="IDataContext.Commit"/>
+        public Task CommitAsync(CancellationToken cancellationToken = default) => CommitCore(async: true, cancellationToken).AsTask();
+
+        private async ValueTask CommitCore(bool async, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!HasTransaction)
+                return;
+            EnsureActive();
+            if (_root != null)
+            {
+                _committed = true;
+                return;
+            }
+            if (!_childContexts.IsEmpty)
+                throw new DataContextException(
+                    $"Cannot commit: {_childContexts.Count} child context(s) of this transaction are still open. Commit and dispose them first.",
+                    DataContextErrorKind.ChildContextOpen);
+            if (_needsRollback)
+            {
+                await EndTransaction(commit: false, async).ConfigureAwait(false);
+                throw new DataContextException(
+                    "The transaction was rolled back instead of committed: a failure or a rollback marked it for rollback.",
+                    DataContextErrorKind.TransactionDoomed);
+            }
+            // A commit is not abandoned half way, so the token is honoured only before it starts.
+            cancellationToken.ThrowIfCancellationRequested();
+            _committed = true;
+            await EndTransaction(commit: true, async).ConfigureAwait(false);
+        }
+
         public void TryRollback() => Rollback();
 
-        /// <summary>Marks the transaction tree for rollback; it rolls back when the root is disposed.</summary>
+        /// <summary>
+        /// Marks the transaction tree for rollback; it rolls back when the root is disposed, or
+        /// when it is asked to commit. Does nothing once the transaction has ended.
+        /// </summary>
         public void Rollback()
         {
+            var root = Root;
+            if (root._completed)
+                return;
             _needsRollback = true;
+            root._needsRollback = true;
+        }
+
+        /// <summary>
+        /// For an exception filter: marks a transactional context for rollback on any failure out
+        /// of one of its operations, and returns false so the failure propagates as it was thrown.
+        /// </summary>
+        private bool Doom()
+        {
+            if (HasTransaction)
+                Rollback();
+            return false;
+        }
+
+        /// <summary>Refuses to run anything on a tree whose transaction has ended.</summary>
+        private void EnsureActive()
+        {
+            if (_useTransaction && Root._completed)
+                throw new DataContextException(
+                    "The context's transaction has already been committed or rolled back; open a new context.",
+                    DataContextErrorKind.TransactionCompleted);
         }
 
         #endregion
@@ -585,11 +757,11 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>A command of its own for a read, on this context's transaction.</summary>
         private DbCommand NewReadCommand()
         {
-            if (_connection == null)
-                throw new DataContextException("No active Connection", DataContextErrorKind.CurrentConnectionIsNull);
-            _command = _connection.CreateCommand();
-            if (HasTransaction && _transaction != null)
-                _command.Transaction = _transaction;
+            var connection = Connection
+                ?? throw new DataContextException("No active Connection", DataContextErrorKind.CurrentConnectionIsNull);
+            _command = connection.CreateCommand();
+            if (HasTransaction && Transaction is { } transaction)
+                _command.Transaction = transaction;
             return _command;
         }
 
@@ -630,11 +802,12 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>
         /// Reads the rows, then the total count when asked, then each child collection's result
-        /// set. The connection closes with the reader, so a transactional context is finished
-        /// after a read.
+        /// set. The connection stays open, so a transactional context can write after a read; it
+        /// closes when the context is disposed.
         /// </summary>
         private async ValueTask<DataSet> GetDataSetCore(IQuery query, bool async, CancellationToken token)
         {
+            EnsureActive();
             try
             {
                 if (query == null || query is not Query dbQuery)
@@ -647,8 +820,8 @@ namespace TFM.Nucleus.Data.Providers
                     ? DataSet.Initialize(dbQuery.TableName ?? "", RowNames(dbQuery))
                     : DataSet.Initialize(dbQuery.TableSchema);
                 using var reader = async
-                    ? await command.ExecuteReaderAsync(CommandBehavior.CloseConnection, token)
-                    : command.ExecuteReader(CommandBehavior.CloseConnection);
+                    ? await command.ExecuteReaderAsync(CommandBehavior.Default, token)
+                    : command.ExecuteReader(CommandBehavior.Default);
                 if (reader.HasRows)
                 {
                     while (async ? await reader.ReadAsync(token) : reader.Read())
@@ -693,6 +866,7 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         public async IAsyncEnumerable<StreamingRow> StreamAsync(IQuery query, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            EnsureActive();
             if (query == null || query is not Query dbQuery)
                 throw new DataContextException("Invalid Query type", DataContextErrorKind.InvalidIQueryType);
 
@@ -717,13 +891,28 @@ namespace TFM.Nucleus.Data.Providers
 
             await using (reader)
             {
-                if (reader.HasRows)
+                // A failure reading a row dooms a transactional context, as a failed command does.
+                // An iterator cannot catch around a yield, so the flag is false whenever a read is
+                // under way, and true only while the caller holds a row or once all are read: a
+                // caller that stops early leaves it true.
+                var settled = false;
+                try
                 {
-                    while (await reader.ReadAsync(cancellationToken))
+                    while (true)
                     {
+                        settled = false;
+                        if (!reader.HasRows || !await reader.ReadAsync(cancellationToken))
+                            break;
                         ReadAnyRow(reader, row.Values, dbQuery);
+                        settled = true;
                         yield return row;
                     }
+                    settled = true;
+                }
+                finally
+                {
+                    if (!settled)
+                        Doom();
                 }
             }
         }
@@ -734,6 +923,7 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         protected internal async ValueTask<DbDataReader?> ReadStatementAsync(SchemaStatement statement, bool async, CancellationToken token)
         {
+            EnsureActive();
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
@@ -771,26 +961,34 @@ namespace TFM.Nucleus.Data.Providers
         private async ValueTask<int> ExecuteDeleteCore(DeleteWhereQuery query, bool async, CancellationToken token)
         {
             ArgumentNullException.ThrowIfNull(query);
-            // Every chunk is checked before any runs, so a refused delete deletes nothing.
-            if (query.TableSchema?.ObjectSchema.HasLinkedCollections == true)
-                foreach (var chunk in query.FlattenLinkedQueries())
-                    if (chunk is DeleteWhereQuery delete)
-                        await EnsureNoLinkedMembersAsync(delete, async, token);
-            var affected = 0;
-            foreach (var chunk in query.FlattenLinkedQueries())
+            EnsureActive();
+            try
             {
-                var parameters = DeleteParameters(chunk);
-                try
+                // Every chunk is checked before any runs, so a refused delete deletes nothing.
+                if (query.TableSchema?.ObjectSchema.HasLinkedCollections == true)
+                    foreach (var chunk in query.FlattenLinkedQueries())
+                        if (chunk is DeleteWhereQuery delete)
+                            await EnsureNoLinkedMembersAsync(delete, async, token);
+                var affected = 0;
+                foreach (var chunk in query.FlattenLinkedQueries())
                 {
-                    var command = Prepare(chunk.BuildQuery(), parameters, hook: false);
-                    affected += Convert.ToInt32(async ? await command.ExecuteScalarAsync(token) : command.ExecuteScalar());
+                    var parameters = DeleteParameters(chunk);
+                    try
+                    {
+                        var command = Prepare(chunk.BuildQuery(), parameters, hook: false);
+                        affected += Convert.ToInt32(async ? await command.ExecuteScalarAsync(token) : command.ExecuteScalar());
+                    }
+                    catch (Exception ex)
+                    {
+                        throw Failure($"Unable to execute delete on DB. {ex.Message}", ex);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    throw Failure($"Unable to execute delete on DB. {ex.Message}", ex);
-                }
+                return affected;
             }
-            return affected;
+            catch (Exception) when (Doom())
+            {
+                throw;
+            }
         }
 
         /// <summary>
@@ -846,6 +1044,7 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>Runs a query, split into commands under the parameter limit.</summary>
         public void ExecuteSQL(IQuery query)
         {
+            EnsureActive();
             if (query is DeleteWhereQuery delete)
             {
                 ExecuteDelete(delete);
@@ -864,11 +1063,12 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>
         /// Runs a query grouped by table. A group over the parameter limit goes to the provider's
-        /// bulk engine when it can take it, or else fans out to child contexts on this context's
-        /// transaction; any other group runs as one command.
+        /// bulk engine when it can take it, or else runs as commands under the limit, in order, on
+        /// this context; any other group runs as one command.
         /// </summary>
         public async Task ExecuteSQLAsync(IQuery query, CancellationToken token)
         {
+            EnsureActive();
             if (query is DeleteWhereQuery delete)
             {
                 await ExecuteDeleteAsync(delete, token);
@@ -888,22 +1088,13 @@ namespace TFM.Nucleus.Data.Providers
                     {
                         await ExecuteBulkAsync(queriesByType, token);
                     }
-                    else if (!AllowsConcurrentWriters && queriesByType.GetParameterCount() > Options.MaxParametersPerCommand)
+                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerCommand, out var parts))
                     {
-                        // One writer at a time: the parts run in order on this context's connection.
-                        foreach (var part in queriesByType.Split(Options.MaxParametersPerCommand))
+                        // The parts run in order on this context's connection and transaction, so
+                        // the write commits or rolls back whole. Parts on connections of their own
+                        // ran in parallel, but each in a transaction of its own.
+                        foreach (var part in parts!)
                             await ExecuteWriteAsync(part, async: true, token);
-                    }
-                    else if (queriesByType.NeedsSplitting(Options.MaxParametersPerCommand, out var queries))
-                    {
-                        // Fallback parallel path for queries without schema
-                        await Parallel.ForEachAsync(queries!,
-                            new ParallelOptions { MaxDegreeOfParallelism = Options.MaxThreadsForLargeQuery },
-                            async (batchQuery, ct) =>
-                            {
-                                await using var ctx = await CreateChildContextAsync(ct);
-                                await ctx.ExecuteSQLAsync(batchQuery, ct);
-                            });
                     }
                     else
                     {
@@ -953,6 +1144,7 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>Runs one provider-written statement, such as schema DDL, on this context.</summary>
         protected internal async ValueTask ExecuteStatementAsync(SchemaStatement statement, bool async, CancellationToken token)
         {
+            EnsureActive();
             try
             {
                 var command = Prepare(statement.Text, statement.Parameters);
@@ -997,12 +1189,18 @@ namespace TFM.Nucleus.Data.Providers
         MissingResultSet = 40,
         /// <summary>Every context the provider allows at once was open, and none came free in time.</summary>
         PoolExhausted = 50,
+        /// <summary>Something was run on a context whose transaction had already been committed or rolled back.</summary>
+        TransactionCompleted = 60,
+        /// <summary>A commit was asked of a transaction a failure or a rollback had marked; it rolled back instead.</summary>
+        TransactionDoomed = 70,
+        /// <summary>A commit was asked of a root while a child context of its transaction was still open.</summary>
+        ChildContextOpen = 80,
         Unspecified = 99,
     }
 
     /// <summary>
-    /// The transaction a table rebuild runs in: one transactional context, which commits when
-    /// disposed unless rolled back. Columns are read through the transaction, so a renamed table
+    /// The transaction a table rebuild runs in: one transactional context, committed by
+    /// <see cref="CommitAsync"/>. Columns are read through the transaction, so a renamed table
     /// is visible before it commits.
     /// </summary>
     public sealed class DbSchemaTransaction<TContext>(TContext context, Func<string, SchemaStatement> columnsQuery, Func<DbDataReader, CatalogColumn> readColumn)
@@ -1029,6 +1227,14 @@ namespace TFM.Nucleus.Data.Providers
         }
 
         public void Rollback() => context.Rollback();
+
+        public async ValueTask CommitAsync(bool async, CancellationToken cancellationToken)
+        {
+            if (async)
+                await context.CommitAsync(cancellationToken);
+            else
+                context.Commit();
+        }
 
         public void Dispose() => context.Dispose();
 

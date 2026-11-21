@@ -38,6 +38,9 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The provider's current options.</summary>
         public abstract RelationalProviderOptions Options { get; }
 
+        /// <summary>The provider's logger, which its contexts report through.</summary>
+        internal ILogger? Logger => _logger;
+
         public NucleusOptions NucleusOptions => _nucleusOptions.CurrentValue;
 
         /// <summary>Writes this provider's queries in its dialect.</summary>

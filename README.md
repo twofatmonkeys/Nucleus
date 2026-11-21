@@ -110,20 +110,13 @@ public sealed class KeeperDesk(IObjectDataManager data)
     public Task SaveAllAsync(IReadOnlyList<Monkey> monkeys, CancellationToken ct) =>
         data.SaveAsync(monkeys, ct);                   // one transaction
 
-    // Two types in one transaction. Disposing the context commits, so roll back on failure.
+    // Two types in one transaction, committed when the work is done. A failed save rolls it all back.
     public async Task WeighAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
     {
         await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
-        try
-        {
-            await context.SaveAsync(monkey, ct);       // validates, then writes
-            await context.SaveAsync(weighIn, ct);
-        }
-        catch
-        {
-            await context.RollbackAsync(ct);
-            throw;
-        }
+        await context.SaveAsync(monkey, ct);           // validates, then writes
+        await context.SaveAsync(weighIn, ct);
+        await context.CommitAsync(ct);
     }
 }
 ```

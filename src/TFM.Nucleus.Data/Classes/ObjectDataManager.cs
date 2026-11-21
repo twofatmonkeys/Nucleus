@@ -341,13 +341,14 @@ namespace TFM.Nucleus.Data
                 var queries = provider.CreateSaveQueries(list);
                 if (queries.Count == 0)
                     return null;
-                // Disposing the context commits it, so the objects are marked saved only after.
+                // The objects are marked saved only once the context has committed.
                 using (var context = provider.CreateContext(ContextOptions.Transactional))
                 {
                     try
                     {
                         foreach (var query in queries)
                             context.ExecuteQuery(query);
+                        context.Commit();
                     }
                     catch
                     {
@@ -429,13 +430,14 @@ namespace TFM.Nucleus.Data
                 if (queries.Count == 0)
                     return null;
 
-                // Disposing the context commits it, so the objects are marked saved only after.
+                // The objects are marked saved only once the context has committed.
                 await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
                 {
                     try
                     {
                         foreach (var query in queries)
                             await context.ExecuteQueryAsync(query, token);
+                        await context.CommitAsync(token);
                     }
                     catch
                     {
@@ -465,6 +467,7 @@ namespace TFM.Nucleus.Data
                 try
                 {
                     context.ExecuteQueries(queries);
+                    context.Commit();
                 }
                 catch
                 {
@@ -487,6 +490,7 @@ namespace TFM.Nucleus.Data
                 try
                 {
                     await context.ExecuteQueriesAsync(queries, cancellationToken);
+                    await context.CommitAsync(cancellationToken);
                 }
                 catch
                 {
@@ -557,6 +561,7 @@ namespace TFM.Nucleus.Data
             try
             {
                 affected = context.DeleteWhere(predicate);
+                context.Commit();
             }
             catch
             {
@@ -578,6 +583,7 @@ namespace TFM.Nucleus.Data
             try
             {
                 affected = await context.DeleteWhereAsync(predicate, cancellationToken);
+                await context.CommitAsync(cancellationToken);
             }
             catch
             {
@@ -891,13 +897,14 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                // The context validates the objects before it writes, and disposing it commits,
-                // so the objects are marked saved only after.
+                // The context validates the objects before it writes, and the objects are marked
+                // saved only once it has committed.
                 using (var context = providerGroup.Key.CreateContext(ContextOptions.Transactional))
                 {
                     try
                     {
                         context.Save(list);
+                        context.Commit();
                     }
                     catch
                     {
@@ -921,6 +928,7 @@ namespace TFM.Nucleus.Data
                     try
                     {
                         await context.SaveAsync(list, cancellationToken);
+                        await context.CommitAsync(cancellationToken);
                     }
                     catch
                     {

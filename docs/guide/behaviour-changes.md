@@ -3,6 +3,45 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Explicit commit
+
+A caller-owned transactional context used to commit when it was disposed, unless something rolled
+it back. That is the opposite of `DbTransaction`, `TransactionScope` and EF Core, and an exception
+in the caller's own code between two saves committed the first. This release starts the change to
+an explicit commit; v3 finishes it.
+
+- **A context has `Commit` and `CommitAsync`.** On a root context it commits at once. A commit of a
+  transaction that a failure or a rollback marked rolls back instead and throws a
+  `DataContextException` of kind `TransactionDoomed`. Anything run after the commit throws kind
+  `TransactionCompleted`; a rollback after it does nothing. On a context without a transaction it
+  does nothing. Add `await context.CommitAsync(ct)` at the end of the work in every caller-owned
+  context.
+- **A context disposed without a commit still commits, and logs a warning.** Set `RequireCommit`
+  on the provider's options to make it roll back instead. Turn it on once every context commits;
+  v3 makes it the only behaviour.
+- **Any failure of a context's own operation marks it for rollback.** A validation rule, a query
+  that cannot be built, a delete refused for its linked members, a row read that fails while
+  streaming: each used to leave the transaction unmarked, so disposing the context committed the
+  work before it. Only a failed statement marked it before.
+- **A read no longer ends a transaction.** A load through a transactional context closed its
+  connection with the reader, which ended the transaction, so a save after a load on the same
+  context failed and disposing it threw. The connection now stays open until the context is
+  disposed.
+- **A child context runs on its root's connection and transaction.** A context opened with
+  `ContextOptions.Parent` opened a connection and a transaction of its own, which the root
+  committed one at a time before its own, so a failure between them left part of the tree
+  committed, and the child could not see the root's uncommitted rows. It now shares the root's,
+  so the tree commits or rolls back as one. Use one context of a tree at a time. A child marks its
+  part complete with `Commit`; with `RequireCommit` set, a child disposed without one rolls the
+  tree back. The root's commit throws kind `ChildContextOpen` while a child is still open.
+- **An oversized write runs its commands in order.** A write over the parameter limit that the
+  bulk engine cannot take fanned out to child contexts in parallel; it now runs on its own context,
+  as it always did on SQLite. No write that Nucleus builds took that path (every save's insert and
+  update goes to the bulk engine), so saves are unchanged. `MaxThreadsForLargeQuery`,
+  `DbDataContext.AllowsConcurrentWriters` and `CreateChildContextAsync` are obsolete and unused.
+- **A schema transaction commits explicitly.** `ISchemaTransaction` has `CommitAsync`, which the
+  schema update calls once its rebuilds have run.
+
 ## The naming clean-up
 
 These changes break a build. They are the one set of breaking changes made without a major

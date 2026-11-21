@@ -1,10 +1,10 @@
 namespace TFM.Nucleus.Tests
 {
     /// <summary>
-    /// A manager save marks its objects saved only once its transaction has committed. The
-    /// commit happens when the context is disposed, and before, the objects were marked saved and
-    /// the cache evicted inside the context's scope, so a commit that failed left them marked
-    /// saved with nothing in the database. The fake's DisposeFailure is that failed commit.
+    /// A manager save marks its objects saved only once its transaction has committed. Before,
+    /// the objects were marked saved and the cache evicted inside the context's scope, so a commit
+    /// that failed left them marked saved with nothing in the database. The fake's CommitFailure
+    /// is that failed commit.
     /// </summary>
     public class SaveCommitOrderTests
     {
@@ -32,7 +32,7 @@ namespace TFM.Nucleus.Tests
         {
             var (manager, provider) = NewManager();
             var commitFailure = new InvalidOperationException("commit failed");
-            provider.DisposeFailure = commitFailure;
+            provider.CommitFailure = commitFailure;
             var widget = new TestWidget { Name = "w" };
 
             var thrown = await Record.ExceptionAsync(() => SaveThrough(manager, path, widget));
@@ -51,7 +51,7 @@ namespace TFM.Nucleus.Tests
             var (manager, provider) = NewManager();
             provider.SetupRows<CachedWidget>(new Dictionary<string, object?> { ["ID"] = Guid.NewGuid(), ["Name"] = "cached" });
             manager.Load<CachedWidget>();
-            provider.DisposeFailure = new InvalidOperationException("commit failed");
+            provider.CommitFailure = new InvalidOperationException("commit failed");
 
             await Record.ExceptionAsync(() => SaveThrough(manager, path, new CachedWidget { Name = "new" }));
 
@@ -80,7 +80,20 @@ namespace TFM.Nucleus.Tests
 
             await manager.SaveAsync(new TestWidget { Name = "w" }, CancellationToken.None);
 
-            Assert.True(Assert.Single(provider.Contexts).DisposedAsync);
+            var context = Assert.Single(provider.Contexts);
+            Assert.True(context.CommittedAsync);
+            Assert.True(context.DisposedAsync);
+        }
+
+        [Theory]
+        [MemberData(nameof(Saves))]
+        public async Task ASave_CommitsItsContextExplicitly(string path)
+        {
+            var (manager, provider) = NewManager();
+
+            await SaveThrough(manager, path, new TestWidget { Name = "w" });
+
+            Assert.Equal(path == "SaveAsync", Assert.Single(provider.Contexts).CommittedAsync);
         }
     }
 }

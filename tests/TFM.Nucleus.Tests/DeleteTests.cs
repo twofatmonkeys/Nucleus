@@ -91,6 +91,17 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public async Task Delete_CommitsItsContextExplicitly_OnItsOwnPath()
+        {
+            var (manager, provider) = NewManager();
+
+            manager.Delete(Loaded<TestDeletableWidget>(Guid.NewGuid()));
+            await manager.DeleteAsync(Loaded<TestDeletableWidget>(Guid.NewGuid()));
+
+            Assert.Equal([false, true], provider.Contexts.Select(c => c.CommittedAsync));
+        }
+
+        [Fact]
         public async Task DeleteAsync_NewObject_IsSkippedSilently()
         {
             var (manager, provider) = NewManager();
