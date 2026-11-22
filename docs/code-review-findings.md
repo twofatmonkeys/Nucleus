@@ -370,6 +370,18 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### A broken foreign key did not say which reference (November 2026)
+
+- **A key violation was a plain `DatabaseException`.** A caller could tell it was a key, not which
+  one. It is now a `ForeignKeyViolationException` (Abstractions), resolved like a unique violation
+  on the failure path only: `RelationalDataProvider.TryGetForeignKeyViolation` (virtual, so a
+  provider that predates it still compiles) gives the engine's key name (SQL Server's 547 message,
+  PostgreSQL's `ConstraintName`), and `TranslateFailure` maps it to the `ForeignKeySchema` with that
+  physical name. SQLite's 787 names no key, so its exception names nothing. Cover:
+  `ARefusedDelete_NamesTheReferenceThatStillPointsAtTheRow` and
+  `ARowPointingAtARowThatIsNotThere_IsRefused_AndNothingIsWritten` on each engine, and the
+  `foreign-key-violation` sample.
+
 ### Foreign keys on SQLite (November 2026)
 
 - **SQLite keeps keys only in a table's definition**, and checks them only on connections that turn

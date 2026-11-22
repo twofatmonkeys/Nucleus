@@ -203,6 +203,9 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
 
         protected override bool KeysCanBeDroppedByHand => false;
 
+        // SQLite reports a broken key (787) without naming it.
+        protected override bool EngineNamesTheKey => false;
+
         protected override string DropForeignKeySql(string table, string key) =>
             throw new NotSupportedException("A SQLite key is part of its table's definition.");
 

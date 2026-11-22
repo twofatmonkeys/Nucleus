@@ -361,6 +361,32 @@ namespace PortlyPrimate
             return false;
         }
 
+        public async Task<(bool Refused, Guid? ReportedBy)> ForeignKeyViolationAsync(CancellationToken ct)
+        {
+            #region foreign-key-violation
+            var colin = new Keeper { Name = "Colin", Email = "colin@portlyprimate.example" };
+            await data.SaveAsync(colin, ct);
+            var report = new MischiefReport { Culprit = "Brenda", Description = "Hid the keeper's keys.", Severity = Severity.Cheeky, ReportedBy = colin.ID };
+            await data.SaveAsync(report, ct);
+
+            var refused = false;
+            try
+            {
+                await data.DeleteAsync(colin, ct);
+            }
+            // SQLite does not say which key broke, so the names are null there.
+            catch (ForeignKeyViolationException ex) when (ex.Is<MischiefReport>(nameof(MischiefReport.ReportedBy)) || ex.EntityType is null)
+            {
+                refused = true;                            // a live report still names Colin
+            }
+
+            await data.DeleteAsync(report, ct);            // soft: the row stays, flagged
+            await data.DeleteAsync(colin, ct);             // the flagged report lets go of Colin first
+            #endregion
+            var stored = await data.LoadByIDAsync<MischiefReport>(report.ID, new LoadOptions { IncludeDeleted = true }, ct);
+            return (refused, stored!.ReportedBy);
+        }
+
         public async Task WeighWithRetryAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
         {
             #region transient-retry

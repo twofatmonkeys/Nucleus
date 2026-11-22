@@ -80,6 +80,17 @@ namespace TFM.Nucleus.Data.Providers
         protected abstract bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName);
 
         /// <summary>
+        /// True when the exception, or one in its inner chain, is the engine's foreign key
+        /// violation; gives the name of the broken key when the engine reports one. The default
+        /// finds none, so a provider that predates foreign keys reports a plain failure.
+        /// </summary>
+        protected virtual bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName)
+        {
+            physicalKeyName = null;
+            return false;
+        }
+
+        /// <summary>
         /// What the engine's failure is, read from the driver's exception anywhere in the chain:
         /// its kind, and whether it can pass on another attempt. It also decides which failures
         /// opening a connection retries (<see cref="RelationalProviderOptions.ConnectAttempts"/>).
@@ -527,6 +538,8 @@ namespace TFM.Nucleus.Data.Providers
                 return translated;
             if (!DatabaseFailures.IsDatabaseFailure(exception))
                 return exception;
+            if (TryGetForeignKeyViolation(exception, out var physicalKeyName))
+                return ForeignKeyViolation(message, exception, physicalKeyName, operation, mayHaveBeenApplied, attempts);
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
                 return DatabaseFailures.Create(message, exception, ClassifyFailure(exception), operation, mayHaveBeenApplied, attempts);
             var (_, _, applied) = DatabaseFailures.Resolve(new DatabaseErrorClass(DatabaseErrorKind.UniqueViolation, false), operation, mayHaveBeenApplied);
@@ -540,6 +553,33 @@ namespace TFM.Nucleus.Data.Providers
                     { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
                 var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception)
                     { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
+            };
+        }
+
+        /// <summary>
+        /// The <see cref="ForeignKeyViolationException"/> for a broken key, naming the reference
+        /// when the key is one this provider keeps. Resolved from the tables' keys on the failure
+        /// path only.
+        /// </summary>
+        private ForeignKeyViolationException ForeignKeyViolation(string message, Exception exception, string? physicalKeyName,
+            DatabaseOperation operation, bool mayHaveBeenApplied, int attempts)
+        {
+            var (_, _, applied) = DatabaseFailures.Resolve(new DatabaseErrorClass(DatabaseErrorKind.ForeignKeyViolation, false), operation, mayHaveBeenApplied);
+            ForeignKeySchema? key = null;
+            if (physicalKeyName != null)
+            {
+                var dialect = SchemaStore.Dialect;
+                foreach (var table in Schema.TableCache.Values)
+                    foreach (var candidate in table.ForeignKeys)
+                        if (dialect.IdentifierComparer.Equals(dialect.PhysicalName(candidate.Name), physicalKeyName))
+                            key = candidate;
+            }
+            return new ForeignKeyViolationException(message, key?.Name ?? physicalKeyName, key?.Table.ObjectSchema.Type,
+                key?.Column.PropertyName, key?.Column.ColumnName, key?.Referenced.ObjectSchema.Type, exception)
+            {
+                Operation = operation,
+                MayHaveBeenApplied = applied,
+                Attempts = Math.Max(1, attempts),
             };
         }
 

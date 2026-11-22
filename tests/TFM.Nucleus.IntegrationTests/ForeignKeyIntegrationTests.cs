@@ -37,6 +37,27 @@ namespace TFM.Nucleus.IntegrationTests
         /// </summary>
         protected virtual bool KeysCanBeDroppedByHand => true;
 
+        /// <summary>False for an engine whose key violation does not name the key.</summary>
+        protected virtual bool EngineNamesTheKey => true;
+
+        /// <summary>The violation names the resident's keeper reference, where the engine names the key.</summary>
+        private void AssertNamesResidentKeeper(ForeignKeyViolationException ex)
+        {
+            Assert.Equal(DatabaseErrorKind.ForeignKeyViolation, ex.Kind);
+            Assert.False(ex.IsTransient);
+            if (!EngineNamesTheKey)
+            {
+                Assert.Null(ex.EntityType);
+                Assert.False(ex.Is<IntKeyResident>(nameof(IntKeyResident.Keeper)));
+                return;
+            }
+            Assert.Equal(ResidentKeeperKey, ex.KeyName);
+            Assert.Equal(typeof(IntKeyResident), ex.EntityType);
+            Assert.Equal(nameof(IntKeyResident.Keeper), ex.PropertyName);
+            Assert.Equal(typeof(IntKeyKeeper), ex.ReferencedType);
+            Assert.True(ex.Is<IntKeyResident>(nameof(IntKeyResident.Keeper)));
+        }
+
         protected abstract Task ExecuteAsync(string sql);
 
         protected abstract Task<object?> ScalarAsync(string sql);
@@ -80,10 +101,33 @@ namespace TFM.Nucleus.IntegrationTests
             // Not forceSave: the keeper is never written, so the resident would point at nothing.
             var resident = new IntKeyResident { Name = name, Keeper = new IntKeyKeeper { Name = name } };
 
-            var ex = await Assert.ThrowsAnyAsync<DatabaseException>(() => manager.SaveAsync(resident, Ct));
+            var ex = await Assert.ThrowsAsync<ForeignKeyViolationException>(() => manager.SaveAsync(resident, Ct));
 
-            Assert.Equal(DatabaseErrorKind.ForeignKeyViolation, ex.Kind);
+            AssertNamesResidentKeeper(ex);
+            Assert.Equal(DatabaseOperation.Write, ex.Operation);
             Assert.Equal(0, await manager.Rows<IntKeyResident>(r => r.Name == name).CountAsync(Ct));
+        }
+
+        [Fact]
+        public async Task ARefusedDelete_NamesTheReferenceThatStillPointsAtTheRow()
+        {
+            var manager = Manager();
+            var name = Tag("fk-named");
+            var keeper = new IntKeyKeeper { Name = name };
+            await manager.SaveAsync(keeper, Ct);
+            await manager.SaveAsync(new IntKeyResident { Name = name, Keeper = keeper }, Ct);
+            try
+            {
+                var ex = await Assert.ThrowsAsync<ForeignKeyViolationException>(() => manager.DeleteAsync(keeper, Ct));
+
+                // The side that points: the resident's reference, not the keeper being deleted.
+                AssertNamesResidentKeeper(ex);
+                Assert.Equal(1, await manager.Rows<IntKeyKeeper>(k => k.ID == keeper.ID).CountAsync(Ct));
+            }
+            finally
+            {
+                await CleanUpAsync(manager, name);
+            }
         }
 
         [Fact]

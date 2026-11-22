@@ -51,6 +51,21 @@ namespace TFM.Nucleus.Data.PostgreSQL
             _ => new(DatabaseErrorKind.Other, exception.IsTransient),
         };
 
+        /// <summary>The foreign key violation anywhere in the chain, with the key it broke.</summary>
+        public static bool TryGetForeignKeyViolation(Exception exception, out string? constraintName)
+        {
+            for (var e = exception; e != null; e = e.InnerException)
+            {
+                if (e is PostgresException { SqlState: "23503" } postgres)
+                {
+                    constraintName = postgres.ConstraintName;
+                    return true;
+                }
+            }
+            constraintName = null;
+            return false;
+        }
+
         /// <summary>The unique violation anywhere in the chain, with the index or constraint it broke.</summary>
         public static bool TryGetUniqueViolation(Exception exception, out string? constraintName)
         {

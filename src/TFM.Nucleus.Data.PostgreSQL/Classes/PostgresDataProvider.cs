@@ -77,6 +77,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
         protected override bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName) =>
             PostgresErrors.TryGetUniqueViolation(exception, out physicalIndexName);
 
+        protected override bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName) =>
+            PostgresErrors.TryGetForeignKeyViolation(exception, out physicalKeyName);
+
         protected override DatabaseErrorClass ClassifyFailure(Exception exception) => PostgresErrors.Classify(exception);
     }
 

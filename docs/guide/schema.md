@@ -169,6 +169,32 @@ property holds.
   writes it first. A save writes a type after the types its rows point at, whatever order it was
   given them in.
 
+A broken key is a `ForeignKeyViolationException` (see [Saving](saving.md#unique-violations)),
+which names the reference on the side that points: on a refused delete, the entity still pointing
+at the row, not the one being deleted.
+
+<!-- sample: foreign-key-violation -->
+```csharp
+var colin = new Keeper { Name = "Colin", Email = "colin@portlyprimate.example" };
+await data.SaveAsync(colin, ct);
+var report = new MischiefReport { Culprit = "Brenda", Description = "Hid the keeper's keys.", Severity = Severity.Cheeky, ReportedBy = colin.ID };
+await data.SaveAsync(report, ct);
+
+var refused = false;
+try
+{
+    await data.DeleteAsync(colin, ct);
+}
+// SQLite does not say which key broke, so the names are null there.
+catch (ForeignKeyViolationException ex) when (ex.Is<MischiefReport>(nameof(MischiefReport.ReportedBy)) || ex.EntityType is null)
+{
+    refused = true;                            // a live report still names Colin
+}
+
+await data.DeleteAsync(report, ct);            // soft: the row stays, flagged
+await data.DeleteAsync(colin, ct);             // the flagged report lets go of Colin first
+```
+
 **Keeping them in step.** Keys are named `FK_`, the table and the column, and only keys with that
 prefix are ever read, dropped or created, as with indexes. A key that is missing or has changed
 makes the schema not current, and the update creates it after the tables and indexes. A rebuilt

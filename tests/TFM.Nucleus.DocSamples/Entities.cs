@@ -162,6 +162,11 @@ namespace PortlyPrimate
         [DatabaseColumn]
         public Severity Severity { get => GetValue<Severity>(); set => SetValue(value); }
 
+        // A keeper's ID, not a [LinkedObject]: [ForeignKey] gives it the key a reference would get.
+        [DatabaseColumn]
+        [ForeignKey(typeof(Keeper))]
+        public Guid? ReportedBy { get => GetValue<Guid?>(); set => SetValue(value); }
+
         // Stamped by the database server on every insert and update, whatever the client sets.
         [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
         public DateTimeOffset RecordedAt { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
