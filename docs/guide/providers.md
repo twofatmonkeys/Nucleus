@@ -182,12 +182,13 @@ inside a scope as before.
 | `BulkTimeoutSeconds` | `60` | Timeout for bulk copies and bulk statements. |
 | `BulkBatchSize` | `50000` | The most staged rows one bulk INSERT or UPDATE statement writes; a larger batch runs as several statements in the same transaction. Must be 1 or more. |
 | `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails. A busy server can take longer than 3 seconds to finish a login, and the open then fails with a connection timeout that is not retried; raise it for a server under load. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set. |
+| `ReadCommittedSnapshotOnCreate` | `true` | Turn on `READ_COMMITTED_SNAPSHOT` for a database the provider creates, right after creating it, so its reads take the last committed version of a row instead of waiting behind a save. An existing database is never changed; initialise logs a warning when it has the setting off. If the setting cannot be turned on, the database is left as created, with a warning. |
 | `TableNaming` | `TableNamingPolicy.FullName` | How the tables of entities that name neither their table nor their policy are named: `FullName` or `ObjectName(levels)`. See [Table names](schema.md#table-names). |
 | `RenameFullNameTables` | `false` | Rename a missing table's full-name form to its configured name instead of creating it empty. See [Table names](schema.md#table-names). |
 | `RequireCommit` | `false` | Roll back a transactional context disposed without `Commit` or `CommitAsync`. When off, such a context commits and logs a warning. v3 makes rolling back the only behaviour. See the known limits. |
 
-Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize` and
-`ConnectTimeoutSeconds` is one of the shared ones.
+Every option except `UseIntegratedSecurity`, `PacketSize`, `BulkBatchSize`,
+`ConnectTimeoutSeconds` and `ReadCommittedSnapshotOnCreate` is one of the shared ones.
 
 Connections are built with `TrustServerCertificate`, MARS enabled and 4 connect retries. A raw
 `ConnectionString` keeps its own settings for those, for `PacketSize` and for the connect timeout;

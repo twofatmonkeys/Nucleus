@@ -44,6 +44,16 @@ namespace TFM.Nucleus.Data.Queries
             set => WithNoLock = value;
 #pragma warning restore CS0618
         }
+
+        /// <summary>
+        /// The read waits for rows other transactions are writing and then reads them, rather
+        /// than reading the last committed version of each. For a check whose answer must count
+        /// a row another transaction is about to commit, such as a delete's check for linked
+        /// collection members. An engine whose readers always read the last committed version, and
+        /// cannot wait for an uncommitted insert, ignores it.
+        /// </summary>
+        public bool WaitForPendingWrites { get; set; }
+
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
         private readonly List<Query> _linkedQueries = [];

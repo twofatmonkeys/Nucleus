@@ -72,6 +72,16 @@ namespace TFM.Nucleus.Data.SQL
         private int _connectTimeoutSeconds = 3;
 
         /// <summary>
+        /// Turns on READ_COMMITTED_SNAPSHOT for a database this provider creates, true by default,
+        /// so its reads take the last committed version of a row instead of waiting behind a save,
+        /// as they do on the other engines. It is set right after the database is created, when
+        /// nothing else is connected to it. An existing database is never changed: the setting
+        /// needs every other connection to it closed and applies to every application that uses
+        /// it, so initialise only logs a warning when it is off.
+        /// </summary>
+        public bool ReadCommittedSnapshotOnCreate { get; set; } = true;
+
+        /// <summary>
         /// A connection to the database. Every one, transactional or not, has the same connection
         /// string, so the driver keeps one pool of <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>.
         /// </summary>

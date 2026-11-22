@@ -3,6 +3,36 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A rollback ends the transaction at once
+
+- **`Rollback` and `RollbackAsync` roll back immediately.** They only marked the
+  transaction, which rolled back when the context was disposed; until then it kept the locks its
+  writes took, and the objects its saves marked saved stayed marked. Now the transaction ends at
+  once with the context still open: the locks are released, the objects are put back as they were
+  before their first save in it, anything run on the context after it throws
+  `TransactionCompleted`, and a commit throws `TransactionDoomed` as before. A rollback on a child
+  context ends the whole tree's transaction, the root's work included; it only marked the tree,
+  and the root's later commit threw. A commit of the child, or of any other context of the tree,
+  after it throws `TransactionDoomed`.
+- **A cancelled `CommitAsync` rolls back at once**, instead of marking the transaction for the
+  dispose.
+- **`TryRollback` and `TryRollbackAsync` never throw.** A rollback that fails is logged, so the
+  failure a catch block is handling propagates.
+
+## SQL Server: snapshot reads on a created database, and a locking members check
+
+- **A database the SQL Server provider creates has `READ_COMMITTED_SNAPSHOT` on.** Its reads take
+  the last committed version of a row instead of waiting behind a save, as on PostgreSQL, SQLite
+  and Azure SQL. It was created with locking read committed, the SQL Server default. Set
+  `ReadCommittedSnapshotOnCreate` false to keep that. An existing database is not changed.
+- **Initialise warns when an existing SQL Server database has `READ_COMMITTED_SNAPSHOT` off**, and
+  names the statement that turns it on.
+- **A delete's check for linked collection members waits for a member being inserted on SQL
+  Server, whatever the database's setting.** On a database with `READ_COMMITTED_SNAPSHOT` on, it
+  read past a member another transaction had inserted and not yet committed, and the delete went
+  ahead and left that member pointing at a deleted row. It now waits for that transaction, and
+  refuses the delete once the member commits.
+
 ## A saved object's Timestamp moves in memory
 
 - **Every row a save writes takes the client clock as its `Timestamp` when the save commits.**

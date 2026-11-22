@@ -292,6 +292,60 @@ namespace TFM.Nucleus.IntegrationTests
             }
         }
 
+        /// <summary>
+        /// Whether a read on a connection of its own waits for rows the caller's open transaction
+        /// has written: true on an engine whose readers wait for writers (SQL Server without
+        /// READ_COMMITTED_SNAPSHOT), false where they read the last committed version.
+        /// </summary>
+        protected virtual Task<bool> LazyReadWaitsForTheCallerAsync(DatabaseFixture database) => Task.FromResult(false);
+
+        [Fact]
+        public async Task ALazyRead_RunsOutsideTheCallersTransaction()
+        {
+            var manager = fixture.RequireManager();
+            var name = Tag("lt");
+            var owner = new IntLazyOwner { Name = name };
+            owner.Items.Add(new IntLazyItem { Sequence = 0 });
+            owner.Items.Add(new IntLazyItem { Sequence = 1 });
+            await manager.SaveAsync(owner, Ct);
+            var waits = await LazyReadWaitsForTheCallerAsync(fixture);
+            try
+            {
+                System.Linq.Expressions.Expression<Func<IntLazyOwner, bool>> mine = o => o.ID == owner.ID;
+                await using var context = await manager.CreateContextAsync<IntLazyOwner>(ContextOptions.Transactional, Ct);
+                var writer = Assert.Single(await context.LoadAsync<IntLazyOwner>(mine.Body));
+                var reader = Assert.Single(await context.LoadAsync<IntLazyOwner>(mine.Body));
+                Assert.NotSame(writer, reader);
+                Assert.False(reader.Items.IsLoaded);
+
+                // A third item, written in the caller's transaction and not committed. The reader
+                // holds nothing added, so its count is what its own connection sees.
+                writer.Items.Add(new IntLazyItem { Sequence = 2 });
+                await writer.SaveAsync(context, Ct);
+
+                var read = Task.Run(() => reader.Items.Count, Ct);
+                if (waits)
+                {
+                    // It waits for the caller's own transaction, which cannot commit while the
+                    // caller waits for the read: only ending the transaction lets it finish, and a
+                    // root's rollback ends it at once, with the context still open.
+                    Assert.NotSame(read, await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(3), Ct)));
+                    await context.RollbackAsync(Ct);
+                    Assert.Equal(2, await read.WaitAsync(TimeSpan.FromSeconds(10), Ct));
+                }
+                else
+                {
+                    // It does not wait, and it does not see the caller's uncommitted row.
+                    Assert.Equal(2, await read.WaitAsync(TimeSpan.FromSeconds(10), Ct));
+                    await context.RollbackAsync(Ct);
+                }
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLazyOwner>(o => o.Name == name, Ct);
+            }
+        }
+
         [Fact]
         public async Task Include_LoadsTheLazyCollectionOfEveryParent_InTheSameRead()
         {

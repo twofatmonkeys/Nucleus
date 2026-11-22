@@ -16,7 +16,7 @@ namespace TFM.Nucleus.Data.SQL
         public SqlServerSchemaStore(SQLDataProvider provider, ILogger? logger)
         {
             _provider = provider;
-            _catalog = new SqlServerCatalogReader(() => provider.SqlConfig);
+            _catalog = new SqlServerCatalogReader(() => provider.SqlConfig, logger);
             Dialect = new SqlServerSchemaDialect(new SqlServerFullTextExtras(_catalog, logger));
         }
 

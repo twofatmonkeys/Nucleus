@@ -166,6 +166,37 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.False(await StoredAsync(widget));
         }
 
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ARootRollback_EndsTheTransactionAtOnce(bool async)
+        {
+            fixture.RequireSettings();
+            var widget = NewWidget("rollback-now");
+            var late = NewWidget("rollback-late");
+
+            await using (var context = await fixture.Provider!.CreateContextAsync(ContextOptions.Transactional, Ct))
+            {
+                await context.SaveAsync(widget, Ct);
+                if (async)
+                    await context.RollbackAsync(Ct);
+                else
+                    context.Rollback();
+
+                // The context is still open, but its transaction has ended: the object is unsaved
+                // again, and a read on another connection does not wait for the rolled-back row,
+                // even on an engine whose readers wait for writers.
+                Assert.True(widget.IsNew);
+                Assert.False(await StoredAsync(widget).WaitAsync(TimeSpan.FromSeconds(10), Ct));
+                var thrown = await Assert.ThrowsAsync<DataContextException>(() => context.SaveAsync(late, Ct));
+                Assert.Equal(DataContextErrorKind.TransactionCompleted, thrown.Kind);
+                // A second rollback does nothing.
+                await context.RollbackAsync(Ct);
+            }
+
+            Assert.False(await StoredAsync(late));
+        }
+
         [Fact]
         public async Task AStatementAfterTheCommit_IsRefused()
         {
@@ -265,6 +296,47 @@ namespace TFM.Nucleus.IntegrationTests
 
             Assert.False(await StoredAsync(rootWidget));
             Assert.False(await StoredAsync(childWidget));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task AChildRollback_EndsTheWholeTreeAtOnce(bool async)
+        {
+            fixture.RequireSettings();
+            var rootWidget = NewWidget("tree-child-rollback");
+            var childWidget = NewWidget("tree-child-rollback");
+            var late = NewWidget("tree-child-rollback-late");
+
+            await using (var root = await fixture.Provider!.CreateContextAsync(ContextOptions.Transactional, Ct))
+            {
+                await root.SaveAsync(rootWidget, Ct);
+                await using (var child = await fixture.Provider.CreateContextAsync(ChildOf(root), Ct))
+                {
+                    await child.SaveAsync(childWidget, Ct);
+                    if (async)
+                        await child.RollbackAsync(Ct);
+                    else
+                        child.Rollback();
+
+                    // Both contexts are still open, but the tree's transaction has ended: what either
+                    // wrote is gone, and another connection does not wait for those rows.
+                    Assert.True(rootWidget.IsNew);
+                    Assert.True(childWidget.IsNew);
+                    Assert.False(await StoredAsync(rootWidget).WaitAsync(TimeSpan.FromSeconds(10), Ct));
+                    Assert.False(await StoredAsync(childWidget).WaitAsync(TimeSpan.FromSeconds(10), Ct));
+
+                    var thrown = await Assert.ThrowsAsync<DataContextException>(() => child.CommitAsync(Ct));
+                    Assert.Equal(DataContextErrorKind.TransactionDoomed, thrown.Kind);
+                }
+
+                var refused = await Assert.ThrowsAsync<DataContextException>(() => root.SaveAsync(late, Ct));
+                Assert.Equal(DataContextErrorKind.TransactionCompleted, refused.Kind);
+                var doomed = await Assert.ThrowsAsync<DataContextException>(() => root.CommitAsync(Ct));
+                Assert.Equal(DataContextErrorKind.TransactionDoomed, doomed.Kind);
+            }
+
+            Assert.False(await StoredAsync(late));
         }
 
         [Fact]

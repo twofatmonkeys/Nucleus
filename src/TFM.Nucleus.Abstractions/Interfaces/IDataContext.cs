@@ -126,22 +126,37 @@ namespace TFM.Nucleus.Data
         public Task CommitAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
 
+        /// <summary>
+        /// Rolls the transaction back at once: it ends, its locks are released, and nothing more
+        /// runs on it (a commit after it throws). On a context opened with a parent it is the whole
+        /// tree's transaction that ends, the root's work included, since a tree is one transaction.
+        /// Does nothing once the transaction has ended.
+        /// </summary>
         public void Rollback();
 
         /// <summary>
-        /// Rolls the context's transaction back, for a caller on the asynchronous path. A
-        /// rollback sends nothing a caller waits on, so this completes at once. A cancelled token
-        /// still rolls back, and then throws: a cancellation never leaves the work to be committed.
+        /// <see cref="Rollback"/>, for a caller on the asynchronous path. A cancelled token still
+        /// rolls back, and then throws: a cancellation never leaves the work to be committed.
         /// </summary>
+        /// <remarks>An implementation that predates this member rolls back synchronously.</remarks>
         public Task RollbackAsync(CancellationToken cancellationToken = default)
         {
             Rollback();
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
+        /// <summary>
+        /// <see cref="Rollback"/> for a catch block: it never throws, so the failure being handled
+        /// propagates. A rollback that fails is logged, and the server rolls back what it left
+        /// when the connection closes.
+        /// </summary>
         public void TryRollback();
 
+        /// <inheritdoc cref="TryRollback"/>
         public Task TryRollbackAsync();
+
+        /// <inheritdoc cref="TryRollback"/>
+        /// <remarks>It does not throw for a cancelled token either.</remarks>
         public Task TryRollbackAsync(CancellationToken token);
 
     }

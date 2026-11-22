@@ -103,7 +103,14 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerChildSaveIntegrationTests(SqlServerFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture);
+    public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture)
+    {
+        // Locking read committed waits for a row another transaction holds; a database with
+        // READ_COMMITTED_SNAPSHOT on reads the last committed version instead.
+        protected override async Task<bool> LazyReadWaitsForTheCallerAsync(DatabaseFixture database) =>
+            !Convert.ToBoolean(await database.Database.ScalarAsync(
+                "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID()", TestContext.Current.CancellationToken));
+    }
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerLinkedCollectionIntegrationTests(SqlServerFixture fixture) : LinkedCollectionIntegrationTests(fixture);
