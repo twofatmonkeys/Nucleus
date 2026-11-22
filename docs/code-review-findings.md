@@ -15,7 +15,6 @@ recorded here so that page's list and this one agree.
 
 - **A child context shares its root's connection.** A tree is one transaction on one connection,
   so its contexts cannot run commands concurrently.
-- **A row read sees live rows only.** `Rows<T>()` has no counterpart to `LoadOptions.IncludeDeleted`.
 - **A deferred read runs outside the caller's transaction.** The first read of a lazy collection,
   a linked collection or a linked object, and `LoadAsync()`, run on a context of their own
   (`KeyedRowLoader`), bound to the provider and not to the context that loaded the object, because
@@ -86,10 +85,6 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
 - **`IDataProvider.Initialize(IEnumerable<IObjectSchema>?)` ignores its argument**, like the
   schema methods that were replaced. It is the only synchronous initialise on the interface, and
   a call without arguments already reads correctly, so it was left.
-- **A load on the manager for every row of a `[Cacheable]` type does not use the cache.**
-  `LoadAsync<T>()` with no predicate reads the table; `Load<T>()` on the concrete manager and
-  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill. Listed in the
-  guide's known limits.
 
 ### Save, load and schema audit (November 2026)
 
@@ -163,10 +158,6 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   `PropertyChangedEventArgs` per change per level; `AuditLoggerFor` creates a delegate per root;
   `EvictCache` recomputes the same per-type answer per save; `CoerceBoundValue` looks up the
   property for every integer column of every row.
-- **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable load every match and its
-  children.** Read. They stream the whole result through `LoadStreamAsync`, which first runs every
-  child query. First and Any should take one row; Count should count in the database. Listed in
-  the guide's known limits.
 - **P15. The SQLite write path allocates five to eight times what the others do.** Measured: the
   1,000-row split save allocates about 97 MB on SQLite against 13-14 MB elsewhere, the 20,000-row
   bulk save about 2.5 GB against 120-135 MB. SQLite has no bulk engine, so each row is a statement in
@@ -378,6 +369,55 @@ What the failure contract below ("A database failure was a bare Exception") does
   `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
 
 ## Fixed
+
+### Queryable operators read every match, and the cache had one fill path (November 2026)
+
+- **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable loaded every match and
+  its children.** They, and `FirstAsync`, `SingleAsync`, `SingleOrDefaultAsync` and
+  `LongCountAsync`, streamed the whole result through `LoadStreamAsync`, which first ran every
+  child query, and worked on the rows in memory. The guide's getting started page shows them as
+  the way to read. They now run in the database, reached from the extensions through an internal
+  interface the adaptor implements (`INucleusQueryOperators<T>`): First reads one row and Single
+  two (`ObjectDataManager.LoadTopCore`, which `LoadFirst` now shares), with the query's
+  exclusions, inclusions and deleted rows; Any reads one ID and Count counts, as row reads with
+  no child query (`AnyCoreAsync`, `CountCoreAsync` over `RowQuery<T>`). Cover:
+  `AdaptorOperatorResolutionTests` (the Take each builds), `ManagerLoadIntegrationTests`
+  `FirstAndSingle_OnAQuery_ReadTheRowsTheyNeed` and `AnyAndCount_OnAQuery_RunInTheDatabase` on
+  every provider, and the `rows.any` goldens.
+- **A row read saw live rows only.** `RowQuery<T>.IncludeDeleted()` now reads the rows marked
+  deleted too, which Count on a query built with `IncludeDeleted()` needs. Cover:
+  `IncludeDeleted_SeesSoftDeletedRows_OnALoadAndOnAQuery` and the
+  `rows.*.soft.includedeleted` goldens.
+- **A load on the manager for every row of a `[Cacheable]` type did not use the cache.**
+  `LoadAsync<T>()` with no predicate read the table, because `NucleusCache` filled only on the
+  synchronous path, and `LoadByIDAsync` and `LoadAllAsync` filled a cold cache synchronously,
+  blocking the caller's thread. The cache now fills on either path, single-flight across both
+  (an asynchronous fill runs on the thread pool, so a synchronous caller can wait for it; it runs
+  without a caller's token, so one caller cancelling does not fail the others). An unfiltered,
+  live, whole load answers from it: `LoadAsync`, `Load`, `LoadAllAsync`, and the stream
+  (`LoadStreamCoreAsync`), which is what `Get<T>()` with no `Where` enumerates for `ToListAsync`
+  and `await foreach`. Cover: `NucleusCacheTests`, among them
+  `AQueryWithNoWhere_OfACacheableType_StreamsFromTheCache`.
+- **A read by ID of a `[Cacheable]` type could miss a stored row.** `FromCache` filled the cache,
+  then looked the ID up with `TryGetById` as a second step, which found no entry when a save
+  evicted the type in between, and returned null. The lookup now reads the entry the fill
+  returned (`NucleusCache.GetOrLoadById`, `GetOrLoadByIdAsync`). Cover:
+  `GetOrLoadByIdAsync_AnEvictionDuringTheFill_StillFindsTheRow`.
+- **Every caller of `Load<T>()` shared one list.** The cached `NucleusCollection` was handed out
+  as it was, so a caller that added to it or removed from it changed it for every reader.
+  Every read of every row now returns a list of its own over the shared objects. Cover:
+  `LoadAll_CacheableType_ChangingTheListLeavesTheCacheAlone`.
+- **The cache's refresh did not run in the background.** Past `refreshInterval` the refresh task
+  only put an unstarted `Lazy` in place of the entry, so the next reader loaded the table in-line
+  and waited for it, and its `catch` could never fire. The stale entry was never served during a
+  refresh, which is what the interval promises. The refresh now loads first and then swaps the
+  new entry in, only over the entry it refreshed, so an eviction by a save meanwhile wins and the
+  refresh cannot bring back rows read before the save. Cover:
+  `Refresh_ServesTheStaleEntry_WhileTheReloadRuns` and
+  `Refresh_ThatFinishesAfterAnEviction_DoesNotBringBackWhatItRead`.
+- **The `cacheable` doc sample said the wrong read filled the cache.** Its first read was
+  `Get<T>().FirstOrDefaultAsync`, which never touched the cache; the `LoadByIDAsync` after it
+  filled it. The sample now fills it with `LoadAsync<T>()`.
 
 ### A rollback held its locks until the root was disposed (November 2026)
 

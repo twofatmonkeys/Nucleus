@@ -406,12 +406,14 @@ namespace PortlyPrimate
             var live = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", ct);                                          // empty
             var all = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", new LoadOptions { IncludeDeleted = true }, ct);
             var viaQuery = await data.Get<MischiefReport>().IncludeDeleted().Where(r => r.Culprit == "Brenda").ToListAsync(ct);
+            var ever = await data.Rows<MischiefReport>(r => r.Culprit == "Brenda").IncludeDeleted().CountAsync(ct);    // a row read sees them when asked too
 
             // Delete by predicate: no row is loaded, child rows go too, and the count comes back.
             var removed = await data.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);
             #endregion
             Assert.Empty(live);
             Assert.Single(viaQuery);
+            Assert.Equal(viaQuery.Count, ever);
             return all.Count() + removed;
         }
 
@@ -452,10 +454,13 @@ namespace PortlyPrimate
         public async Task<BananaVariety?> CachedAsync(CancellationToken ct)
         {
             #region cacheable
-            // The first read fills the cache; the rest answer from memory until a save or a delete evicts it.
-            var cavendish = await data.Get<BananaVariety>().FirstOrDefaultAsync(v => v.Name == "Cavendish", ct);
-            var again = await data.LoadByIDAsync<BananaVariety>(cavendish!.ID, ct);   // by ID: an index lookup in memory
+            // The first read of every row fills the cache; later reads of every row or by ID answer
+            // from memory until a save or a delete evicts it.
+            var varieties = await data.LoadAsync<BananaVariety>(cancellationToken: ct);   // a list of your own, over the shared objects
+            var cavendish = varieties.First(v => v.Name == "Cavendish");
+            var again = await data.LoadByIDAsync<BananaVariety>(cavendish.ID, ct);        // by ID: an index lookup in memory
             #endregion
+            Assert.Same(cavendish, again);
             return again;
         }
 

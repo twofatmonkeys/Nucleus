@@ -150,8 +150,14 @@ place at its next start.
 (`LoadByIDAsync`, `LoadAsync`, `LoadPagedAsync`, `LoadStreamAsync`, each taking a typed predicate
 and a `LoadOptions`: names to exclude, names to include, and whether soft-deleted rows are seen),
 `Get<T>()` and `Rows<T>()`. Every public load forwards to one private core per shape
-(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`), which
-the adaptor calls too. A member added to an interface gets a default body, so another
+(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`,
+`LoadTopCore` for the first rows), which the adaptor calls too. `NucleusCache` holds a
+`[Cacheable]` type's every row, filled single-flight on either path (an asynchronous fill runs on
+the thread pool, without a caller's token); an unfiltered, live, whole load answers from it in
+`LoadCore`/`LoadCoreAsync` and the stream in `LoadStreamCoreAsync`, every read of every row returns
+a list of its own over the shared objects, and a read by ID looks up the entry its fill returned
+(`GetOrLoadById`), never the cache a second time. Its refresh loads first and swaps the entry in only over the one it refreshed, so an
+eviction meanwhile wins. A member added to an interface gets a default body, so another
 implementation still compiles: it forwards to an older member where one does the same work
 (`IDataContext.Save(IEnumerable)` to `BulkSave`), and throws `NotSupportedException` otherwise.
 `DataProvider` and `DataProviderStatus` on it are obsolete: they are the unrooted default provider
@@ -160,7 +166,10 @@ that takes an untyped `Expression` accepts a predicate whole or as its body
 (`ExpressionParser.Normalize` unwraps a lambda). `ObjectDataAdaptor<T>`
 is a real LINQ provider; it is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so `Where` and the
 async operators (`ToListAsync` and the rest) are declared on `IObjectDataAdaptor<T>`, or .NET 10's
-`System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. `ExpressionParser` lowers expression trees to the neutral query model,
+`System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. First and Single read one
+and two rows, and Any and Count are row reads (one ID, a count) with no child query: the
+extensions reach the adaptor through the internal `INucleusQueryOperators<T>`, because their
+element type has no entity constraint. `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
 comparison still reads as a column;
 `DataProviderRegistry` routes each entity type to the provider of its nearest registered root,

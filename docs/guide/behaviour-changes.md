@@ -3,6 +3,32 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Query operators run in the database, and the cache fills on either path
+
+- **`FirstAsync`, `FirstOrDefaultAsync`, `SingleAsync` and `SingleOrDefaultAsync` on a query read
+  one row, or two for Single.** They loaded every match with its children and took the first in
+  memory. Which row First returns without an order is still whichever the database returns first.
+- **`AnyAsync`, `CountAsync` and `LongCountAsync` on a query run in the database** and read no
+  child collection. They loaded every match with its children. A name passed to `Exclude` or
+  `Include` that is not on the type still throws.
+- **`RowQuery<T>.IncludeDeleted()`** reads the rows marked deleted too. A row read saw live rows
+  only.
+- **A read of every row of a `[Cacheable]` type answers from the cache on every path.**
+  `LoadAsync<T>()` with no predicate read the table each time; now it answers from the cache like
+  `Load<T>()`, as do `Get<T>()` with no `Where` (`ToListAsync`, `await foreach` and a synchronous
+  enumeration) and `LoadStreamAsync<T>()` with no predicate. A cold cache is filled on the
+  asynchronous path by an asynchronous read (`LoadAsync`, `LoadByIDAsync`, `LoadAllAsync`, a
+  stream), which filled it synchronously and blocked the thread.
+- **A read of every row of a `[Cacheable]` type returns a list of its own.** `Load<T>()` and
+  `LoadAllAsync` returned the cache's own list, so adding to it or removing from it changed it for
+  every reader. The objects in the list are still shared. Code that compared two such lists by
+  reference finds them different now.
+- **Past `refreshInterval`, a read gets the cached rows at once while they are read again in the
+  background.** The first read past the interval read the table in-line and waited for it.
+- **A read by ID of a `[Cacheable]` type no longer misses a stored row when a save evicts the
+  cache during the read.** It filled the cache and then looked the ID up in it separately, so an
+  eviction in between returned null.
+
 ## A rollback ends the transaction at once
 
 - **`Rollback` and `RollbackAsync` roll back immediately.** They only marked the

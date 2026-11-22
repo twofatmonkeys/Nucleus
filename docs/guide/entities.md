@@ -401,6 +401,7 @@ await data.DeleteAsync(report, ct);            // soft: the row stays, flagged
 var live = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", ct);                                          // empty
 var all = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", new LoadOptions { IncludeDeleted = true }, ct);
 var viaQuery = await data.Get<MischiefReport>().IncludeDeleted().Where(r => r.Culprit == "Brenda").ToListAsync(ct);
+var ever = await data.Rows<MischiefReport>(r => r.Culprit == "Brenda").IncludeDeleted().CountAsync(ct);    // a row read sees them when asked too
 
 // Delete by predicate: no row is loaded, child rows go too, and the count comes back.
 var removed = await data.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);
@@ -434,14 +435,27 @@ public class BananaVariety : CoreObject<BananaVariety>
 }
 ```
 
-Reads then come from memory, and a save or a delete of the type evicts the cache:
+A read of every row (`LoadAsync<T>()`, `Load<T>()`, `LoadAllAsync`, `LoadStreamAsync<T>()`, and
+`Get<T>()` with no `Where`) and a read by ID come from
+memory, and a save or a delete of the type evicts the cache. The first such read fills it, on the
+asynchronous path when the read is asynchronous, and reads that miss at the same time share that
+one fill. A read with a condition, or with `LoadOptions` that exclude, include or show deleted
+rows, reads the table:
 
 <!-- sample: cacheable -->
 ```csharp
-// The first read fills the cache; the rest answer from memory until a save or a delete evicts it.
-var cavendish = await data.Get<BananaVariety>().FirstOrDefaultAsync(v => v.Name == "Cavendish", ct);
-var again = await data.LoadByIDAsync<BananaVariety>(cavendish!.ID, ct);   // by ID: an index lookup in memory
+// The first read of every row fills the cache; later reads of every row or by ID answer
+// from memory until a save or a delete evicts it.
+var varieties = await data.LoadAsync<BananaVariety>(cancellationToken: ct);   // a list of your own, over the shared objects
+var cavendish = varieties.First(v => v.Name == "Cavendish");
+var again = await data.LoadByIDAsync<BananaVariety>(cavendish.ID, ct);        // by ID: an index lookup in memory
 ```
+
+Each read of every row returns a list of its own, so adding to it or removing from it changes
+nothing for anyone else. The objects in it are shared by every caller, so a change to one is seen
+by every reader of the cache before it is saved.
+Past `refreshInterval` a read still gets the cached rows at once while they are read again in the
+background; past `cacheLifetime` the read waits for them.
 
 A `[Cacheable]` type cannot have a lazy (`[RetrieveOnDemand]`) child collection, and cannot be the
 one side of a linked collection: its cached instances are shared by every caller.

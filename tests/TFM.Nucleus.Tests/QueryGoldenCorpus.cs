@@ -174,6 +174,12 @@ namespace TFM.Nucleus.Tests
                 ["rows.grouped.keys"] = () => Grouped<TestWidget>(["Name", "Quantity"], null, (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.total"] = () => Grouped<TestWidget>([], q => q.Where.And("Name", "a"), (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.soft"] = () => Grouped<TestSoftWidget>(["Name"], null, (MeasureKind.Count, null, "Rows")),
+                // As a queryable's AnyAsync reads it: one ID. And its CountAsync and RowQuery's
+                // IncludeDeleted, which reach the rows marked deleted too.
+                ["rows.any"] = () => Rows<TestWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.Where.And("Name", "a"); }),
+                ["rows.any.soft"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; }),
+                ["rows.columns.soft.includedeleted"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["Name"]; q.IncludeDeleted = true; }),
+                ["rows.grouped.total.soft.includedeleted"] = () => Grouped<TestSoftWidget>([], q => q.IncludeDeleted = true, (MeasureKind.Count, null, "Rows")),
 
                 // ---- Terms
                 ["term.equals"] = () => Term(new Parameter("Name", "a")),

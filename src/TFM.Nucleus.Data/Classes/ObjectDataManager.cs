@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -612,17 +613,55 @@ namespace TFM.Nucleus.Data
 
         #endregion
 
-        /// <summary>Loads every row; [Cacheable] types serve the shared cached collection.</summary>
+        /// <summary>
+        /// Loads every row. A [Cacheable] type answers from its cache, with a list of its own that
+        /// holds the shared cached objects.
+        /// </summary>
         public NucleusCollection<T> Load<T>(bool forceRefresh = false) where T : ICoreObject<T>, new()
         {
             var schema = _objectSchema.Get<T>();
             if (schema is { IsCacheable: true })
-                return Cache.GetOrLoad(schema, LoadAllFromProvider<T>, forceRefresh);
+                return CopyOf(Cache.GetOrLoad(schema, LoadAllFromProvider<T>, forceRefresh));
             return LoadAllFromProvider<T>();
         }
 
-        private NucleusCollection<T> LoadAllFromProvider<T>() where T : ICoreObject<T>, new() =>
-            LoadCore<T>(Expression.Constant(true), [], [], false);
+        /// <summary>
+        /// Every row of a type, read from the database: what the cache is filled with. It does not
+        /// go through <see cref="LoadCore{T}"/>, which answers an unfiltered read of a [Cacheable]
+        /// type from the cache.
+        /// </summary>
+        private NucleusCollection<T> LoadAllFromProvider<T>() where T : ICoreObject<T>, new()
+        {
+            var provider = ProviderFor<T>();
+            return Load<T>(provider, ParseSelect<T>(provider, Expression.Constant(true), [], [], false), []);
+        }
+
+        /// <inheritdoc cref="LoadAllFromProvider{T}"/>
+        private Task<NucleusCollection<T>> LoadAllFromProviderAsync<T>(CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            var provider = ProviderFor<T>();
+            return LoadAsync<T>(provider, ParseSelect<T>(provider, Expression.Constant(true), [], [], false), [], cancellationToken);
+        }
+
+        /// <summary>
+        /// Every row of a [Cacheable] type from its cache, filled on the asynchronous path on a
+        /// miss, as a list of the caller's own.
+        /// </summary>
+        private async Task<NucleusCollection<T>> LoadAllCachedAsync<T>(IObjectSchema schema, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            CopyOf(await Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken));
+
+        /// <summary>
+        /// A list of the caller's own over the cached objects, so adding to or removing from it
+        /// does not change what every other reader of the cache gets. The objects are shared.
+        /// </summary>
+        private static NucleusCollection<T> CopyOf<T>(NucleusCollection<T> cached) where T : ICoreObject<T>, new()
+        {
+            var copy = new NucleusCollection<T>();
+            // List<T>.AddRange copies the array in one step; the collection's own Add raises an
+            // event per object.
+            ((List<T>)copy).AddRange(cached);
+            return copy;
+        }
 
         /// <summary>
         /// One page of rows plus the unpaged total count, fetched in a single round trip.
@@ -723,8 +762,8 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
-                return FromCache<T>(id);
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema))
+                return FromCache<T>(schema, id);
             return LoadCore<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted).FirstOrDefault();
         }
 
@@ -735,8 +774,8 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// Loads by primary key on the asynchronous path, leaving the named child collections
         /// unloaded and loading the named lazy ones with it. A [Cacheable] type answers from its
-        /// cache when nothing is excluded or included; a cold cache is filled on the synchronous
-        /// path once, as <c>Load&lt;T&gt;()</c> fills it, since the cache has no asynchronous fill.
+        /// cache when nothing is excluded or included, and a cold cache is filled on the
+        /// asynchronous path.
         /// </summary>
         [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
         public Task<T?> LoadByIDAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
@@ -744,10 +783,6 @@ namespace TFM.Nucleus.Data
             LoadByIDCoreAsync<T>(id, excludedCollections, includedCollections, false, cancellationToken);
 
         /// <inheritdoc cref="IObjectDataManager.LoadByIDAsync{T}(Guid, LoadOptions?, CancellationToken)"/>
-        /// <remarks>
-        /// A cold cache is filled on the synchronous path once, as <c>Load&lt;T&gt;()</c> fills
-        /// it, since the cache has no asynchronous fill.
-        /// </remarks>
         public Task<T?> LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
         {
             options ??= LoadOptions.Default;
@@ -761,8 +796,8 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
-                return FromCache<T>(id);
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema))
+                return await FromCacheAsync<T>(schema, id, cancellationToken);
             return (await LoadCoreAsync<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted, cancellationToken)).FirstOrDefault();
         }
 
@@ -770,14 +805,22 @@ namespace TFM.Nucleus.Data
         /// A [Cacheable] type with nothing excluded or included and live rows only: the cache
         /// holds whole live objects.
         /// </summary>
-        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new() =>
-            !includeDeleted && excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true };
-
-        private T? FromCache<T>(Guid id) where T : ICoreObject<T>, new()
+        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted,
+            [NotNullWhen(true)] out IObjectSchema? schema) where T : ICoreObject<T>, new()
         {
-            Load<T>(); // ensure the collection (and its index) is populated
-            return Cache.TryGetById<T>(id, out var cached) ? cached : default;
+            schema = !includeDeleted && excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true } cacheable
+                ? cacheable
+                : null;
+            return schema != null;
         }
+
+        // The lookup reads the entry the fill returned: a separate TryGetById after the fill read
+        // a row as missing when a save evicted the type in between.
+        private T? FromCache<T>(IObjectSchema schema, Guid id) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadById(schema, id, LoadAllFromProvider<T>);
+
+        private Task<T?> FromCacheAsync<T>(IObjectSchema schema, Guid id, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadByIdAsync<T>(schema, id, LoadAllFromProviderAsync<T>, cancellationToken);
 
         /// <summary><c>x =&gt; x.ID == id</c>, as the body a load translates.</summary>
         private static Expression ByIdPredicate<T>(Guid id) where T : ICoreObject<T>, new() =>
@@ -1070,13 +1113,8 @@ namespace TFM.Nucleus.Data
 
         T? INucleusRuntime.LoadByID<T>(Guid id, LoadOptions? options) where T : default => LoadByID<T>(id, options);
 
-        Task<NucleusCollection<T>> INucleusRuntime.LoadAllAsync<T>(CancellationToken cancellationToken)
-        {
-            // The cache has no asynchronous fill: a [Cacheable] type is answered as Load<T>() answers it.
-            if (_objectSchema.Get<T>() is { IsCacheable: true })
-                return Task.FromResult(Load<T>());
-            return LoadCoreAsync<T>(Expression.Constant(true), [], [], false, cancellationToken);
-        }
+        Task<NucleusCollection<T>> INucleusRuntime.LoadAllAsync<T>(CancellationToken cancellationToken) =>
+            LoadCoreAsync<T>(Expression.Constant(true), [], [], false, cancellationToken);
 
         T? INucleusRuntime.LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options) where T : default =>
             LoadFirst(predicate, options);
@@ -1090,34 +1128,79 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public T? LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null) where T : ICoreObject<T>, new()
         {
-            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
-                return default;
-            return Load<T>(provider, query, excluded).FirstOrDefault();
+            ArgumentNullException.ThrowIfNull(predicate);
+            options ??= LoadOptions.Default;
+            return LoadTopCore<T>(predicate, 1, options.Exclude, options.Include, options.IncludeDeleted).FirstOrDefault();
         }
 
         /// <inheritdoc cref="LoadFirst{T}(Expression{Func{T, bool}}, LoadOptions?)"/>
         public async Task<T?> LoadFirstAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
         {
-            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
-                return default;
-            return (await LoadAsync<T>(provider, query, excluded, cancellationToken)).FirstOrDefault();
-        }
-
-        /// <summary>The select for the first match, or null when the predicate can match nothing.</summary>
-        private ISelectQuery? FirstQuery<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, out IDataProvider provider, out IPropertySchema[] excluded)
-            where T : ICoreObject<T>, new()
-        {
             ArgumentNullException.ThrowIfNull(predicate);
             options ??= LoadOptions.Default;
+            return (await LoadTopCoreAsync<T>(predicate, 1, options.Exclude, options.Include, options.IncludeDeleted, cancellationToken)).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// At most <paramref name="take"/> of the rows a query expression matches, in no particular
+        /// order, with their child collections: the one core behind the first-row loads and the
+        /// queryable's First and Single operators.
+        /// </summary>
+        internal NucleusCollection<T> LoadTopCore<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
+        {
+            if (TopQuery<T>(expression, take, excludedCollections, includedCollections, includeDeleted, out var provider, out var excluded) is not { } query)
+                return [];
+            return Load<T>(provider, query, excluded);
+        }
+
+        /// <inheritdoc cref="LoadTopCore{T}(Expression, int, IReadOnlyCollection{string}, IReadOnlyCollection{string}, bool)"/>
+        internal async Task<NucleusCollection<T>> LoadTopCoreAsync<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            if (TopQuery<T>(expression, take, excludedCollections, includedCollections, includeDeleted, out var provider, out var excluded) is not { } query)
+                return [];
+            return await LoadAsync<T>(provider, query, excluded, cancellationToken);
+        }
+
+        /// <summary>The select for the first <paramref name="take"/> matches, or null when the expression can match nothing.</summary>
+        private ISelectQuery? TopQuery<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, out IDataProvider provider, out IPropertySchema[] excluded)
+            where T : ICoreObject<T>, new()
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
             provider = ProviderFor<T>();
-            excluded = ExcludedCollections<T>(options.Exclude);
-            var included = IncludedCollections<T>(options.Include, excluded);
-            if (ExpressionParser.Classify(predicate) == PredicateShape.MatchesNone)
+            excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return null;
-            var query = ParseSelect<T>(provider, predicate, excluded, included, options.IncludeDeleted);
+            var query = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
             query.Skip = 0;
-            query.Take = 1;
+            query.Take = take;
             return query;
+        }
+
+        /// <summary>
+        /// True when a row matches a query expression, read as one ID in the database: no child
+        /// query runs and no entity is built. The collection names are still checked, so a name
+        /// that is not a collection of <typeparamref name="T"/> throws as it does on a load.
+        /// </summary>
+        internal Task<bool> AnyCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
+            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).AnyAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// How many rows a query expression matches, counted in the database: no child query runs
+        /// and no entity is built. The collection names are still checked, as on a load.
+        /// </summary>
+        internal Task<long> CountCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
+            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).CountAsync(cancellationToken);
         }
 
         Task<T?> INucleusRuntime.LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
@@ -1153,6 +1236,10 @@ namespace TFM.Nucleus.Data
         internal NucleusCollection<T> LoadCore<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+                return CopyOf(Cache.GetOrLoad(schema, LoadAllFromProvider<T>));
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
@@ -1215,6 +1302,10 @@ namespace TFM.Nucleus.Data
         internal async Task<NucleusCollection<T>> LoadCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+                return await LoadAllCachedAsync<T>(schema, cancellationToken);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
@@ -1259,6 +1350,19 @@ namespace TFM.Nucleus.Data
             IReadOnlyCollection<string> includedCollections, bool includeDeleted,
             [EnumeratorCancellation] CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds. The cached
+            // list is never changed once filled, so it is yielded from as it is; the objects are
+            // shared as on every cached read.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+            {
+                foreach (var cached in await Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return cached;
+                }
+                yield break;
+            }
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)

@@ -101,8 +101,15 @@ namespace TFM.Nucleus.Data
             return [.. list];
         }
 
+        // First, Single, Any and Count on a Nucleus query run in the database: First reads one row,
+        // Single two, Any one ID and Count a count, with no child query for Any and Count. Any other
+        // source goes through AsAsyncEnumerable, which refuses it.
+
+        /// <summary>The first row, or the default when there is none. A Nucleus query reads one row.</summary>
         public static async Task<TSource?> FirstOrDefaultAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+                return (await nucleus.FirstCoreAsync(cancellationToken).ConfigureAwait(false)).Row;
             await foreach (var element in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 return element;
@@ -115,8 +122,14 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>The first row; throws when there is none. A Nucleus query reads one row.</summary>
         public static async Task<TSource> FirstAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+            {
+                var (found, row) = await nucleus.FirstCoreAsync(cancellationToken).ConfigureAwait(false);
+                return found ? row! : throw new InvalidOperationException("Sequence contains no elements.");
+            }
             await foreach (var element in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 return element;
@@ -129,8 +142,11 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).FirstAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>The only row, or the default when there is none; throws when there are several. A Nucleus query reads two rows at most.</summary>
         public static async Task<TSource?> SingleOrDefaultAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+                return (await nucleus.SingleCoreAsync(cancellationToken).ConfigureAwait(false)).Row;
             TSource? result = default;
             bool found = false;
             await foreach (var element in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -148,8 +164,14 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>The only row; throws when there is none or there are several. A Nucleus query reads two rows at most.</summary>
         public static async Task<TSource> SingleAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+            {
+                var single = await nucleus.SingleCoreAsync(cancellationToken).ConfigureAwait(false);
+                return single.Found ? single.Row! : throw new InvalidOperationException("Sequence contains no elements.");
+            }
             TSource? result = default;
             bool found = false;
             await foreach (var element in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -169,8 +191,11 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).SingleAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>True when the query has a row. A Nucleus query reads one ID and runs no child query.</summary>
         public static async Task<bool> AnyAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+                return await nucleus.AnyCoreAsync(cancellationToken).ConfigureAwait(false);
             await foreach (var _ in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 return true;
@@ -183,8 +208,11 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).AnyAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>The number of rows. A Nucleus query counts in the database and runs no child query.</summary>
         public static async Task<int> CountAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+                return checked((int)await nucleus.CountCoreAsync(cancellationToken).ConfigureAwait(false));
             int count = 0;
             await foreach (var _ in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
@@ -198,8 +226,11 @@ namespace TFM.Nucleus.Data
             return await source.Where(predicate).CountAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>The number of rows. A Nucleus query counts in the database and runs no child query.</summary>
         public static async Task<long> LongCountAsync<TSource>(this IQueryable<TSource> source, CancellationToken cancellationToken = default)
         {
+            if (source is INucleusQueryOperators<TSource> nucleus)
+                return await nucleus.CountCoreAsync(cancellationToken).ConfigureAwait(false);
             long count = 0;
             await foreach (var _ in source.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
