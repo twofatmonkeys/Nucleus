@@ -32,6 +32,14 @@ namespace TFM.Nucleus.Data.SQLite
 
         public bool SupportsIncludedColumns => false;
 
+        public bool SupportsForeignKeys => true;
+
+        /// <summary>
+        /// SQLite cannot add or drop a key on its own: a key is part of its column's definition, so
+        /// a table whose keys change is rebuilt.
+        /// </summary>
+        public bool ForeignKeysInline => true;
+
         public ISchemaExtras? Extras => null;
 
         public IReadOnlyList<SchemaStatement> CreateTable(TableSchema table)
@@ -41,7 +49,7 @@ namespace TFM.Nucleus.Data.SQLite
             sb.Append($"{Quote(idColumn.ColumnName)} {SqliteTypes.TypeName(idColumn)} NOT NULL, ");
             foreach (var col in table.Columns)
                 if (col.ColumnName != idColumn.ColumnName)
-                    sb.Append($"{ColumnDefinition(col)}, ");
+                    sb.Append($"{ColumnDefinition(table, col)}, ");
             if (table.IsSoftDeletable)
                 sb.Append($"{SoftDeleteColumnDefinition(SoftDelete.IsDeletedColumn)}, {SoftDeleteColumnDefinition(SoftDelete.DeletedAtColumn)}, ");
             // The key is not named: SQLite keeps a constraint's name only in the CREATE TABLE text,
@@ -54,8 +62,26 @@ namespace TFM.Nucleus.Data.SQLite
             return statements;
         }
 
-        /// <summary>An entity column, as CREATE TABLE and ALTER TABLE ADD COLUMN both write it. Every column is created NULL.</summary>
-        private static string ColumnDefinition(ColumnSchema column) => $"{Quote(column.ColumnName)} {SqliteTypes.TypeName(column)} NULL";
+        /// <summary>
+        /// An entity column, as CREATE TABLE and ALTER TABLE ADD COLUMN both write it, with its
+        /// foreign key when it has one. Every column is created NULL. The key is not named, for
+        /// the reason the primary key is not.
+        /// </summary>
+        private static string ColumnDefinition(TableSchema table, ColumnSchema column)
+        {
+            var definition = $"{Quote(column.ColumnName)} {SqliteTypes.TypeName(column)} NULL";
+            if (!column.HasForeignKey)
+                return definition;
+            foreach (var key in table.ForeignKeys)
+                if (key.Column == column)
+                    return $"{definition} REFERENCES {Quote(key.Referenced.TableName)} ({Quote(key.Referenced.IdentityColumn!.ColumnName)})" +
+                           (key.OnDelete == ForeignKeyAction.SetNull ? " ON DELETE SET NULL" : "");
+            return definition;
+        }
+
+        public SchemaStatement CountOrphans(ForeignKeySchema key) =>
+            $"SELECT count(*) FROM {Quote(key.Table.TableName)} c WHERE c.{Quote(key.Column.ColumnName)} IS NOT NULL " +
+            $"AND NOT EXISTS (SELECT 1 FROM {Quote(key.Referenced.TableName)} r WHERE r.{Quote(key.Referenced.IdentityColumn!.ColumnName)} = c.{Quote(key.Column.ColumnName)})";
 
         /// <summary>One soft-delete system column, as CREATE TABLE and ALTER TABLE ADD COLUMN both write it.</summary>
         private static string SoftDeleteColumnDefinition(string column) => column switch
@@ -74,7 +100,7 @@ namespace TFM.Nucleus.Data.SQLite
         {
             if (columns.Count == 0 && softDeleteColumns.Count == 0)
                 throw new ArgumentException("There are no columns to add.", nameof(columns));
-            return [.. columns.Select(ColumnDefinition).Concat(softDeleteColumns.Select(SoftDeleteColumnDefinition))
+            return [.. columns.Select(c => ColumnDefinition(table, c)).Concat(softDeleteColumns.Select(SoftDeleteColumnDefinition))
                 .Select(d => (SchemaStatement)$"ALTER TABLE {Quote(table.TableName)} ADD COLUMN {d}")];
         }
 

@@ -42,6 +42,12 @@ namespace TFM.Nucleus.Tests
             var uniqueIndexed = QueryGoldenCorpus.TableOf(typeof(TestUniqueIndexedWidget));
             cases["ddl.tableindex.unique"] = () => dialect.CreateTableIndex(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "CodeQuantity")).Text;
             cases["ddl.tableindex.unique.include"] = () => dialect.CreateTableIndex(uniqueIndexed, uniqueIndexed.TableIndexes.Single(i => i.Name == "NameCode")).Text;
+            // Foreign keys live in the column definitions: a table created with them, a key column
+            // added with its key, and the count of rows a rebuild copied that point at nothing.
+            var keyedResident = QueryGoldenCorpus.KeyedTables[typeof(FkResident)];
+            cases["ddl.fk.create"] = () => Join(dialect.CreateTable(keyedResident));
+            cases["ddl.fk.addcolumns"] = () => Join(dialect.AddColumns(keyedResident, [keyedResident["Keeper"], keyedResident["Backup"]], [])!);
+            cases["ddl.fk.orphans"] = () => dialect.CountOrphans(QueryGoldenCorpus.KeyOf(typeof(FkResident), "Keeper")).Text;
 
             foreach (var type in QueryGoldenCorpus.SchemaTypes())
                 cases[$"ddl.create.{type.Name}"] = () => Join(dialect.CreateTable(QueryGoldenCorpus.TableOf(type)));

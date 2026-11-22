@@ -107,6 +107,12 @@ namespace TFM.Nucleus.Data.Providers
         /// <summary>The connection is open; start whatever the dependency option needs.</summary>
         protected virtual void OnOpened() { }
 
+        /// <summary>
+        /// The connection has just opened, and no transaction has begun on it: the place for a
+        /// setting the engine refuses to change inside a transaction.
+        /// </summary>
+        protected virtual ValueTask PrepareConnectionAsync(DbConnection connection, bool async, CancellationToken token) => ValueTask.CompletedTask;
+
         /// <summary>The context is being disposed; stop whatever <see cref="OnOpened"/> started.</summary>
         protected virtual void OnDisposing() { }
 
@@ -243,6 +249,7 @@ namespace TFM.Nucleus.Data.Providers
             {
                 _connection = BuildConnection(useTransaction);
                 await OpenConnection(async, attempts, token);
+                await PrepareConnectionAsync(_connection, async, token);
                 _command = _connection.CreateCommand();
                 if (HasTransaction)
                     _transaction = async ? await _connection.BeginTransactionAsync(token) : _connection.BeginTransaction();

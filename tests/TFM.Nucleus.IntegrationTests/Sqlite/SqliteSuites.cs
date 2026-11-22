@@ -188,4 +188,31 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
 
         protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteForeignKeyIntegrationTests(SqliteFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        // SQLite cannot change a column's type: the column is replaced by one declared narrower.
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE \"{table}\" RENAME COLUMN \"{column}\" TO \"{column}_wide\"; " +
+            $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" VARCHAR({length}) NULL; " +
+            $"UPDATE \"{table}\" SET \"{column}\" = \"{column}_wide\"; " +
+            $"ALTER TABLE \"{table}\" DROP COLUMN \"{column}_wide\"";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override bool KeysCanBeDroppedByHand => false;
+
+        protected override string DropForeignKeySql(string table, string key) =>
+            throw new NotSupportedException("A SQLite key is part of its table's definition.");
+
+        // SQLite keys are never left unchecked by Nucleus's own reckoning, so this is whether it exists.
+        protected override string KeyIsCheckedSql(string key) =>
+            "SELECT count(*) FROM sqlite_schema m JOIN pragma_foreign_key_list(m.name) fk " +
+            $"WHERE 'FK_' || m.name || '_' || fk.\"from\" = '{key}'";
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
 }

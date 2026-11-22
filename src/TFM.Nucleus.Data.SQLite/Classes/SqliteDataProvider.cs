@@ -41,18 +41,18 @@ namespace TFM.Nucleus.Data.SQLite
             SupportsOffsetPaging = true,
         };
 
-        internal SqliteDataContext CreateSqliteDataContext(SqliteDataContext? parent, bool useTransaction, bool useDependency, bool bypassChecks = false)
+        internal SqliteDataContext CreateSqliteDataContext(SqliteDataContext? parent, bool useTransaction, bool useDependency, bool bypassChecks = false, bool forSchema = false)
         {
             if (!bypassChecks)
                 EnsureReady();
-            return SqliteDataContext.Create(this, parent, useTransaction, useDependency);
+            return SqliteDataContext.Create(this, parent, useTransaction, useDependency, forSchema);
         }
 
-        internal async Task<SqliteDataContext> CreateSqliteDataContextAsync(SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token, bool bypassChecks = false)
+        internal async Task<SqliteDataContext> CreateSqliteDataContextAsync(SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token, bool bypassChecks = false, bool forSchema = false)
         {
             if (!bypassChecks)
                 await EnsureReadyAsync();
-            return await SqliteDataContext.CreateAsync(this, parent, useTransaction, useDependency, token);
+            return await SqliteDataContext.CreateAsync(this, parent, useTransaction, useDependency, token, forSchema);
         }
 
         protected override IDataContext CreateDataContext(IDataContext? parent, bool useTransaction, bool useDependency) =>
@@ -136,8 +136,8 @@ namespace TFM.Nucleus.Data.SQLite
         public async ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken) =>
             new DbSchemaTransaction<SqliteDataContext>(
                 async
-                    ? await _provider.CreateSqliteDataContextAsync(null, true, false, cancellationToken, true)
-                    : _provider.CreateSqliteDataContext(null, true, false, true),
+                    ? await _provider.CreateSqliteDataContextAsync(null, true, false, cancellationToken, bypassChecks: true, forSchema: true)
+                    : _provider.CreateSqliteDataContext(null, true, false, bypassChecks: true, forSchema: true),
                 table => new SchemaStatement(SqliteCatalogReader.ColumnsQuery(table)),
                 SqliteCatalogReader.ReadColumn);
     }

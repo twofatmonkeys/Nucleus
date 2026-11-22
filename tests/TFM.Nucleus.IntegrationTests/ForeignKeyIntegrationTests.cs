@@ -31,6 +31,12 @@ namespace TFM.Nucleus.IntegrationTests
         /// <summary>A query returning 1 when the key exists and covers every row, 0 when it exists unchecked.</summary>
         protected abstract string KeyIsCheckedSql(string key);
 
+        /// <summary>
+        /// False for an engine whose keys are part of their table's definition, so a test cannot
+        /// drop one by hand to write a row that points at nothing.
+        /// </summary>
+        protected virtual bool KeysCanBeDroppedByHand => true;
+
         protected abstract Task ExecuteAsync(string sql);
 
         protected abstract Task<object?> ScalarAsync(string sql);
@@ -190,6 +196,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task AKeyOverRowsThatPointAtNothing_IsCreatedUnchecked_WithAWarning_AndChecksNewRows()
         {
             var manager = Manager();
+            Assert.SkipUnless(KeysCanBeDroppedByHand, "This engine keeps keys in their table's definition; SqliteForeignKeyUpgradeTests covers rows that point at nothing.");
             using var schema = await Fixture.SchemaLockAsync();
             var name = Tag("fk-unchecked");
             await ExecuteAsync(DropForeignKeySql(ResidentTable, ResidentKeeperKey));

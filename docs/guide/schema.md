@@ -131,8 +131,8 @@ second fails its initialisation and succeeds on its next start, as a racing tabl
 ## Foreign keys
 
 Nucleus keeps a foreign key for each column that holds another row's ID, so the database refuses a
-row that points at nothing, whoever writes it. On SQL Server and PostgreSQL a key is kept, without
-being asked for, for:
+row that points at nothing, whoever writes it. On every engine a key is kept, without being asked
+for, for:
 
 - a child's `Parent` column, to its parent's table;
 - a stored `[LinkedObject]` column, to the table of the type it holds;
@@ -179,7 +179,17 @@ giving the count; rows written after it are checked. Nucleus never changes rows 
 
 With `ReadOnlySchema`, a missing or changed key makes initialisation fail, as a missing index
 does; one writable start creates them. `RelationalProviderOptions.ForeignKeys` (on by default)
-turns all of it off; the next start drops the keys Nucleus created. SQLite creates no keys yet.
+turns all of it off; the next start drops the keys Nucleus created.
+
+**On SQLite** a key is part of its column's definition, so a table is created with its keys, a
+column is added with its key, and a table whose keys differ from what the entities need is rebuilt
+(copied into a new table, as a changed column type is) rather than altered. The first start with
+keys therefore rebuilds every table that has a reference, which takes time in proportion to its
+rows. A rebuild copies the rows without checking them, then counts, for each key, the rows that
+point at missing rows and reports them as a warning, as the other engines do for a key created
+over them; rows written after it are checked. Keys are enforced on every connection a context
+opens (`PRAGMA foreign_keys`), and turned off on the schema update's own, so a rebuild can replace a
+table other tables point at.
 
 ## What gets a table
 
