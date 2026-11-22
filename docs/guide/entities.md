@@ -28,15 +28,16 @@ Every entity has two properties it does not declare:
 `[DatabaseColumn]` marks a property as stored. A property without it lives in memory only. The
 column takes the property's name, so `[DatabaseColumn]` on its own is the common case.
 
-The attribute has four constructors, each with an optional trailing column name: `()`,
-`(ColumnDataType)`, `(int? dataLength)` and `(ColumnDataType, int? dataLength)`. Everything else is
-set by name:
+The attribute is written three ways, each with an optional trailing column name: `()`,
+`(ColumnDataType)` and `(ColumnDataType, int dataLength)`. Two more constructors take a nullable
+length, which attribute syntax does not accept, so a length is set together with its type.
+Everything else is set by name:
 
 | Field | Default | Meaning |
 |---|---|---|
 | `ColumnName` | property name | Physical column name, used by every statement, index name and predicate. Set it as `[DatabaseColumn("code")]` or `[DatabaseColumn(ColumnName = "code")]`. See renaming below. |
 | `DataType` | `NotSpecified` | A `ColumnDataType`: one of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
-| `DataLength` | inferred | Column length. `-1` maps to `max`. |
+| `DataLength` | inferred | Column length. `-1` maps to `max`. Nullable, so attribute syntax cannot set it by name; give it to the constructor: `[DatabaseColumn(ColumnDataType.Unicode, 200)]`. |
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
 | `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
@@ -45,7 +46,7 @@ set by name:
 | `IndexDescending` | `false` | Sorts that index descending. |
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). |
-| `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
+| `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `CurrentDateTime`, `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
 | `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. The property takes it once the save commits (through a caller's context, as its save runs), so a save that fails leaves the object's own value in place for the next one. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 ### Renaming a column
@@ -209,7 +210,7 @@ The [Relationships](relationships.md) page explains these; this is the list.
 
 | Attribute | Applies to | Effect |
 |---|---|---|
-| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](relationships.md#linked-objects). Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
+| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](relationships.md#linked-objects). Overloads take a `linkedIDProperty` name, which is accepted and does nothing (see the known limits), and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
 | `[Deletable]` | a `NucleusChildCollection` property | Removing a stored child from the collection and saving the parent deletes the child. See [Deleting](relationships.md#deleting). |
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](relationships.md#lazy-collections). |
 | `[LinkedBy(keyProperty)]` | a `NucleusLinkedCollection` property | Names the many type's key, the property holding the one's ID. See [Linked collections](relationships.md#linked-collections). |

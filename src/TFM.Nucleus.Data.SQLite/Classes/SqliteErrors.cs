@@ -20,6 +20,9 @@ namespace TFM.Nucleus.Data.SQLite
         /// <summary>SQLITE_CONSTRAINT_PRIMARYKEY: the primary key was violated.</summary>
         public const int PrimaryKeyViolation = 1555;
 
+        /// <summary>True when the failure is one another attempt may pass, such as an open that failed while the file was locked.</summary>
+        public static bool IsTransient(Exception exception) => Classify(exception).IsTransient;
+
         /// <summary>
         /// What the first SQLite error in the chain is. The driver does not say whether an error
         /// is transient (<c>SqliteException.IsTransient</c> is always false), so it is read from the

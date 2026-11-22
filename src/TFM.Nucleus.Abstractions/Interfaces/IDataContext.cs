@@ -130,12 +130,13 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Rolls the context's transaction back, for a caller on the asynchronous path. A
-        /// rollback sends nothing a caller waits on, so this completes at once.
+        /// rollback sends nothing a caller waits on, so this completes at once. A cancelled token
+        /// still rolls back, and then throws: a cancellation never leaves the work to be committed.
         /// </summary>
         public Task RollbackAsync(CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             Rollback();
+            cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
         public void TryRollback();

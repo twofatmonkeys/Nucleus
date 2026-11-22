@@ -263,12 +263,9 @@ namespace TFM.Nucleus.Data.SQL
             return rows;
         }
 
-        private static async ValueTask Open(SqlConnection connection, bool async, CancellationToken cancellationToken)
-        {
-            if (async)
-                await connection.OpenAsync(cancellationToken);
-            else
-                connection.Open();
-        }
+        // Retried like a context's open: ConnectAttempts times for a transient failure, all within
+        // the connection's own connect timeout.
+        private ValueTask Open(SqlConnection connection, bool async, CancellationToken cancellationToken) =>
+            ConnectionOpener.OpenAsync(connection, async, Math.Max(1, Config.ConnectAttempts), SqlServerErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), cancellationToken);
     }
 }

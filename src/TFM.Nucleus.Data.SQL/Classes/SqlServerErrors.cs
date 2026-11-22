@@ -13,6 +13,9 @@ namespace TFM.Nucleus.Data.SQL
     /// </summary>
     internal static class SqlServerErrors
     {
+        /// <summary>True when the failure is one another attempt may pass, such as an open that failed while the server was failing over.</summary>
+        public static bool IsTransient(Exception exception) => Classify(exception).IsTransient;
+
         /// <summary>What the first SQL Server error in the chain is; a timeout or <see cref="DatabaseErrorClass.Other"/> when there is none.</summary>
         public static DatabaseErrorClass Classify(Exception exception)
         {
