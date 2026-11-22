@@ -23,12 +23,12 @@
       "allocatedBytes": 9019168
     },
     "graph remove one line x50": {
-      "medianMs": 78.24,
-      "allocatedBytes": 5855312
+      "medianMs": 54.29,
+      "allocatedBytes": 1094112
     },
     "graph update one line x50": {
-      "medianMs": 40.81,
-      "allocatedBytes": 6095840
+      "medianMs": 57.98,
+      "allocatedBytes": 1326200
     },
     "nested insert 30x10x3": {
       "medianMs": 38.08,
