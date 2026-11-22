@@ -6,14 +6,24 @@ namespace TFM.Nucleus.IntegrationTests
     /// The loads and the mixed-type save on <see cref="IObjectDataManager"/>, the interface DI
     /// registers: by ID, by predicate, paged and streamed, with <see cref="LoadOptions"/>.
     /// </summary>
-    public abstract class ManagerLoadIntegrationTests(DatabaseFixture fixture)
+    public abstract class ManagerLoadIntegrationTests(DatabaseFixture fixture) : IAsyncDisposable
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+        private readonly List<string> _seeded = [];
+
+        /// <summary>Deletes the widgets this test seeded; xunit disposes the class after each test.</summary>
+        public async ValueTask DisposeAsync()
+        {
+            foreach (var prefix in _seeded)
+                await fixture.DeleteWidgetsAsync(prefix, CancellationToken.None);
+        }
 
         private async Task<(IObjectDataManager Data, string Prefix, List<IntWidget> Widgets)> SeedAsync(int count)
         {
             IObjectDataManager data = fixture.RequireManager();
             var prefix = $"ml-{Guid.NewGuid():N}-";
+            _seeded.Add(prefix);
             var widgets = Enumerable.Range(0, count).Select(i => new IntWidget { Name = $"{prefix}{i}", Quantity = i }).ToList();
             await data.SaveAsync(widgets, Ct);
             return (data, prefix, widgets);
@@ -135,6 +145,7 @@ namespace TFM.Nucleus.IntegrationTests
         {
             IObjectDataManager data = fixture.RequireManager();
             var widget = new IntWidget { Name = $"ml-rb-{Guid.NewGuid():N}", Quantity = 1 };
+            _seeded.Add(widget.Name!);
 
             await using (var context = await data.CreateContextAsync<IntWidget>(ContextOptions.Transactional, Ct))
             {
@@ -150,6 +161,7 @@ namespace TFM.Nucleus.IntegrationTests
         {
             IObjectDataManager data = fixture.RequireManager();
             var tag = $"ml-mx-{Guid.NewGuid():N}";
+            _seeded.Add(tag);
             var widget = new IntWidget { Name = tag, Quantity = 1 };
             var item = new IntHardItem { Name = tag };
 

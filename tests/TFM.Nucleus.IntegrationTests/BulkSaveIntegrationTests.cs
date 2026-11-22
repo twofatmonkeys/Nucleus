@@ -19,7 +19,19 @@
             var rows = fixture.Provider!.Capabilities.MaxParametersPerCommand / 2 + 50;
             var prefix = $"bulk-{Guid.NewGuid():N}-";
             var widgets = Enumerable.Range(0, rows).Select(i => new IntWidget { Name = $"{prefix}{i}", Quantity = i }).ToList();
+            try
+            {
+                await SaveThenUpdateAsync(manager, prefix, rows, widgets);
+            }
+            finally
+            {
+                // Tens of thousands of rows a run on an engine with a high parameter limit.
+                await fixture.DeleteWidgetsAsync(prefix, CancellationToken.None);
+            }
+        }
 
+        private async Task SaveThenUpdateAsync(ObjectDataManager manager, string prefix, int rows, List<IntWidget> widgets)
+        {
             await using (var context = await manager.Providers.AllProviders[0].CreateContextAsync(ContextOptions.Transactional, Ct))
                 await context.SaveAsync(widgets, Ct);
 
