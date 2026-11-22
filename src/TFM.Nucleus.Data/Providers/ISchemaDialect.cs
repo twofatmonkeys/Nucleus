@@ -83,6 +83,31 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         bool SupportsIncludedColumns => true;
 
+        /// <summary>
+        /// True for an engine whose dialect writes foreign keys. A dialect that does not implement
+        /// the members below leaves this false, and its provider creates no keys.
+        /// </summary>
+        bool SupportsForeignKeys => false;
+
+        /// <summary>
+        /// Adds <paramref name="key"/> to its table. With <paramref name="checkExisting"/> false the
+        /// rows already there are not checked against it, because some point at rows that do not
+        /// exist; the key still holds for every row written after it.
+        /// </summary>
+        SchemaStatement AddForeignKey(ForeignKeySchema key, bool checkExisting) =>
+            throw new NotSupportedException($"{GetType().Name} does not support foreign keys.");
+
+        /// <summary>Drops the key named <paramref name="physicalKeyName"/> from the table named <paramref name="physicalTableName"/>.</summary>
+        SchemaStatement DropForeignKey(string physicalTableName, string physicalKeyName) =>
+            throw new NotSupportedException($"{GetType().Name} does not support foreign keys.");
+
+        /// <summary>
+        /// A statement whose single value is the number of rows of the key's table whose column
+        /// holds an ID its referenced table does not have.
+        /// </summary>
+        SchemaStatement CountOrphans(ForeignKeySchema key) =>
+            throw new NotSupportedException($"{GetType().Name} does not support foreign keys.");
+
         /// <summary>True when building a unique index failed because existing rows hold duplicate keys.</summary>
         bool IsDuplicateKeyOnIndexBuild(Exception exception);
 
@@ -116,6 +141,17 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>Runs a statement on a connection of its own.</summary>
         ValueTask ExecuteAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Every Nucleus-named foreign key. Empty from a reader that predates foreign keys, whose
+        /// dialect creates none.
+        /// </summary>
+        ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IReadOnlyList<CatalogForeignKey>>([]);
+
+        /// <summary>Runs a statement that returns one number, on a connection of its own.</summary>
+        ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken) =>
+            throw new NotSupportedException($"{GetType().Name} does not read counts.");
     }
 
     /// <summary>What a provider gives its <see cref="SchemaManager"/>.</summary>
@@ -136,6 +172,12 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>A missing table is renamed from its full-name form when a table under that name exists.</summary>
         bool RenameFullNameTables => false;
+
+        /// <summary>
+        /// The provider keeps the foreign keys the entity model implies (where its dialect
+        /// supports them). False for a store that predates foreign keys.
+        /// </summary>
+        bool ForeignKeys => false;
 
         /// <summary>A transaction for table rebuilds, committed by <see cref="ISchemaTransaction.CommitAsync"/>.</summary>
         ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken);

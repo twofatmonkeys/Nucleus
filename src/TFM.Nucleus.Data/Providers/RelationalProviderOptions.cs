@@ -203,6 +203,15 @@ namespace TFM.Nucleus.Data.Providers
         /// instead of creating an empty one. Off by default. Has no effect while the schema is read-only.
         /// </summary>
         public bool RenameFullNameTables { get; set; }
+
+        /// <summary>
+        /// The schema update keeps a foreign key for each reference the entity model implies: a
+        /// child's parent, a stored [LinkedObject], a [LinkedBy] key and a [ForeignKey] column,
+        /// between two types this provider stores. On by default. Turning it off drops the keys
+        /// Nucleus created at the next start. Has no effect while the schema is read-only, or on an
+        /// engine whose provider does not create keys.
+        /// </summary>
+        public bool ForeignKeys { get; set; } = true;
     }
 
     /// <summary>Copies NucleusOptions.AppName into every (named) instance of a provider's options.</summary>

@@ -28,6 +28,8 @@ namespace TFM.Nucleus.Data.SQL
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
 
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
+
         public ISchemaDialect Dialect { get; }
 
         public ICatalogReader Catalog => _catalog;

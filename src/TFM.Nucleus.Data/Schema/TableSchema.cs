@@ -149,6 +149,19 @@ namespace TFM.Nucleus.Data.Schema
         }
 
         /// <summary>
+        /// The foreign keys of this table's columns, built with the schema. Empty when the
+        /// provider creates no keys.
+        /// </summary>
+        public IReadOnlyList<ForeignKeySchema> ForeignKeys { get; internal set; } = [];
+
+        /// <summary>
+        /// The keys of soft-deleted types that point at this table. A soft-deleted row keeps its
+        /// references, so a hard delete of a row of this table first clears them, or the key
+        /// would refuse the delete because of a row nobody sees.
+        /// </summary>
+        internal IReadOnlyList<ForeignKeySchema> SoftReferencesIn { get; set; } = [];
+
+        /// <summary>
         /// The stored [LinkedObject] properties that can hold a row of this table: typed as the
         /// type itself or as one it derives from. A batch that inserts rows pointing at each other
         /// through them is ordered so a row is inserted after the row it points at. Empty for
@@ -309,6 +322,17 @@ namespace TFM.Nucleus.Data.Schema
         /// <summary>The logical name a [TableIndex] index has on the table named <paramref name="tableName"/>.</summary>
         public static string TableIndexName(string tableName, TableIndexSchema index) =>
             $"{TableIndexPrefix}{tableName}_{index.Name}";
+
+        /// <summary>The prefix of a foreign key Nucleus manages.</summary>
+        public const string ForeignKeyPrefix = "FK_";
+
+        /// <summary>The logical name of a column's foreign key on the table named <paramref name="tableName"/>.</summary>
+        public static string ForeignKeyName(string tableName, ColumnSchema column) =>
+            $"{ForeignKeyPrefix}{tableName}_{column.ColumnName}";
+
+        /// <summary>True when a stored constraint name is one of the foreign keys Nucleus manages.</summary>
+        public static bool IsForeignKeyName(string? name) =>
+            name != null && name.StartsWith(ForeignKeyPrefix, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>True when a stored index name is one of the [TableIndex] indexes Nucleus manages.</summary>
         public static bool IsTableIndexName(string? indexName) =>

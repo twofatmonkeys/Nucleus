@@ -326,6 +326,12 @@ The first read of the property loads the entity, once, however many threads read
 keeps it. The next read runs no query, and the object is not made dirty. A row that no longer
 exists reads as `null`.
 
+The column has a foreign key (see [Foreign keys](schema.md#foreign-keys)), so the referenced entity
+cannot be deleted while a live row points at it, and a save of a reference to an entity that was
+never saved fails unless the link is `forceSave`. A reference that is meant to outlive its row
+takes `[ForeignKey(false)]`, or `[ForeignKey(OnDelete = ForeignKeyAction.SetNull)]` to have the
+database clear it.
+
 That first read goes through whatever loaded the object, as a lazy collection's does. A manager
 loads it by ID from the provider that stores its type, or from the cache for a `[Cacheable]` type.
 A data context loads it from its own provider, on a connection of its own, outside the context's

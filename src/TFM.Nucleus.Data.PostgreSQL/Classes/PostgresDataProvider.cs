@@ -102,6 +102,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
 
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
+
         public ISchemaDialect Dialect => _dialect;
 
         public ICatalogReader Catalog => _catalog;

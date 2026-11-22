@@ -47,6 +47,19 @@ namespace TFM.Nucleus.Data.SQL
                 WHERE i.type = 2 AND i.is_primary_key = 0
                   AND ((ic.is_included_column = 0 AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')) OR i.name LIKE 'NIX[_]%')";
 
+        // Every Nucleus-named foreign key (FK_*), one row per key: each is on one column. A key
+        // the engine has not checked the existing rows of is not trusted.
+        private const string ForeignKeyQuery = @"
+                SELECT t.name AS TableName, fk.name AS KeyName, c.name AS ColumnName, rt.name AS ReferencedTableName, rc.name AS ReferencedColumnName,
+                       fk.delete_referential_action, fk.is_not_trusted
+                FROM sys.foreign_keys fk
+                JOIN sys.tables t ON t.object_id = fk.parent_object_id
+                JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
+                JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+                JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+                JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                WHERE fk.name LIKE 'FK[_]%'";
+
         private const string FullTextIndexQuery = @"
                 SELECT t.name AS TableName, fc.name AS FullTextCatalogName, i.name AS UniqueIndexName, c.name AS ColumnName
                 FROM sys.fulltext_indexes fti
@@ -167,6 +180,48 @@ namespace TFM.Nucleus.Data.SQL
             catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
                 throw DatabaseFailures.Translate($"Error retrieving column indexes from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        public async ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await ReadAll(ForeignKeyQuery, r => new CatalogForeignKey
+                {
+                    TableName = r.GetString(0),
+                    KeyName = r.GetString(1),
+                    ColumnName = r.GetString(2),
+                    ReferencedTableName = r.GetString(3),
+                    ReferencedColumnName = r.GetString(4),
+                    // 0 is NO ACTION and 2 SET NULL; a cascade or a default, which Nucleus never
+                    // creates, reads as neither, so the key is replaced.
+                    OnDelete = r.GetByte(5) switch { 0 => ForeignKeyAction.NoAction, 2 => ForeignKeyAction.SetNull, _ => (ForeignKeyAction)(-1) },
+                    IsChecked = !r.GetBoolean(6),
+                }, async, cancellationToken);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error retrieving foreign keys from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        public async ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var connection = Config.BuildNewSQLConnection();
+                await Open(connection, async, cancellationToken);
+                using var command = connection.CreateCommand();
+                command.CommandText = statement.Text;
+                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
+                command.Parameters.TryAddRange(statement.Parameters.GetSQLParams());
+                var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
+                return Convert.ToInt64(result);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 

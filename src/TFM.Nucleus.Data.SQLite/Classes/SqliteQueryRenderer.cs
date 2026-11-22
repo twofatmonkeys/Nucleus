@@ -22,6 +22,7 @@ namespace TFM.Nucleus.Data.SQLite
         public static readonly SqliteQueryRenderer Instance = new();
 
         private const string LiveRowFilter = "\"IsDeleted\" = 0";
+        private const string DeletedRowFilter = "\"IsDeleted\" = 1";
 
         private static string TableOf(Query q) => Quote(q.TableName ?? throw new InvalidQueryException("The query has no table."));
 
@@ -204,7 +205,11 @@ namespace TFM.Nucleus.Data.SQLite
             q.EnsureHasCondition();
             var sb = new StringBuilder();
             foreach (var target in q.TargetsChildrenFirst())
+            {
+                AppendClears(sb, q, target);
                 sb.Append(DeleteStatement(q, target)).Append(';').Append(Environment.NewLine);
+            }
+            AppendClears(sb, q, q.Root);
             sb.Append(DeleteStatement(q, q.Root)).Append(';').Append(Environment.NewLine);
             sb.Append("SELECT changes()");
             return sb.ToString();
@@ -221,6 +226,18 @@ namespace TFM.Nucleus.Data.SQLite
                 condition = $"{Quote(target.ParentColumn!)} IN (SELECT {Quote(parentId)} FROM {TableOf(target.Parent.Table)} WHERE {DeleteFilter(q, target.Parent)})";
             }
             return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
+        }
+
+        /// <summary>Soft-deleted rows let go of the rows a level is about to delete.</summary>
+        private static void AppendClears(StringBuilder sb, DeleteWhereQuery q, DeleteTarget target)
+        {
+            foreach (var key in target.ClearedReferences)
+            {
+                var column = Quote(key.Column.ColumnName);
+                var id = Quote(target.Table.IdentityColumn!.ColumnName);
+                sb.Append($"UPDATE {TableOf(key.Table)} SET {column} = NULL WHERE {DeletedRowFilter} AND {column} IN " +
+                          $"(SELECT {id} FROM {TableOf(target.Table)} WHERE {DeleteFilter(q, target)})").Append(';').Append(Environment.NewLine);
+            }
         }
 
         private static string DeleteStatement(DeleteWhereQuery q, DeleteTarget target) =>

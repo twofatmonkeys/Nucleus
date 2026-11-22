@@ -81,13 +81,28 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   database has it off; it never changes an existing database, because the setting needs every
   other connection to it closed and applies to every application that uses it.
 
+## Foreign keys
+
+- **Types whose new rows point at each other in a cycle cannot be saved together.** A save writes
+  a type after the types its rows point at; when new rows of two types each point at the other's
+  (A to B and B to A), no order serves, the save keeps the order it was given and the key refuses
+  the second. Save one side without its reference first, then set it. SQL Server has no deferred
+  keys, so no engine defers them.
+- **A save that removes a stored row and clears a reference to it in the same save fails.** The
+  removal's delete runs first, so a replacement with the same unique value does not collide, and
+  the reference still points at the row then. Clear the reference in one save and remove the row
+  in the next.
+- **A bulk batch whose new rows point at each other and set different columns can be refused.**
+  The bulk engine writes each set of columns as its own statement, so a row can be written before
+  a row it points at that sets other columns. Give the batch's rows the same columns, or save the
+  rows pointed at first.
+- **SQLite creates no foreign keys yet.**
+
 ## Linked collections
 
-- **A refused delete of a one is a check, not a constraint.** Nucleus creates no foreign keys, so a
-  member another transaction inserts after the check has run is not seen, and is left pointing at
-  a deleted row. On SQL Server the check waits for a member being inserted when it runs and counts
-  it once it commits, whatever the database's `READ_COMMITTED_SNAPSHOT` setting. On PostgreSQL it
-  reads the last committed rows, so a member inserted but not yet committed is not seen either.
+- **On SQLite, a refused delete of a one is a check, not a constraint.** SQLite has no foreign
+  keys yet, so a member another transaction inserts after the check has run is left pointing at a
+  deleted row. On SQL Server and PostgreSQL the member's key refuses the delete instead.
 - **The one side of a linked collection is a root.** A child type cannot hold one, because its
   parent's cascade deletes it without loading it, where members could not be checked for.
 

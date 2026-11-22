@@ -217,6 +217,7 @@ The [Relationships](relationships.md) page explains these; this is the list.
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](relationships.md#lazy-collections). |
 | `[LinkedBy(keyProperty)]` | a `NucleusLinkedCollection` property | Names the many type's key, the property holding the one's ID. See [Linked collections](relationships.md#linked-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
+| `[ForeignKey(typeof(T))]`, `[ForeignKey(false)]`, `[ForeignKey(OnDelete = ...)]` | a stored column | A foreign key from a plain `Guid` column to `T`'s table; or drops, or sets the delete action of, the key a reference gets anyway. See [Foreign keys](schema.md#foreign-keys). Its name is also used by `System.ComponentModel.DataAnnotations.Schema`; a file that imports both namespaces names it `TFM.Nucleus.Data.ForeignKey`. |
 
 ### Logging and auditing
 
