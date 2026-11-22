@@ -59,13 +59,16 @@ namespace TFM.Nucleus.IntegrationTests
         /// </summary>
         private async Task ResetAsync()
         {
-            foreach (var table in new[] { ShortTable, IntLegacyItem.OldTable, IntLegacyItem.OlderTable })
+            // The resident's old table points at the keeper's, so it goes first.
+            foreach (var table in new[] { ShortTable, IntLegacyItem.OldTable, IntLegacyItem.OlderTable, IntLegacyResident.OldTable, IntLegacyKeeper.OldTable })
                 await ExecuteAsync(DropTableIfExistsSql(table));
             using (await StartAsync())
             {
             }
             await ExecuteAsync(DeleteAllSql(FullNameTable));
             await ExecuteAsync(DeleteAllSql(IntLegacyItem.Table));
+            await ExecuteAsync(DeleteAllSql(IntLegacyResident.Table));
+            await ExecuteAsync(DeleteAllSql(IntLegacyKeeper.Table));
         }
 
         private async Task<List<T>> SaveAsync<T>(Func<int, T> make, int count) where T : CoreObject<T>, new()
@@ -160,6 +163,47 @@ namespace TFM.Nucleus.IntegrationTests
                 var loaded = await stack.Manager.Get<IntLegacyItem>().Where(i => i.Name != null).ToListAsync(Ct);
                 Assert.Equal(items.Select(i => (i.ID, i.Name)).Order(), loaded.Select(i => (i.ID, i.Name)).Order());
                 Assert.All(loaded, i => Assert.Null(i.Quantity));
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
+            }
+            finally
+            {
+                await ResetAsync();
+            }
+        }
+
+        // The start drops the key between the old tables inside its schema transaction before it
+        // renames them. The adoption read the catalog on a connection of its own after that drop,
+        // and on SQL Server that read waited on the transaction's own lock until it timed out.
+        [Fact]
+        public async Task OldNameTablesWithAKeyBetweenThem_AreRenamed_AndTheKeyIsCreatedAgain()
+        {
+            Fixture.RequireSettings();
+            using var schema = await Fixture.SchemaLockAsync();
+            await ResetAsync();
+            try
+            {
+                var keeper = new IntLegacyKeeper { Name = "keeper" };
+                await SaveAsync(_ => keeper, 1);
+                var residents = await SaveAsync(i => new IntLegacyResident { Name = $"resident-{i}", Keeper = keeper }, 5);
+                await ExecuteAsync(RenameTableSql(IntLegacyResident.Table, IntLegacyResident.OldTable));
+                await ExecuteAsync(RenameTableSql(IntLegacyKeeper.Table, IntLegacyKeeper.OldTable));
+                var residentTableId = await TableIdAsync(IntLegacyResident.OldTable);
+
+                using var stack = await StartAsync();
+
+                Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
+                Assert.Null(await TableIdAsync(IntLegacyResident.OldTable));
+                Assert.Null(await TableIdAsync(IntLegacyKeeper.OldTable));
+                Assert.NotNull(await TableIdAsync(IntLegacyKeeper.Table));
+                Assert.NotNull(residentTableId);
+                // SQLite rebuilds the resident to point its key at the renamed keeper; the others keep the table.
+                if (Fixture.ProviderName != "sqlite")
+                    Assert.Equal(residentTableId, await TableIdAsync(IntLegacyResident.Table));
+                Assert.Equal(5, Convert.ToInt64(await ScalarAsync($"SELECT count(*) FROM \"{IntLegacyResident.Table}\" WHERE \"Keeper\" IS NOT NULL")));
+                var loaded = await stack.Manager.Get<IntLegacyResident>().Where(r => r.Name != null).ToListAsync(Ct);
+                Assert.Equal(residents.Select(r => r.ID).Order(), loaded.Select(r => r.ID).Order());
+                Assert.All(loaded, r => Assert.Equal("keeper", r.Keeper!.Name));
+                // A missing key leaves the schema not current.
                 Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
             }
             finally

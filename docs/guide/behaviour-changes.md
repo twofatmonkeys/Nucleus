@@ -3,7 +3,13 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
-## The test database drops key columns
+## The test database drops key columns, and adoption no longer stalls on SQL Server
+
+- **A start that adopts an old table after dropping a key no longer times out on SQL Server.** The
+  update read the catalog for the adoption on a connection of its own after its transaction had
+  dropped a key, and that read waited on the transaction until the statement timeout, failing the
+  start. Old tables with a foreign key between them, or an adoption in the same start as a change
+  to a table with a key, hit it.
 
 - **`DropColumnsSql` drops a column's foreign keys on SQL Server.** It dropped only the column's
   index and default, so since foreign keys it failed on a key column such as a child's `Parent`.

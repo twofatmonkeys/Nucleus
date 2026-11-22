@@ -370,6 +370,21 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### On SQL Server, adopting an old table timed out after a key drop (November 2026)
+
+- **The adoption read the catalog after the update had dropped a key.** The schema update drops
+  the keys to and from every table it changes or adopts inside its transaction, then the adoption
+  read the catalog to find the old tables. The catalog reader has a connection of its own, and on
+  SQL Server its read of the table names waited on the schema locks the transaction's own key drop
+  held, until the statement timed out and the start failed. Any start that dropped a key and then
+  adopted a table hit it: old tables with a key between them, as a store's test leaves its tables
+  when it moves them back to their old names, or an adoption in the same start as a change to a
+  table with a key. PostgreSQL and SQLite read the catalog without waiting. The catalog is now
+  read for the adoption before the transaction runs anything (`ReadCatalogForAdoption`); a key
+  drop changes no table name, so the snapshot still answers which tables exist. Cover:
+  `TableNamingIntegrationTests.OldNameTablesWithAKeyBetweenThem_AreRenamed_AndTheKeyIsCreatedAgain`
+  on every engine, which timed out on SQL Server before the fix.
+
 ### The test database could not drop a key column (November 2026)
 
 - **`DropColumnsSql` did not drop a column's foreign key.** It dropped the column's `NCI_` index
