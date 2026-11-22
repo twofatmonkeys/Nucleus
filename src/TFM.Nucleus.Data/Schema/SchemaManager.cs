@@ -28,6 +28,12 @@ namespace TFM.Nucleus.Data.Schema
 
         public DataSchemaStatus Status { get; private set; } = DataSchemaStatus.NotInitialized;
 
+        /// <summary>
+        /// Which of this provider's types' rows point at which others', the order a save writes
+        /// and a delete removes several types in. Built with the tables.
+        /// </summary>
+        internal ReferenceGraph References { get; private set; } = ReferenceGraph.Empty;
+
         private ISchemaDialect Dialect => _store.Dialect;
 
         public TableSchema? GetTableSchema<T>() => GetTableSchema(typeof(T));
@@ -86,6 +92,7 @@ namespace TFM.Nucleus.Data.Schema
             EnsureTableNamesAreDistinct(tables);
             EnsureLinkedCollectionsAreStoredTogether(tables);
             EnsureForceSaveLinksAreRoots(tables);
+            References = new ReferenceGraph(tables.Select(t => t.ObjectSchema));
             return tables;
         }
 

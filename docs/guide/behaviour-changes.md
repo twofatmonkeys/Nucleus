@@ -3,6 +3,26 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A save writes rows after the rows they point at, and a soft child needs a soft owner
+
+- **A save of several types writes each type after the types its rows point at.** A forceSave
+  link that points at another forceSave link, a root that points at another root of the same
+  save, and a linked collection member that points at a one written in the same save are written
+  second, whatever order the save met them in. They were written in the order the save met them,
+  so a row could be written before the row it points at. Types that point at each other keep the
+  order they were given in.
+- **New rows of one table that point at each other are inserted in that order too**, through a
+  `[LinkedObject]` typed as the entity itself (a keeper's mentor). A batch of more than 100 new
+  rows is now built in the order given; it was built in parallel and its order was not stable.
+- **A delete of several types removes each type before the types it points at.** It ran them in
+  the order it met them. Only a delete of objects that share a base entity type covers several
+  types.
+- **A child type that is deleted soft under an owner that is deleted hard fails the schema
+  build.** Deleting the owner removed its row and kept the flagged children, pointing at a row
+  that no longer existed. Make the owner soft too, or the child hard. The type's own
+  `[Deletable(DeleteBehavior.Soft)]` and a soft declaration on its collection are both refused
+  under a hard owner; an owner that cannot be deleted at all is not affected.
+
 ## A failed cache refresh waits, and the cache hands out copies
 
 - **After a background refresh of a `[Cacheable]` type fails, the next one waits one

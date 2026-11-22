@@ -143,7 +143,18 @@ namespace TFM.Nucleus.Data.Schema
             IdentityColumn = pkColumns[0];
             EnsureColumnNamesAreUsable(objectSchema);
             TableIndexes = BuildTableIndexes(objectSchema);
+            SelfReferences = objectSchema.HasLinkedObjects
+                ? [.. (objectSchema.LinkedObjectProperties ?? []).Where(l => l.IsDBColumn && l.Type.IsAssignableFrom(objectSchema.Type))]
+                : [];
         }
+
+        /// <summary>
+        /// The stored [LinkedObject] properties that can hold a row of this table: typed as the
+        /// type itself or as one it derives from. A batch that inserts rows pointing at each other
+        /// through them is ordered so a row is inserted after the row it points at. Empty for
+        /// most types, which is what the save checks first.
+        /// </summary>
+        internal IReadOnlyList<IPropertySchema> SelfReferences { get; }
 
         /// <summary>
         /// The [LegacyTableNames] of the type, each a usable table name, none repeated and none the
