@@ -413,8 +413,11 @@ namespace TFM.Nucleus.Data.Schema
             try
             {
                 var tables = GetTables().ToList();
+                // Read before the transaction changes anything: the catalog reader has a connection
+                // of its own, which on SQL Server waits on the locks the key drops below take.
+                var adoptions = await ReadCatalogForAdoption(tables, async, cancellationToken);
                 await DropKeysOfTablesToChange(transaction, tables, async, cancellationToken);
-                await AdoptLegacyTables(transaction, tables, async, cancellationToken);
+                await AdoptLegacyTables(transaction, adoptions, async, cancellationToken);
                 // After the adoptions, whose compare starts each adopted table afresh.
                 await MarkTablesWhoseInlineKeysChange(tables, async, cancellationToken);
                 List<TableSchema> rebuilt = [];
@@ -473,17 +476,31 @@ namespace TFM.Nucleus.Data.Schema
         }
 
         /// <summary>
+        /// The missing tables that have old names to look for, with the catalog as it stands before
+        /// the update, or null when there is nothing to adopt. Read before the schema transaction
+        /// runs anything, because the catalog reader's connection is not the transaction's: on SQL
+        /// Server a read of the catalog waits on the transaction's own schema locks, such as a
+        /// dropped key's, until it times out. A key drop changes no table name, so the snapshot
+        /// still answers which tables exist when the adoption runs.
+        /// </summary>
+        private async ValueTask<(List<TableSchema> Missing, CatalogSnapshot Snapshot)?> ReadCatalogForAdoption(IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            var missing = tables.Where(t => !t.ExistsInDatabase && AdoptionCandidates(t).Count > 0).ToList();
+            if (missing.Count == 0)
+                return null;
+            return (missing, await _store.Catalog.ReadAsync(async, cancellationToken));
+        }
+
+        /// <summary>
         /// Renames to its table the one old table of each missing table, inside the schema
         /// transaction, then compares it again so the rest of the update treats it as an existing
         /// table: columns it lacks are added, a changed column rebuilds it. Several old tables of one
         /// table fail the update, which rolls everything back: their rows cannot be merged safely.
         /// </summary>
-        private async ValueTask AdoptLegacyTables(ISchemaTransaction transaction, IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        private async ValueTask AdoptLegacyTables(ISchemaTransaction transaction, (List<TableSchema> Missing, CatalogSnapshot Snapshot)? adoptions, bool async, CancellationToken cancellationToken)
         {
-            var missing = tables.Where(t => !t.ExistsInDatabase && AdoptionCandidates(t).Count > 0).ToList();
-            if (missing.Count == 0)
+            if (adoptions is not var (missing, snapshot))
                 return;
-            var snapshot = await _store.Catalog.ReadAsync(async, cancellationToken);
             foreach (var table in missing)
             {
                 var physical = Dialect.PhysicalName(table.TableName);
