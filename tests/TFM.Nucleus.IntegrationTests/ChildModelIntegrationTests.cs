@@ -492,16 +492,49 @@ namespace TFM.Nucleus.IntegrationTests
         [Fact]
         public async Task ALinkedObjectWhoseRowIsGone_ReadsAsNull()
         {
+            // Only a reference without a key can point at a deleted row; see the test below.
             var manager = fixture.RequireManager();
             var name = Tag("lg");
-            var source = new IntLinkSource { Name = name, Target = new IntLinkTarget { Name = $"{name}-t" } };
+            var loose = new IntLinkTarget { Name = $"{name}-t" };
+            await manager.SaveAsync(loose, Ct);
+            var source = new IntLinkSource { Name = name, Loose = loose };
             await manager.SaveAsync(source, Ct);
             try
             {
                 var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
                 await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
 
-                Assert.Null(loaded.Target);
+                Assert.Null(loaded.Loose);
+            }
+            finally
+            {
+                await manager.DeleteWhereAsync<IntLinkSource>(s => s.Name!.StartsWith(name), Ct);
+                await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
+            }
+        }
+
+        /// <summary>Skips a test of what a foreign key refuses on a provider that creates none.</summary>
+        private static void RequireForeignKeys(ObjectDataManager manager) =>
+            Assert.SkipUnless(
+                manager.Providers.GetProvider(typeof(IntLinkSource)) is TFM.Nucleus.Data.Providers.RelationalDataProvider provider
+                    && provider.Schema.GetTableSchema(typeof(IntLinkSource))?.ForeignKeys.Count > 0,
+                "This provider creates no foreign keys.");
+
+        [Fact]
+        public async Task ALinkedObjectStillPointedAt_CannotBeDeleted()
+        {
+            var manager = fixture.RequireManager();
+            RequireForeignKeys(manager);
+            var name = Tag("lk");
+            var source = new IntLinkSource { Name = name, Target = new IntLinkTarget { Name = $"{name}-t" } };
+            await manager.SaveAsync(source, Ct);
+            try
+            {
+                var ex = await Assert.ThrowsAnyAsync<DatabaseException>(() => manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct));
+
+                Assert.Equal(DatabaseErrorKind.ForeignKeyViolation, ex.Kind);
+                var loaded = Assert.Single(await manager.Get<IntLinkSource>().Where(s => s.ID == source.ID).ToListAsync(Ct));
+                Assert.Equal($"{name}-t", loaded.Target!.Name);
             }
             finally
             {
@@ -612,12 +645,23 @@ namespace TFM.Nucleus.IntegrationTests
             }
         }
 
-        /// <summary>Every source holds its target already: the rows are deleted, so nothing could load them now.</summary>
+        /// <summary>
+        /// Every source holds its target already: the rows are renamed, so a target read now would
+        /// carry the new name, and every one still carries the old.
+        /// </summary>
         private async Task AssertTargetsWereIncludedAsync(ObjectDataManager manager, string name, IReadOnlyList<IntLinkSource> sources)
         {
-            await manager.DeleteWhereAsync<IntLinkTarget>(t => t.Name!.StartsWith(name), Ct);
-            Assert.All(sources, s => Assert.NotNull(s.Target));
+            await RenameAsync(manager, name);
+            Assert.All(sources, s => Assert.DoesNotContain("renamed", s.Target!.Name));
             Assert.All(sources, s => Assert.Empty(((ICoreObject)s).ChangedProperties));
+        }
+
+        private static async Task RenameAsync(ObjectDataManager manager, string name)
+        {
+            var stored = await manager.Get<IntLinkTarget>().Where(t => t.Name!.StartsWith(name)).ToListAsync(Ct);
+            foreach (var target in stored)
+                target.Name += "-renamed";
+            await manager.SaveAsync<IntLinkTarget>(stored, Ct);
         }
 
         [Fact]
@@ -678,7 +722,11 @@ namespace TFM.Nucleus.IntegrationTests
             try
             {
                 var loaded = Assert.Single(await manager.Get<IntRosterNote>().Include(n => n.Roster).Where(n => n.Text == name).ToListAsync(Ct));
-                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+                // The stored lines change, so lines read now would carry the new hours.
+                var stored = Assert.Single(await manager.Get<IntRoster>().Where(r => r.Name == name).ToListAsync(Ct));
+                foreach (var line in stored.Lines)
+                    line.Hours *= 10;
+                await manager.SaveAsync(stored, Ct);
 
                 var included = loaded.Roster;
                 Assert.NotNull(included);
@@ -754,9 +802,12 @@ namespace TFM.Nucleus.IntegrationTests
             await WithLineNoteAsync(async (manager, name, roster, note) =>
             {
                 var loaded = Assert.Single(await manager.Get<IntLineNote>().Include(n => n.Line).Where(n => n.ID == note.ID).ToListAsync(Ct));
-                // The parent first, while its row is there; then the rows go, so the line reads only if the load held it.
+                // The parent first, while it is as stored; then the line changes, so the line reads as
+                // it was only if the load held it.
                 Assert.Equal(roster.ID, loaded.Line!.Parent.ID);
-                await manager.DeleteWhereAsync<IntRoster>(r => r.Name == name, Ct);
+                var stored = Assert.Single(await manager.Get<IntRoster>().Where(r => r.Name == name).ToListAsync(Ct));
+                stored.Lines.Single(l => l.Hours == 4).Code = $"{name}-renamed";
+                await manager.SaveAsync(stored, Ct);
 
                 Assert.Equal($"{name}-a", loaded.Line!.Code);
             });
@@ -792,15 +843,17 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         [Fact]
-        public async Task ALinkToAChildRemovedFromItsCollection_ReadsAsNull()
+        public async Task AChildALinkPointsAt_CannotBeRemovedFromItsCollection()
         {
+            RequireForeignKeys(fixture.RequireManager());
             await WithLineNoteAsync(async (manager, name, roster, note) =>
             {
                 roster.Lines.Remove(roster.Lines.Single(l => l.Hours == 4));
-                await manager.SaveAsync(roster, Ct);
+                var ex = await Assert.ThrowsAnyAsync<DatabaseException>(() => manager.SaveAsync(roster, Ct));
 
+                Assert.Equal(DatabaseErrorKind.ForeignKeyViolation, ex.Kind);
                 var loaded = Assert.Single(await manager.Get<IntLineNote>().Where(n => n.ID == note.ID).ToListAsync(Ct));
-                Assert.Null(loaded.Line);
+                Assert.Equal($"{name}-a", loaded.Line!.Code);
             });
         }
     }

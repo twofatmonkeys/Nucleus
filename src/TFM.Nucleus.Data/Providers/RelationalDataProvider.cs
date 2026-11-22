@@ -95,7 +95,34 @@ namespace TFM.Nucleus.Data.Providers
         protected ILogger<SchemaManager>? SchemaLogger => _schemaLogger;
 
         /// <summary>The tables this provider stores and their state in the database.</summary>
-        public SchemaManager Schema => _schema ??= new SchemaManager(SchemaStore, _objectSchemaProvider, _schemaLogger);
+        public SchemaManager Schema => _schema ??= new SchemaManager(SchemaStore, _objectSchemaProvider, _schemaLogger) { Routes = RoutesHere };
+
+        /// <summary>
+        /// The registry this provider is one of, set when the registry is built. It decides which
+        /// types the provider's rows are read and written for, which can be fewer than the types
+        /// it has tables for.
+        /// </summary>
+        internal IDataProviderRegistry? Registry { get; set; }
+
+        /// <summary>
+        /// True when the registry sends <paramref name="type"/>'s rows to this provider: a key
+        /// between two of its tables holds only then. Without a registry, every type under the
+        /// provider's root.
+        /// </summary>
+        private bool RoutesHere(Type type)
+        {
+            if (Registry is not { } registry)
+                return DataProviderRegistry.IsUnderRoot(type, RootType);
+            try
+            {
+                return registry.IsOwnedBy(type, this);
+            }
+            catch (InvalidOperationException)
+            {
+                // No provider takes the type.
+                return false;
+            }
+        }
 
         public DataProviderStatus Status => MapSchemaStatus(Schema.Status);
 

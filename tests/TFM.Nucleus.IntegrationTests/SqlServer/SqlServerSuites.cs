@@ -186,4 +186,22 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
         protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerForeignKeyIntegrationTests(SqlServerFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE [dbo].[{table}] ALTER COLUMN [{column}] varchar({length}) NULL";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override string DropForeignKeySql(string table, string key) => $"ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [{key}]";
+
+        protected override string KeyIsCheckedSql(string key) =>
+            $"SELECT CASE WHEN is_not_trusted = 0 THEN 1 ELSE 0 END FROM sys.foreign_keys WHERE name = '{key}'";
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
 }

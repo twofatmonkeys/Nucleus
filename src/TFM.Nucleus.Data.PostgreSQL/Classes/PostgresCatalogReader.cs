@@ -44,6 +44,39 @@ namespace TFM.Nucleus.Data.PostgreSQL
             $"WHERE n.nspname = {Literal(schema)} AND NOT ix.indisprimary " +
             @"AND (i.relname LIKE 'NCI\_%' OR i.relname LIKE 'UQ\_%' OR i.relname LIKE 'NIX\_%')";
 
+        // Every Nucleus-named foreign key (FK_*) of the schema, one row per key: each is on one
+        // column. confdeltype is 'a' for NO ACTION and 'n' for SET NULL; convalidated is false
+        // for a key added NOT VALID.
+        private static string ForeignKeyQuery(string schema) =>
+            "SELECT t.relname, c.conname, a.attname, rt.relname, ra.attname, c.confdeltype::text, c.convalidated " +
+            "FROM pg_constraint c " +
+            "JOIN pg_class t ON t.oid = c.conrelid " +
+            "JOIN pg_namespace n ON n.oid = t.relnamespace " +
+            "JOIN pg_class rt ON rt.oid = c.confrelid " +
+            "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] " +
+            "JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = c.confkey[1] " +
+            $"WHERE c.contype = 'f' AND n.nspname = {Literal(schema)} " + @"AND c.conname LIKE 'FK\_%'";
+
+        public ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken) =>
+            Read("foreign keys", ForeignKeyQuery(Config.Schema), r => new CatalogForeignKey
+            {
+                TableName = r.GetString(0),
+                KeyName = r.GetString(1),
+                ColumnName = r.GetString(2),
+                ReferencedTableName = r.GetString(3),
+                ReferencedColumnName = r.GetString(4),
+                // A cascade, a restrict or a default, which Nucleus never creates, reads as
+                // neither, so the key is replaced.
+                OnDelete = r.GetString(5) switch { "a" => ForeignKeyAction.NoAction, "n" => ForeignKeyAction.SetNull, _ => (ForeignKeyAction)(-1) },
+                IsChecked = r.GetBoolean(6),
+            }, async, cancellationToken);
+
+        public async ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
+        {
+            var rows = await Read("a count", statement.Text, r => r.GetInt64(0), async, cancellationToken);
+            return rows.Count == 0 ? 0 : rows[0];
+        }
+
         public async ValueTask<bool> DatabaseExistsAsync(bool async, CancellationToken cancellationToken)
         {
             try

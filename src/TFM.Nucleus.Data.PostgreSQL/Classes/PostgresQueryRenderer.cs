@@ -20,6 +20,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         public string Schema { get; } = schema;
 
         private const string LiveRowFilter = "\"IsDeleted\" = false";
+        private const string DeletedRowFilter = "\"IsDeleted\" = true";
         private const string FullTextConfiguration = "english";
 
         private string TableOf(Query q) => Table(Schema, q.TableName ?? throw new InvalidQueryException("The query has no table."));
@@ -200,7 +201,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
             q.EnsureHasCondition();
             var sb = new StringBuilder();
             foreach (var target in q.TargetsChildrenFirst())
+            {
+                AppendClears(sb, q, target);
                 sb.Append(DeleteStatement(q, target, returning: false)).Append(';').Append(Environment.NewLine);
+            }
+            AppendClears(sb, q, q.Root);
             sb.Append($"WITH affected AS ({DeleteStatement(q, q.Root, returning: true)}) SELECT count(*) FROM affected");
             return sb.ToString();
         }
@@ -216,6 +221,18 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 condition = $"{Quote(target.ParentColumn!)} IN (SELECT {Quote(parentId)} FROM {TableOf(target.Parent.Table)} WHERE {DeleteFilter(q, target.Parent)})";
             }
             return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
+        }
+
+        /// <summary>Soft-deleted rows let go of the rows a level is about to delete.</summary>
+        private void AppendClears(StringBuilder sb, DeleteWhereQuery q, DeleteTarget target)
+        {
+            foreach (var key in target.ClearedReferences)
+            {
+                var column = Quote(key.Column.ColumnName);
+                var id = Quote(target.Table.IdentityColumn!.ColumnName);
+                sb.Append($"UPDATE {TableOf(key.Table)} SET {column} = NULL WHERE {DeletedRowFilter} AND {column} IN " +
+                          $"(SELECT {id} FROM {TableOf(target.Table)} WHERE {DeleteFilter(q, target)})").Append(';').Append(Environment.NewLine);
+            }
         }
 
         private string DeleteStatement(DeleteWhereQuery q, DeleteTarget target, bool returning)

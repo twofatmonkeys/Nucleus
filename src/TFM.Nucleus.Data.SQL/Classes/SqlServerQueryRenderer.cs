@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 using TFM.Nucleus.Data.Providers;
 using TFM.Nucleus.Data.Queries;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data.SQL
 {
@@ -22,6 +23,7 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>The condition that selects rows which have not been soft deleted.</summary>
         internal const string LiveRowFilter = "[IsDeleted] = 0";
+        private const string DeletedRowFilter = "[IsDeleted] = 1";
 
         /// <summary>
         /// Locking read committed whatever the database's setting: under READ_COMMITTED_SNAPSHOT a
@@ -357,7 +359,7 @@ namespace TFM.Nucleus.Data.SQL
             q.EnsureHasCondition();
             var sb = new StringBuilder();
             var children = q.TargetsChildrenFirst().ToList();
-            var keeps = children.Count > 0 && children.Append(q.Root).All(t => t.Table.IdentityColumn?.DataType == typeof(Guid));
+            var keeps = (children.Count > 0 || q.ClearsReferences) && children.Append(q.Root).All(t => t.Table.IdentityColumn?.DataType == typeof(Guid));
             var kept = new Dictionary<DeleteTarget, string>();
 
             // The IDs of a target's rows, kept in a table variable declared on first need.
@@ -395,6 +397,9 @@ namespace TFM.Nucleus.Data.SQL
 
             foreach (var target in children.Append(q.Root))
             {
+                // Soft-deleted rows let go of the rows this level deletes, read from its kept IDs.
+                foreach (var key in target.ClearedReferences)
+                    sb.Append(ClearStatement(key, IdsOf(target))).Append(';').Append(Environment.NewLine);
                 var filter = Filter(target);
                 sb.Append(DeleteStatement(target, filter)).Append(';').Append(Environment.NewLine);
             }
@@ -417,6 +422,10 @@ namespace TFM.Nucleus.Data.SQL
             }
             return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
         }
+
+        private static string ClearStatement(ForeignKeySchema key, string keptIds) =>
+            $"UPDATE {key.Table.TableName} WITH (ROWLOCK) SET [{key.Column.ColumnName}] = NULL " +
+            $"WHERE {DeletedRowFilter} AND [{key.Column.ColumnName}] IN (SELECT [{key.Referenced.IdentityColumn!.ColumnName}] FROM {keptIds})";
 
         private static string DeleteStatement(DeleteTarget target, string filter) => target.IsSoft
             ? $"UPDATE {target.Table.TableName} WITH (ROWLOCK) SET {string.Join(",", target.SetParameters.Select(SetCondition))} WHERE {filter}"

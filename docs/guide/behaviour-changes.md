@@ -3,6 +3,31 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Foreign keys, on by default on SQL Server and PostgreSQL
+
+- **The schema update keeps a foreign key for every reference the model implies**: a child's
+  `Parent`, a stored `[LinkedObject]`, a `[LinkedBy]` key and a `[ForeignKey(typeof(T))]` column,
+  between two types the provider stores (see [Foreign keys](schema.md#foreign-keys)). The first start
+  after upgrading creates them, after the tables and indexes, and logs a warning for each key it
+  creates over rows that already point at missing rows. Those rows are left as they are and not
+  checked; rows written from then on are. `RelationalProviderOptions.ForeignKeys = false` turns it
+  off, and drops the keys Nucleus created.
+- **Every key column is indexed.** An existing `[LinkedObject]` or `[ForeignKey]` column without an
+  index gains one (`NCI_`) at that start, which takes a while on a large table.
+- **A read-only schema fails to start until the keys exist.** The missing keys and indexes make the
+  schema not current, as a missing index always has, and `ReadOnlySchema` never updates it. Before
+  upgrading a site that starts read-only, run one start with a writable schema (or turn keys off).
+- **Deleting a row that a live row points at fails** with a `DatabaseException` of kind
+  `ForeignKeyViolation`. It used to succeed and leave the reference pointing at nothing, which
+  read as null. Removing a stored child that a link points at fails the same way.
+- **Saving a reference to an entity that was never saved fails**, unless the link is `forceSave`. It
+  used to store the ID of a row that did not exist.
+- **A hard delete clears the references soft-deleted rows hold to what it deletes**, setting them
+  to null, so a soft-deleted row does not stop it. A `[LinkedBy]` key declared as a non-nullable
+  `Guid` reads back as `Guid.Empty` on such a row.
+- **An asynchronous save inserts one table's rows in the order it built them.** It ran them last
+  first, so a save that ordered a batch had the order undone.
+
 ## A save writes rows after the rows they point at, and a soft child needs a soft owner
 
 - **A save of several types writes each type after the types its rows point at.** A forceSave

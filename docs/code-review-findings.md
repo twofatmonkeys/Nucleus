@@ -370,6 +370,38 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### Foreign keys, and an asynchronous save that reversed a table's rows (November 2026)
+
+- **Nucleus created no foreign keys.** The graph rules (a child needs its parent, a one with
+  members is not deleted) were checks in Nucleus, so a member inserted after the delete's check, a
+  write from outside Nucleus, or a Nucleus bug (a parent delete once orphaned the children it had
+  not loaded) left rows pointing at nothing. `SchemaManager.BuildSchema` now derives a key per
+  reference (`ForeignKeySchema`: `[ParentObject]`, stored `[LinkedObject]`, `[LinkedBy]` key,
+  `[ForeignKey(typeof(T))]`), the check compares the `FK_` keys the catalog holds
+  (`SchemaComparer.DiffForeignKeys`) and the update creates the missing ones after the indexes,
+  unchecked over rows that already point at missing rows. A key is kept only where it holds for
+  every row: both types' rows kept by this provider (a provider can hold tables for types another
+  routes elsewhere, and a key to one would refuse every insert), and a referenced type with no
+  stored derived types. Cover: `ForeignKeySchemaTests` and `ForeignKeyIntegrationTests`.
+- **A rebuild would have broken on a key.** A rebuild renames the table and drops it after the
+  copy; a key pointing at it went with the renamed table and stopped the drop. Keys to and from
+  every table the update changes or adopts are dropped in the rebuild's transaction and created
+  again after the commit. Cover: `ATableToRebuild_LosesTheKeysFromAndToIt_InTheTransaction_BeforeItIsRenamed`
+  and `ARebuildOfATableKeysPointAt_KeepsItsRows_AndTheKeys`.
+- **A soft-deleted row would have stopped a hard delete for good.** Soft-deleted rows stay in their
+  table and there is no purge, so a NO ACTION key from one would refuse deleting the row it points
+  at forever. A hard delete now first sets to null, in the soft-deleted rows only, the references
+  to what it deletes (`DeleteTarget.ClearedReferences`), on SQL Server from the level's kept IDs.
+  Moving soft-deleted rows to a table of their own was weighed and left for a separate proposal.
+  Cover: `AHardDelete_ClearsWhatSoftDeletedRowsPointAt_ButALiveRowStillStopsIt` and the
+  `delete.clears` goldens.
+- **An asynchronous save inserted a table's rows last first.** `Query.FlattenAndDetach`, which the
+  asynchronous path regroups a write by table with, pushed each query's linked queries in order and
+  popped the last first, so the rows of a batch ran in reverse, undoing the order the save gave
+  rows that point at each other. It now walks in pre-order. Cover:
+  `GroupingAWriteByTable_KeepsTheOrderTheRowsWereBuiltIn_AndPutsParentsFirst` and
+  `RowsOfABatchThatPointAtEachOther_AreInsertedAfterTheRowsTheyPointAt`.
+
 ### Rows written before the rows they point at, and soft children left under a deleted owner (November 2026)
 
 Found while planning foreign keys, which would have turned each of these into a refused statement.

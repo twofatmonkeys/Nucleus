@@ -36,6 +36,26 @@ namespace TFM.Nucleus.Data.Schema
         public bool IsIncluded;
     }
 
+    /// <summary>
+    /// One Nucleus-named foreign key as a provider's catalog reports it: a single column of one
+    /// table holding the ID of a row of another. Names are the engine's physical names.
+    /// </summary>
+    public sealed class CatalogForeignKey
+    {
+        public string? TableName;
+        public string? KeyName;
+        public string? ColumnName;
+        public string? ReferencedTableName;
+        public string? ReferencedColumnName;
+        public ForeignKeyAction OnDelete;
+
+        /// <summary>
+        /// False when the engine has not checked the rows that were there when the key was
+        /// created, because some of them pointed at rows that did not exist.
+        /// </summary>
+        public bool IsChecked = true;
+    }
+
     /// <summary>What a provider found in the database: table names, columns and Nucleus-named indexes.</summary>
     public sealed record CatalogSnapshot(
         IReadOnlyList<string> Tables,

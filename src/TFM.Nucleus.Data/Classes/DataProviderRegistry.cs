@@ -21,6 +21,10 @@ namespace TFM.Nucleus.Data
             _providers = [.. providers];
             if (_providers.Count == 0)
                 throw new InvalidOperationException("No data providers are registered. Register a provider package (its Add...DataProvider extension) before building the service provider.");
+            // A provider's schema keeps keys only between the types this registry sends to it.
+            foreach (var provider in _providers)
+                if (provider is Providers.RelationalDataProvider relational)
+                    relational.Registry = this;
         }
 
         public IReadOnlyList<IDataProvider> AllProviders => _providers;

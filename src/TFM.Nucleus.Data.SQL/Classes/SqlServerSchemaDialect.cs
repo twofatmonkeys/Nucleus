@@ -75,6 +75,26 @@ namespace TFM.Nucleus.Data.SQL
         public SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index) => TableIndexSql(table, index);
 
         // SQL Server error 1505: CREATE UNIQUE INDEX terminated because a duplicate key was found.
+        public bool SupportsForeignKeys => true;
+
+        /// <summary>
+        /// The key as a named constraint. WITH CHECK makes SQL Server check the existing rows and
+        /// trust the key; WITH NOCHECK leaves the rows that were there unchecked, and the key
+        /// untrusted, but every row written after it is checked.
+        /// </summary>
+        public SchemaStatement AddForeignKey(ForeignKeySchema key, bool checkExisting) =>
+            $"ALTER TABLE [dbo].[{key.Table.TableName}] WITH {(checkExisting ? "CHECK" : "NOCHECK")} " +
+            $"ADD CONSTRAINT [{key.Name}] FOREIGN KEY ([{key.Column.ColumnName}]) " +
+            $"REFERENCES [dbo].[{key.Referenced.TableName}] ([{key.Referenced.IdentityColumn!.ColumnName}])" +
+            (key.OnDelete == ForeignKeyAction.SetNull ? " ON DELETE SET NULL" : "");
+
+        public SchemaStatement DropForeignKey(string physicalTableName, string physicalKeyName) =>
+            $"ALTER TABLE [dbo].[{physicalTableName}] DROP CONSTRAINT [{physicalKeyName}]";
+
+        public SchemaStatement CountOrphans(ForeignKeySchema key) =>
+            $"SELECT COUNT_BIG(*) FROM [dbo].[{key.Table.TableName}] c WHERE c.[{key.Column.ColumnName}] IS NOT NULL " +
+            $"AND NOT EXISTS (SELECT 1 FROM [dbo].[{key.Referenced.TableName}] r WHERE r.[{key.Referenced.IdentityColumn!.ColumnName}] = c.[{key.Column.ColumnName}])";
+
         public bool IsDuplicateKeyOnIndexBuild(Exception exception)
         {
             for (var e = exception; e != null; e = e.InnerException)

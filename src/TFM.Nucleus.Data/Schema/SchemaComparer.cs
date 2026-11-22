@@ -118,6 +118,46 @@ namespace TFM.Nucleus.Data.Schema
         }
 
         /// <summary>
+        /// Compares the keys a table needs against the Nucleus-named keys the database has on it.
+        /// Returns the physical key names to drop (no longer needed, or a different column, table
+        /// or delete action) and the keys to create. An unchecked key that otherwise matches is
+        /// kept: checking it again would fail for the same rows.
+        /// </summary>
+        public static (List<string> drop, List<ForeignKeySchema> create) DiffForeignKeys(
+            TableSchema table, IEnumerable<CatalogForeignKey> dbKeys, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            var physicalTable = dialect.PhysicalName(table.TableName);
+            var existing = dbKeys
+                .Where(k => comparer.Equals(k.TableName, physicalTable) && IndexNaming.IsForeignKeyName(k.KeyName))
+                .ToList();
+            List<string> drop = [];
+            List<ForeignKeySchema> create = [];
+            foreach (var key in existing)
+            {
+                var required = table.ForeignKeys.FirstOrDefault(k => comparer.Equals(dialect.PhysicalName(k.Name), key.KeyName));
+                if (required == null || !ForeignKeyMatches(required, key, dialect))
+                    drop.Add(key.KeyName!);
+            }
+            foreach (var key in table.ForeignKeys)
+            {
+                var name = dialect.PhysicalName(key.Name);
+                if (!existing.Any(k => comparer.Equals(k.KeyName, name)) || drop.Contains(name, comparer))
+                    create.Add(key);
+            }
+            return (drop, create);
+        }
+
+        private static bool ForeignKeyMatches(ForeignKeySchema key, CatalogForeignKey existing, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            return comparer.Equals(existing.ColumnName, key.Column.ColumnName)
+                && comparer.Equals(existing.ReferencedTableName, dialect.PhysicalName(key.Referenced.TableName))
+                && comparer.Equals(existing.ReferencedColumnName, key.Referenced.IdentityColumn!.ColumnName)
+                && existing.OnDelete == key.OnDelete;
+        }
+
+        /// <summary>
         /// Compares the [TableIndex] indexes a table declares against the NIX_ indexes the database
         /// has. An index whose keys, key order, included columns or uniqueness differ is dropped and
         /// created again; one no longer declared is dropped.

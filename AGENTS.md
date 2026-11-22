@@ -143,6 +143,25 @@ fails initialisation without touching the rows. A child's parent column is alway
 (`NCI_<table>_Parent`) on every path that reads `IndexedColumns`, and an existing table gains it in
 place at its next start.
 
+Foreign keys are derived by `SchemaManager.BuildSchema` (`ForeignKeySchema` on
+`TableSchema.ForeignKeys`): a child's parent, a stored `[LinkedObject]`, a `[LinkedBy]` key and a
+`[ForeignKey(typeof(T))]` column (Abstractions), each `NO ACTION` unless `[ForeignKey]` says
+`SetNull`, and `[ForeignKey(false)]` drops one. A key is kept only when the store asks for keys
+(`ISchemaStore.ForeignKeys`, from `RelationalProviderOptions.ForeignKeys`, on by default), the
+dialect writes them (`ISchemaDialect.SupportsForeignKeys`; SQLite does not yet), the registry routes
+both types to this provider (`SchemaManager.Routes`, which `RelationalDataProvider` sets from the
+`DataProviderRegistry` that names itself to its providers) and the referenced type is concrete with
+no stored derived type; a `[ForeignKey(typeof(T))]` that cannot hold fails the build. A key column
+is indexed (`ColumnSchema.HasForeignKey`). The check reads the `FK_` keys
+(`ICatalogReader.ReadForeignKeysAsync`) and `SchemaComparer.DiffForeignKeys` compares them; the
+update drops the keys to and from every table it changes or adopts inside the schema transaction,
+before any rename, and after the commit and the index sync creates the missing keys, counting
+orphans first (`ISchemaDialect.CountOrphans`) and creating a key over orphans unchecked with a
+warning. A hard delete clears, in soft-deleted rows only, the references to what it deletes
+(`TableSchema.SoftReferencesIn`, `DeleteTarget.ClearedReferences`), so a soft-deleted row never
+stops it. Keys are immediate on every engine, because SQL Server has none deferred, which is why
+saves are ordered by `ReferenceGraph`.
+
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
 `IObjectDataManager`, so it carries every operation a store needs (writes with tokens, deletes,

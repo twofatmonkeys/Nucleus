@@ -195,6 +195,25 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
+        public void GroupingAWriteByTable_KeepsTheOrderTheRowsWereBuiltIn_AndPutsParentsFirst()
+        {
+            // The asynchronous path regroups a write by table; a stack walk that reversed siblings
+            // inserted a table's rows last first, undoing the order the save gave them.
+            var rows = Enumerable.Range(0, 5).Select(i => new RoHammock { Location = $"h{i}" }).ToList();
+            var table = new TableSchema(ObjectSchema.Get(typeof(RoHammock)));
+            var naps = new TableSchema(ObjectSchema.Get(typeof(RoNap)));
+            var insert = InsertQuery.Create(SqlServerQueryRenderer.Instance, table, rows.Cast<ICoreObject>())!;
+            // A row below the third, as a child collection's insert is linked below its parent's.
+            insert.LinkedQueries[1].LinkedQueries.Add(new InsertQuery(SqlServerQueryRenderer.Instance, naps, new RoNap { Minutes = 95 }));
+
+            var groups = insert.GroupByTableSchema();
+
+            Assert.Equal([table.TableName, naps.TableName], groups.Select(g => g.TableName));
+            var written = groups[0].FlattenLinkedQueries().Select(q => q.SetParameters.First(p => p?.Name == "ID")!.Value).ToList();
+            Assert.Equal(rows.Select(r => (object)r.ID), written);
+        }
+
+        [Fact]
         public void RowsThatPointAtEachOther_AreAllKept()
         {
             var colin = new RoMentoredKeeper { Name = "Colin" };

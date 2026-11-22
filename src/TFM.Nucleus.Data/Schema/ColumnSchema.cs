@@ -62,8 +62,14 @@ namespace TFM.Nucleus.Data.Schema
         [Obsolete("Use IndexDescending, the name the attribute and the catalog use.")]
         public readonly bool IndexSortDescending;
 
+        /// <summary>
+        /// The column holds a foreign key, which is always indexed: a delete of the row it points
+        /// at looks for the rows that point at it, and without an index scans the table.
+        /// </summary>
+        public bool HasForeignKey { get; internal set; }
+
         /// <summary>True when the column gets an index of its own (plain or unique).</summary>
-        public bool HasColumnIndex => Indexed || Unique;
+        public bool HasColumnIndex => Indexed || Unique || HasForeignKey;
 
         /// <summary>The length is unlimited.</summary>
         public bool IsMax => DataLength == MaxLength;

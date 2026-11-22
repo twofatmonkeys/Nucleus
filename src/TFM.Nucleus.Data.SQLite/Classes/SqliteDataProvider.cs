@@ -126,6 +126,8 @@ namespace TFM.Nucleus.Data.SQLite
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
 
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
+
         public ISchemaDialect Dialect { get; } = new SqliteSchemaDialect();
 
         public ICatalogReader Catalog { get; }

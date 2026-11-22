@@ -182,4 +182,22 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
         protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
     }
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresForeignKeyIntegrationTests(PostgresFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE \"public\".\"{table}\" ALTER COLUMN \"{column}\" TYPE varchar({length})";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override string DropForeignKeySql(string table, string key) => $"ALTER TABLE \"public\".\"{table}\" DROP CONSTRAINT \"{key}\"";
+
+        protected override string KeyIsCheckedSql(string key) =>
+            $"SELECT CASE WHEN convalidated THEN 1 ELSE 0 END FROM pg_constraint WHERE conname = '{key}'";
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
 }

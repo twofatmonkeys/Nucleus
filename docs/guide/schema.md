@@ -1,7 +1,8 @@
 # Tables and schema
 
 Nucleus creates and updates tables from the entity classes. This page covers how a table gets its
-name, how to change a name without losing the rows, and what does and does not get a table.
+name, how to change a name without losing the rows, the foreign keys it keeps, and what does and
+does not get a table.
 [Getting started](getting-started.md#2-what-initialising-does) describes what initialising does to
 an existing table's columns.
 
@@ -126,6 +127,59 @@ When it does not rename:
 
 Two processes starting together against a database that still needs a rename can both try it. The
 second fails its initialisation and succeeds on its next start, as a racing table create does.
+
+## Foreign keys
+
+Nucleus keeps a foreign key for each column that holds another row's ID, so the database refuses a
+row that points at nothing, whoever writes it. On SQL Server and PostgreSQL a key is kept, without
+being asked for, for:
+
+- a child's `Parent` column, to its parent's table;
+- a stored `[LinkedObject]` column, to the table of the type it holds;
+- the key a `[LinkedBy]` collection names, to the one's table;
+- a `Guid` column marked `[ForeignKey(typeof(Keeper))]`, to that type's table.
+
+`[ForeignKey(false)]` leaves a reference without its key, and `[ForeignKey(OnDelete = ForeignKeyAction.SetNull)]`
+has the database set the column to null when the row it points at is deleted (not on a child's
+`Parent`). Every key is `ON DELETE NO ACTION` otherwise: there is no cascade, because Nucleus
+deletes owned rows itself, keeping each type's hard or soft rule. Every key column is indexed, so
+a delete of the row it points at does not scan the table; an existing link column gains its index
+at the next start.
+
+A key is kept only where it holds for every row the column can point at. There is none when:
+
+- the referenced type is stored by another provider, or another provider keeps the rows of either
+  type (a provider can hold tables for types another provider stores);
+- the reference is typed as an abstract type, or as an entity that another stored entity derives
+  from, because the row can be in more than one table.
+
+A `[ForeignKey(typeof(...))]` that cannot hold fails the schema build instead, and so does a
+`[ForeignKey]` on a column that is not a stored `Guid` or that names a different type than the
+property holds.
+
+**What a key changes.**
+
+- Deleting a row that a live row still points at fails with a `DatabaseException` of kind
+  `ForeignKeyViolation`. Delete or change the rows that point at it first, or give the reference
+  `[ForeignKey(false)]` or `SetNull`.
+- A soft-deleted row keeps its references. A hard delete first sets to null the references that
+  soft-deleted rows hold to the rows it deletes, so only live rows stop it; a reference to a row
+  that no longer exists reads as null, as before.
+- Saving a reference to an entity that was never saved fails, unless the link is `forceSave`, which
+  writes it first. A save writes a type after the types its rows point at, whatever order it was
+  given them in.
+
+**Keeping them in step.** Keys are named `FK_`, the table and the column, and only keys with that
+prefix are ever read, dropped or created, as with indexes. A key that is missing or has changed
+makes the schema not current, and the update creates it after the tables and indexes. A rebuilt
+table loses the keys to and from it inside the rebuild's transaction, and they are created again
+after it commits. A key over a table that already holds rows pointing at missing rows is created
+without checking them (`WITH NOCHECK` on SQL Server, `NOT VALID` on PostgreSQL), with a warning
+giving the count; rows written after it are checked. Nucleus never changes rows to make a key fit.
+
+With `ReadOnlySchema`, a missing or changed key makes initialisation fail, as a missing index
+does; one writable start creates them. `RelationalProviderOptions.ForeignKeys` (on by default)
+turns all of it off; the next start drops the keys Nucleus created. SQLite creates no keys yet.
 
 ## What gets a table
 

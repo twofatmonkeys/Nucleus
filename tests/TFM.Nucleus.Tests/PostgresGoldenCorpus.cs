@@ -53,6 +53,14 @@ namespace TFM.Nucleus.Tests
             cases["ddl.fulltext"] = () => dialect.CreateFullTextIndex(allTypes, allTypes["Searchable"]);
             cases["ddl.notify"] = () => string.Join("\n--\n", dialect.CreateNotifyFunction(), dialect.CreateNotifyTrigger(widget));
 
+            // Foreign keys: added checked or not, with a delete action, dropped, and the orphan count.
+            var keeperKey = QueryGoldenCorpus.KeyOf(typeof(FkResident), "Keeper");
+            cases["ddl.fk.add"] = () => dialect.AddForeignKey(keeperKey, checkExisting: true).Text;
+            cases["ddl.fk.add.nocheck"] = () => dialect.AddForeignKey(keeperKey, checkExisting: false).Text;
+            cases["ddl.fk.add.setnull"] = () => dialect.AddForeignKey(QueryGoldenCorpus.KeyOf(typeof(FkResident), "Backup"), checkExisting: true).Text;
+            cases["ddl.fk.drop"] = () => dialect.DropForeignKey(keeperKey.Table.TableName, keeperKey.Name).Text;
+            cases["ddl.fk.orphans"] = () => dialect.CountOrphans(keeperKey).Text;
+
             foreach (var type in QueryGoldenCorpus.SchemaTypes())
                 cases[$"ddl.create.{type.Name}"] = () => Join(dialect.CreateTable(QueryGoldenCorpus.TableOf(type)));
 
