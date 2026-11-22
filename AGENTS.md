@@ -152,12 +152,14 @@ and a `LoadOptions`: names to exclude, names to include, and whether soft-delete
 `Get<T>()` and `Rows<T>()`. Every public load forwards to one private core per shape
 (`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`,
 `LoadTopCore` for the first rows), which the adaptor calls too. `NucleusCache` holds a
-`[Cacheable]` type's every row, filled single-flight on either path (an asynchronous fill runs on
-the thread pool, without a caller's token); an unfiltered, live, whole load answers from it in
-`LoadCore`/`LoadCoreAsync` and the stream in `LoadStreamCoreAsync`, every read of every row returns
-a list of its own over the shared objects, and a read by ID looks up the entry its fill returned
-(`GetOrLoadById`), never the cache a second time. Its refresh loads first and swaps the entry in only over the one it refreshed, so an
-eviction meanwhile wins. A member added to an interface gets a default body, so another
+`[Cacheable]` type's every row as an array only it holds, filled single-flight on either path (an
+asynchronous fill runs on the thread pool, without a caller's token); an unfiltered, live, whole
+load answers from it in `LoadCore`/`LoadCoreAsync` and the stream in `LoadStreamCoreAsync` (which
+reads the array, `RowsAsync`), every list it hands out, `GetOrLoad` included, is a copy over the
+shared objects, and a read by ID looks up the entry its fill returned (`GetOrLoadById`), never the
+cache a second time. Its refresh loads first and swaps the entry in only over the one it
+refreshed, so an eviction meanwhile wins; a failed refresh keeps the entry, logs a warning through
+the manager's logger (`NucleusCache.Logger`) and lets the next start one interval later. A member added to an interface gets a default body, so another
 implementation still compiles: it forwards to an older member where one does the same work
 (`IDataContext.Save(IEnumerable)` to `BulkSave`), and throws `NotSupportedException` otherwise.
 `DataProvider` and `DataProviderStatus` on it are obsolete: they are the unrooted default provider

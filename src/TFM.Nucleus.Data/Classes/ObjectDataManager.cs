@@ -204,6 +204,9 @@ namespace TFM.Nucleus.Data
             _loggerFactory = loggerFactory;
             _options = options ?? new NucleusOptions();
             Cache = cache ?? new NucleusCache();
+            // A failed background refresh is reported here. A cache another manager already gave
+            // its logger keeps it.
+            Cache.Logger ??= logger;
         }
 
         /// <summary>The layered cache backing [Cacheable] types (whole collection + Guid index).</summary>
@@ -621,7 +624,7 @@ namespace TFM.Nucleus.Data
         {
             var schema = _objectSchema.Get<T>();
             if (schema is { IsCacheable: true })
-                return CopyOf(Cache.GetOrLoad(schema, LoadAllFromProvider<T>, forceRefresh));
+                return Cache.GetOrLoad(schema, LoadAllFromProvider<T>, forceRefresh);
             return LoadAllFromProvider<T>();
         }
 
@@ -647,21 +650,8 @@ namespace TFM.Nucleus.Data
         /// Every row of a [Cacheable] type from its cache, filled on the asynchronous path on a
         /// miss, as a list of the caller's own.
         /// </summary>
-        private async Task<NucleusCollection<T>> LoadAllCachedAsync<T>(IObjectSchema schema, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
-            CopyOf(await Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken));
-
-        /// <summary>
-        /// A list of the caller's own over the cached objects, so adding to or removing from it
-        /// does not change what every other reader of the cache gets. The objects are shared.
-        /// </summary>
-        private static NucleusCollection<T> CopyOf<T>(NucleusCollection<T> cached) where T : ICoreObject<T>, new()
-        {
-            var copy = new NucleusCollection<T>();
-            // List<T>.AddRange copies the array in one step; the collection's own Add raises an
-            // event per object.
-            ((List<T>)copy).AddRange(cached);
-            return copy;
-        }
+        private Task<NucleusCollection<T>> LoadAllCachedAsync<T>(IObjectSchema schema, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken);
 
         /// <summary>
         /// One page of rows plus the unpaged total count, fetched in a single round trip.
@@ -1239,7 +1229,7 @@ namespace TFM.Nucleus.Data
             // Every row of a [Cacheable] type, whole and live, is what its cache holds.
             if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
                 ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
-                return CopyOf(Cache.GetOrLoad(schema, LoadAllFromProvider<T>));
+                return Cache.GetOrLoad(schema, LoadAllFromProvider<T>);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
@@ -1350,13 +1340,13 @@ namespace TFM.Nucleus.Data
             IReadOnlyCollection<string> includedCollections, bool includeDeleted,
             [EnumeratorCancellation] CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
-            // Every row of a [Cacheable] type, whole and live, is what its cache holds. The cached
-            // list is never changed once filled, so it is yielded from as it is; the objects are
-            // shared as on every cached read.
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds. Its rows are
+            // an array only the cache holds and nothing changes once built, so they are yielded
+            // without a copy; the objects are shared as on every cached read.
             if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
                 ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
             {
-                foreach (var cached in await Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken))
+                foreach (var cached in await Cache.RowsAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     yield return cached;

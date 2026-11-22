@@ -3,6 +3,18 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A failed cache refresh waits, and the cache hands out copies
+
+- **After a background refresh of a `[Cacheable]` type fails, the next one waits one
+  `refreshInterval`, and the failure is logged as a warning** through the manager's logger. The
+  next read retried at once, silently, so while the database was down every cached read started
+  another load. Reads still get the cached rows meanwhile, and past `cacheLifetime` a read still
+  waits for the rows and sees the failure.
+- **`NucleusCache.GetOrLoad` returns a list of its own over the shared objects.** It returned the
+  cache's own list, reachable through `ObjectDataManager.Cache`, so adding to or removing from it
+  changed it for every reader, and doing so while a query of every row was being enumerated made
+  that enumeration throw. The objects in the list are still shared.
+
 ## Query operators run in the database, and the cache fills on either path
 
 - **`FirstAsync`, `FirstOrDefaultAsync`, `SingleAsync` and `SingleOrDefaultAsync` on a query read
