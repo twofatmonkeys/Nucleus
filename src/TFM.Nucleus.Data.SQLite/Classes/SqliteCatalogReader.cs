@@ -46,6 +46,33 @@ namespace TFM.Nucleus.Data.SQLite
             "AND (il.name LIKE 'NCI\\_%' ESCAPE '\\' OR il.name LIKE 'UQ\\_%' ESCAPE '\\' OR il.name LIKE 'NIX\\_%' ESCAPE '\\') " +
             "ORDER BY m.name, il.name, ix.seqno";
 
+        // Every single-column foreign key of every table. SQLite keeps a key unnamed, in its
+        // table's definition, so each is named as Nucleus names one (FK_, the table and the
+        // column) and every key of a Nucleus table counts as one Nucleus keeps. A key written
+        // without its referenced column points at the primary key, which is ID.
+        private const string ForeignKeyQuery =
+            "SELECT m.name, fk.\"from\", fk.\"table\", coalesce(fk.\"to\", 'ID'), fk.on_delete " +
+            "FROM sqlite_schema m JOIN pragma_foreign_key_list(m.name) fk " +
+            "WHERE " + UserTables + " ORDER BY m.name, fk.id, fk.seq";
+
+        public ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken) =>
+            Read("foreign keys", ForeignKeyQuery, r => new CatalogForeignKey
+            {
+                TableName = r.GetString(0),
+                KeyName = $"{IndexNaming.ForeignKeyPrefix}{r.GetString(0)}_{r.GetString(1)}",
+                ColumnName = r.GetString(1),
+                ReferencedTableName = r.GetString(2),
+                ReferencedColumnName = r.GetString(3),
+                // A cascade, a restrict or a default, which Nucleus never writes, reads as
+                // neither, so the table is rebuilt.
+                OnDelete = r.GetString(4).ToUpperInvariant() switch { "NO ACTION" => ForeignKeyAction.NoAction, "SET NULL" => ForeignKeyAction.SetNull, _ => (ForeignKeyAction)(-1) },
+                // SQLite never checks the rows a key is added over; the update reports them.
+                IsChecked = true,
+            }, async, cancellationToken);
+
+        public async ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken) =>
+            Convert.ToInt64(await Scalar("a count", statement.Text, async, cancellationToken));
+
         public async ValueTask<bool> DatabaseExistsAsync(bool async, CancellationToken cancellationToken)
         {
             string path;

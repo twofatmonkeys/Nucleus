@@ -52,7 +52,7 @@ namespace TFM.Nucleus.Tests
         public bool ReadOnlySchema => false;
         public TableNamingPolicy TableNaming { get; init; } = TableNamingPolicy.FullName;
         public bool RenameFullNameTables { get; init; }
-        public ISchemaDialect Dialect { get; } = new SqlServerSchemaDialect(null);
+        public ISchemaDialect Dialect { get; init; } = new SqlServerSchemaDialect(null);
         public ICatalogReader Catalog => this;
 
         public ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken) =>

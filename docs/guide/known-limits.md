@@ -96,13 +96,12 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   The bulk engine writes each set of columns as its own statement, so a row can be written before
   a row it points at that sets other columns. Give the batch's rows the same columns, or save the
   rows pointed at first.
-- **SQLite creates no foreign keys yet.**
 
 ## Linked collections
 
-- **On SQLite, a refused delete of a one is a check, not a constraint.** SQLite has no foreign
-  keys yet, so a member another transaction inserts after the check has run is left pointing at a
-  deleted row. On SQL Server and PostgreSQL the member's key refuses the delete instead.
+- **A connection opened outside Nucleus does not enforce SQLite's keys.** SQLite turns key
+  checks on per connection; Nucleus turns them on for its own. A tool or script writing to the
+  file runs `PRAGMA foreign_keys = ON` first, or its writes are not checked.
 - **The one side of a linked collection is a root.** A child type cannot hold one, because its
   parent's cascade deletes it without loading it, where members could not be checked for.
 

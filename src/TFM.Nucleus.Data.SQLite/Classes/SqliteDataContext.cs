@@ -22,29 +22,52 @@ namespace TFM.Nucleus.Data.SQLite
     internal sealed class SqliteDataContext : DbDataContext<SqliteDataContext>
     {
         private readonly SqliteDataProvider _sqliteProvider;
+        private readonly bool _forSchema;
 
-        private SqliteDataContext(SqliteDataProvider provider) : base(provider)
+        private SqliteDataContext(SqliteDataProvider provider, bool forSchema) : base(provider)
         {
             _sqliteProvider = provider;
+            _forSchema = forSchema;
         }
 
         private SqliteConfiguration Config => _sqliteProvider.Config;
 
-        internal static SqliteDataContext Create(SqliteDataProvider provider, SqliteDataContext? parent, bool useTransaction, bool useDependency)
+        internal static SqliteDataContext Create(SqliteDataProvider provider, SqliteDataContext? parent, bool useTransaction, bool useDependency, bool forSchema = false)
         {
-            var context = new SqliteDataContext(provider);
+            var context = new SqliteDataContext(provider, forSchema);
             context.Open(parent, useTransaction, useDependency);
             return context;
         }
 
-        internal static async Task<SqliteDataContext> CreateAsync(SqliteDataProvider provider, SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token)
+        internal static async Task<SqliteDataContext> CreateAsync(SqliteDataProvider provider, SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token, bool forSchema = false)
         {
-            var context = new SqliteDataContext(provider);
+            var context = new SqliteDataContext(provider, forSchema);
             await context.OpenAsync(parent, useTransaction, useDependency, token);
             return context;
         }
 
         protected override DbConnection BuildConnection(bool useTransaction) => Config.BuildConnection();
+
+        /// <summary>
+        /// Sets, on every connection before its transaction begins, the two settings SQLite keeps
+        /// per connection and refuses to change inside a transaction. A context enforces foreign
+        /// keys when the provider keeps them. The schema update's context does not, so a rebuild
+        /// can copy and drop a table other tables point at, and its renames leave the references in
+        /// other tables' definitions as they were (legacy_alter_table), so they point at the new
+        /// table once it takes the name. Both are set every time, because the connection comes from
+        /// a pool shared with the other kind.
+        /// </summary>
+        protected override async ValueTask PrepareConnectionAsync(DbConnection connection, bool async, CancellationToken token)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = _forSchema
+                ? "PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON"
+                : Options.ForeignKeys ? "PRAGMA foreign_keys = ON; PRAGMA legacy_alter_table = OFF" : "PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = OFF";
+            if (async)
+                await command.ExecuteNonQueryAsync(token);
+            else
+                command.ExecuteNonQuery();
+        }
 
         // The driver's command timeout is how long a command waits for another connection's lock
         // (BusyTimeoutSeconds, which the connection gives every command), not a limit on a running

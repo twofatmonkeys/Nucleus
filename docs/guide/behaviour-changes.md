@@ -3,6 +3,19 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Foreign keys on SQLite
+
+- **SQLite keeps the same foreign keys as the other engines**, in each key column's definition (see
+  [Foreign keys](schema.md#foreign-keys)), so everything listed under the next section applies to
+  SQLite too: deleting a row a live row points at, or saving a reference to an unsaved entity, fails
+  with `ForeignKeyViolation`.
+- **The first start rebuilds every table that has a reference**, copying its rows, because SQLite
+  cannot add a key to an existing table. A row that already points at a missing row is copied and
+  reported as a warning with the count. Later starts rebuild a table only when its keys change.
+- **Every connection a context opens runs `PRAGMA foreign_keys`** before its transaction begins: on
+  when the provider keeps keys, off on the schema update's own. A tool that writes to the file on
+  its own connection must turn the checks on itself.
+
 ## Foreign keys, on by default on SQL Server and PostgreSQL
 
 - **The schema update keeps a foreign key for every reference the model implies**: a child's

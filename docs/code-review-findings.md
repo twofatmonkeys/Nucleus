@@ -370,6 +370,24 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### Foreign keys on SQLite (November 2026)
+
+- **SQLite keeps keys only in a table's definition**, and checks them only on connections that turn
+  them on, which no transaction may change. `ISchemaDialect.ForeignKeysInline` says so: the dialect
+  writes a key with its column in `CreateTable` and `AddColumns`, and the update marks a table whose
+  keys differ for a rebuild (`TableSchema.RebuildForKeys`, read from the catalog as it stood before
+  the update, an adopted table under its old name) instead of adding or dropping a key on its own.
+  A rebuild copies rows unchecked; the update counts each rebuilt table's orphans and warns.
+  `DbDataContext.PrepareConnectionAsync` runs between open and begin: a SQLite context turns
+  `foreign_keys` on (off under `ForeignKeys = false`), and the schema update's context turns it off
+  and `legacy_alter_table` on, so a rebuild's rename leaves other tables' `REFERENCES` text alone
+  and they point at the new table once it takes the name. Both are set on every open because the
+  connections share one pool. While it was built, an update left `RebuildForKeys` set, so a check
+  after the upgrade still found the tables not current; the compare now clears it. Cover:
+  `SqliteForeignKeyUpgradeTests`, `SqliteForeignKeyIntegrationTests`,
+  `WithInlineKeys_ATableWithoutItsKeys_IsRebuiltWithThem_AndNoKeyIsAddedOnItsOwn` and
+  `WithInlineKeys_KeysThatMatch_RebuildNothing_AndTheCompareClearsAnEarlierRebuildMark`.
+
 ### Foreign keys, and an asynchronous save that reversed a table's rows (November 2026)
 
 - **Nucleus created no foreign keys.** The graph rules (a child needs its parent, a one with

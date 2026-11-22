@@ -90,6 +90,15 @@ namespace TFM.Nucleus.Data.Providers
         bool SupportsForeignKeys => false;
 
         /// <summary>
+        /// True for an engine whose keys can only be written with their table: <see cref="CreateTable"/>
+        /// and <see cref="AddColumns"/> write each column's key, and a key the table lacks, or has
+        /// changed, rebuilds the table instead of being added or dropped on its own. Such an engine
+        /// never checks the rows a rebuild copies, so the update counts and reports the ones that
+        /// point at nothing.
+        /// </summary>
+        bool ForeignKeysInline => false;
+
+        /// <summary>
         /// Adds <paramref name="key"/> to its table. With <paramref name="checkExisting"/> false the
         /// rows already there are not checked against it, because some point at rows that do not
         /// exist; the key still holds for every row written after it.

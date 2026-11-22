@@ -415,12 +415,19 @@ namespace TFM.Nucleus.Data.Schema
                 var tables = GetTables().ToList();
                 await DropKeysOfTablesToChange(transaction, tables, async, cancellationToken);
                 await AdoptLegacyTables(transaction, tables, async, cancellationToken);
+                // After the adoptions, whose compare starts each adopted table afresh.
+                await MarkTablesWhoseInlineKeysChange(tables, async, cancellationToken);
+                List<TableSchema> rebuilt = [];
                 foreach (var table in tables.Where(x => !x.IsCurrent))
                 {
                     try
                     {
                         if (!await TryAddColumns(transaction, table, async, cancellationToken))
+                        {
+                            if (table.ExistsInDatabase)
+                                rebuilt.Add(table);
                             await RebuildTable(transaction, table, async, cancellationToken);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -437,7 +444,9 @@ namespace TFM.Nucleus.Data.Schema
                 if (Dialect.Extras is { } extras)
                     await extras.SyncAsync(tables, async, cancellationToken);
                 // After the indexes, so every key column is indexed before its key is checked.
-                if (Dialect.SupportsForeignKeys)
+                if (Dialect.SupportsForeignKeys && Dialect.ForeignKeysInline)
+                    await ReportOrphansOfRebuiltTables(rebuilt, async, cancellationToken);
+                else if (Dialect.SupportsForeignKeys)
                     await SyncForeignKeys(tables, async, cancellationToken);
                 return DataSchemaStatus.Ok;
             }
@@ -653,7 +662,8 @@ namespace TFM.Nucleus.Data.Schema
         /// </summary>
         private async ValueTask DropKeysOfTablesToChange(ISchemaTransaction transaction, IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
         {
-            if (!Dialect.SupportsForeignKeys)
+            // Inline keys go with their table's own definition, and are replaced with it.
+            if (!Dialect.SupportsForeignKeys || Dialect.ForeignKeysInline)
                 return;
             var changing = new HashSet<string>(Dialect.IdentifierComparer);
             foreach (var table in tables.Where(t => !t.IsCurrent))
@@ -670,6 +680,69 @@ namespace TFM.Nucleus.Data.Schema
                     _logger?.LogInformation("Dropping foreign key {key} on table {tablename} while its tables change.", key.KeyName, key.TableName);
                     await transaction.ExecuteAsync(Dialect.DropForeignKey(key.TableName!, key.KeyName!), async, cancellationToken);
                 }
+        }
+
+        /// <summary>
+        /// On an engine that keeps keys only with their table, marks for a rebuild each existing
+        /// table whose keys differ from what the schema needs: a key it lacks on a column it already
+        /// has, or one it has that is not needed or has changed. A key on a column the update adds
+        /// is written with the column, so it needs no rebuild. Read from the catalog as it stood
+        /// before the update, a table about to be adopted under its old name.
+        /// </summary>
+        private async ValueTask MarkTablesWhoseInlineKeysChange(IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            if (!Dialect.SupportsForeignKeys || !Dialect.ForeignKeysInline)
+                return;
+            var snapshot = await _store.Catalog.ReadAsync(async, cancellationToken);
+            var dbKeys = await _store.Catalog.ReadForeignKeysAsync(async, cancellationToken);
+            var comparer = Dialect.IdentifierComparer;
+            foreach (var table in tables)
+            {
+                var physical = Dialect.PhysicalName(table.TableName);
+                var source = snapshot.Tables.Contains(physical, comparer) ? physical
+                    : PresentAdoptionCandidates(table, snapshot) is [var adopted] ? Dialect.PhysicalName(adopted)
+                    : null;
+                if (source == null)
+                    continue;
+                // The keys and columns of the table as it is stored, under the name it will have.
+                var stored = dbKeys.Where(k => comparer.Equals(k.TableName, source)).Select(k => new CatalogForeignKey
+                {
+                    TableName = physical,
+                    KeyName = $"{IndexNaming.ForeignKeyPrefix}{table.TableName}_{k.ColumnName}",
+                    ColumnName = k.ColumnName,
+                    ReferencedTableName = k.ReferencedTableName,
+                    ReferencedColumnName = k.ReferencedColumnName,
+                    OnDelete = k.OnDelete,
+                    IsChecked = k.IsChecked,
+                }).ToList();
+                var (drop, create) = SchemaComparer.DiffForeignKeys(table, stored, Dialect);
+                var columnExists = (ForeignKeySchema key) => snapshot.Columns.Any(c =>
+                    comparer.Equals(c.TableName, source) && comparer.Equals(c.Name, key.Column.ColumnName));
+                if (drop.Count > 0 || create.Any(columnExists))
+                {
+                    _logger?.LogInformation("Rebuilding table {tablename} for its foreign keys: missing or changed {missing}, not needed {unexpected}.",
+                        table.TableName, string.Join(", ", create.Select(k => k.Name)), string.Join(", ", drop));
+                    table.RebuildForKeys = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// On an engine that keeps keys only with their table, a rebuild copies the rows without
+        /// checking them against the keys. Counts, for each key of each rebuilt table, the rows that
+        /// point at missing rows, and reports them as a warning: Nucleus never changes rows to make
+        /// a key fit, and rows written after it are checked.
+        /// </summary>
+        private async ValueTask ReportOrphansOfRebuiltTables(IReadOnlyList<TableSchema> rebuilt, bool async, CancellationToken cancellationToken)
+        {
+            foreach (var key in rebuilt.SelectMany(t => t.ForeignKeys))
+            {
+                var orphans = await _store.Catalog.ReadCountAsync(Dialect.CountOrphans(key), async, cancellationToken);
+                if (orphans > 0)
+                    _logger?.LogWarning("Foreign key {key} on table {tablename} does not cover {count} existing rows that point at rows of {referenced} " +
+                        "that do not exist. Rows written from now on are checked. Remove or correct those rows to have the key cover every row.",
+                        key.Name, key.Table.TableName, orphans, key.Referenced.TableName);
+            }
         }
 
         /// <summary>

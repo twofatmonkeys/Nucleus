@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.SQLite;
 
 namespace TFM.Nucleus.Tests
 {
@@ -368,6 +369,50 @@ namespace TFM.Nucleus.Tests
 
             Assert.Equal(stored.Count, store.OutsideTransaction.Count(s => s.Contains("DROP CONSTRAINT")));
             Assert.DoesNotContain(store.OutsideTransaction, s => s.Contains("ADD CONSTRAINT"));
+        }
+
+        // ---- An engine that keeps keys only with their table ------------------------------------
+
+        [Fact]
+        public void WithInlineKeys_ATableWithoutItsKeys_IsRebuiltWithThem_AndNoKeyIsAddedOnItsOwn()
+        {
+            var store = new RecordingSchemaStore(Empty, Sanctuary) { ForeignKeys = true, Dialect = new SqliteSchemaDialect() };
+            var manager = store.Manager();
+            manager.BuildSchema();
+            var tables = manager.TableCache.Values.Select(t => SchemaCatalog.Current("sqlite", t)).ToList();
+            store.Snapshot = new CatalogSnapshot(
+                [.. tables.SelectMany(t => t.Tables)], [.. tables.SelectMany(t => t.Columns)], [.. tables.SelectMany(t => t.Indexes)]);
+
+            Assert.Equal(DataSchemaStatus.Ok, manager.Initialize());
+
+            var resident = Table<FkResident>(manager);
+            var keeper = Table<FkKeeper>(manager);
+            var create = Assert.Single(store.InTransaction, s => s.StartsWith($"CREATE TABLE \"{resident.TableName}\""));
+            Assert.Contains($"\"Keeper\" UUID NULL REFERENCES \"{keeper.TableName}\" (\"ID\")", create);
+            Assert.Contains("ON DELETE SET NULL", create);
+            // A table no key leaves is left alone.
+            Assert.DoesNotContain(store.InTransaction, s => s.StartsWith($"CREATE TABLE \"{keeper.TableName}\""));
+            Assert.DoesNotContain(store.InTransaction.Concat(store.OutsideTransaction), s => s.Contains("CONSTRAINT"));
+            // The rows the rebuild copied are counted against each of its keys.
+            Assert.Contains(store.Dialect.CountOrphans(Key<FkResident>(manager, "Keeper")).Text, store.OutsideTransaction);
+        }
+
+        [Fact]
+        public void WithInlineKeys_KeysThatMatch_RebuildNothing_AndTheCompareClearsAnEarlierRebuildMark()
+        {
+            var store = new RecordingSchemaStore(Empty, Sanctuary) { ForeignKeys = true, Dialect = new SqliteSchemaDialect() };
+            var manager = store.Manager();
+            manager.BuildSchema();
+            var tables = manager.TableCache.Values.Select(t => SchemaCatalog.Current("sqlite", t)).ToList();
+            store.Snapshot = new CatalogSnapshot(
+                [.. tables.SelectMany(t => t.Tables)], [.. tables.SelectMany(t => t.Columns)], [.. tables.SelectMany(t => t.Indexes)]);
+            store.Keys = [.. manager.TableCache.Values.SelectMany(t => t.ForeignKeys).Select(k => Stored(k))];
+            Table<FkResident>(manager).RebuildForKeys = true;
+
+            Assert.Equal(DataSchemaStatus.Ok, manager.Initialize());
+
+            Assert.Empty(store.InTransaction);
+            Assert.All(manager.TableCache.Values, t => Assert.True(t.IsCurrent));
         }
 
         [Fact]

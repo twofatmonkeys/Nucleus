@@ -148,7 +148,7 @@ Foreign keys are derived by `SchemaManager.BuildSchema` (`ForeignKeySchema` on
 `[ForeignKey(typeof(T))]` column (Abstractions), each `NO ACTION` unless `[ForeignKey]` says
 `SetNull`, and `[ForeignKey(false)]` drops one. A key is kept only when the store asks for keys
 (`ISchemaStore.ForeignKeys`, from `RelationalProviderOptions.ForeignKeys`, on by default), the
-dialect writes them (`ISchemaDialect.SupportsForeignKeys`; SQLite does not yet), the registry routes
+dialect writes them (`ISchemaDialect.SupportsForeignKeys`), the registry routes
 both types to this provider (`SchemaManager.Routes`, which `RelationalDataProvider` sets from the
 `DataProviderRegistry` that names itself to its providers) and the referenced type is concrete with
 no stored derived type; a `[ForeignKey(typeof(T))]` that cannot hold fails the build. A key column
@@ -160,7 +160,10 @@ orphans first (`ISchemaDialect.CountOrphans`) and creating a key over orphans un
 warning. A hard delete clears, in soft-deleted rows only, the references to what it deletes
 (`TableSchema.SoftReferencesIn`, `DeleteTarget.ClearedReferences`), so a soft-deleted row never
 stops it. Keys are immediate on every engine, because SQL Server has none deferred, which is why
-saves are ordered by `ReferenceGraph`.
+saves are ordered by `ReferenceGraph`. A dialect whose keys are part of the table's definition
+(`ISchemaDialect.ForeignKeysInline`, SQLite) writes them in `CreateTable` and `AddColumns`, and a
+table whose keys differ is marked `TableSchema.RebuildForKeys` and rebuilt; nothing adds or drops a
+key on its own, and the update reports the orphans each rebuild copied.
 
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
@@ -348,7 +351,12 @@ older than 3.35 and puts the file in write-ahead log mode (`UseWriteAheadLog`); 
 IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerCommand` is 2000, far under
 SQLite's 32766, because the driver binds each statement of a command by searching all its
 parameters, so a large multi-statement command is quadratic and holds the write lock throughout
-(an oversized save measured 33 s at 30000 against 0.3 s at 2000). Its output is pinned by
+(an oversized save measured 33 s at 30000 against 0.3 s at 2000). Foreign keys are inline
+(`REFERENCES` in each key column's definition), and every connection a context opens sets
+`foreign_keys` (on, or off under `ForeignKeys = false`) and `legacy_alter_table` off before its
+transaction begins (`SqliteDataContext.PrepareConnectionAsync`); the schema update's context sets
+`foreign_keys` off and `legacy_alter_table` on, so a rebuild can replace a table others point at
+and its rename leaves their `REFERENCES` text alone. Its output is pinned by
 `SqliteGoldens.cs`, built from the same query corpus.
 
 ## Build and test

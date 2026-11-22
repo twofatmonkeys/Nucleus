@@ -28,6 +28,8 @@ namespace TFM.Nucleus.Data.Schema
             {
                 var physical = dialect.PhysicalName(table.TableName);
                 table.MissingSoftDeleteColumns.Clear();
+                // Set by an update for a rebuild it has done; a compare starts from the catalog.
+                table.RebuildForKeys = false;
                 if (!snapshot.Tables.Contains(physical, comparer))
                 {
                     table.ExistsInDatabase = false;
@@ -75,7 +77,7 @@ namespace TFM.Nucleus.Data.Schema
         {
             if (!table.ExistsInDatabase)
                 return new TableUpdatePlan(TableUpdateKind.Create, [], []);
-            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase)
+            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase || table.RebuildForKeys)
                 return new TableUpdatePlan(TableUpdateKind.Rebuild, [], []);
             return new TableUpdatePlan(TableUpdateKind.AddColumns,
                 [.. table.Columns.Where(c => !c.ExistsInDatabase)],
