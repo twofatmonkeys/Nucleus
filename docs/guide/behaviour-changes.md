@@ -3,6 +3,21 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## The test database drops key columns, and adoption no longer stalls on SQL Server
+
+- **A start that adopts an old table after dropping a key no longer times out on SQL Server.** The
+  update read the catalog for the adoption on a connection of its own after its transaction had
+  dropped a key, and that read waited on the transaction until the statement timeout, failing the
+  start. Old tables with a foreign key between them, or an adoption in the same start as a change
+  to a table with a key, hit it.
+
+- **`DropColumnsSql` drops a column's foreign keys on SQL Server.** It dropped only the column's
+  index and default, so since foreign keys it failed on a key column such as a child's `Parent`.
+- **`DropColumnsAsync(table, columns)` drops any column on every engine.** SQLite cannot drop a
+  column a foreign key uses, so there it rebuilds the table without the columns, keeping the rows
+  and the other indexes; `DropColumnsSql` still fails on SQLite for a key column. A test that drops
+  a key column calls `DropColumnsAsync`, under the schema lock.
+
 ## A broken foreign key names the reference
 
 - **A key violation is a `ForeignKeyViolationException`**, a `DatabaseException` of kind

@@ -148,6 +148,25 @@ namespace TFM.Nucleus.IntegrationTests
         public int? Extra { get => GetValue<int?>(); set => SetValue(value); }
     }
 
+    /// <summary>
+    /// The owner of a child whose Parent column, which carries a foreign key, the add-column suite
+    /// drops from a populated table, as a table written before its rows were children would be.
+    /// </summary>
+    public class IntGrowingOwner : CoreObject<IntGrowingOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntGrowingPart, IntGrowingOwner> Parts => GetChildCollection<IntGrowingPart, IntGrowingOwner>();
+    }
+
+    [Deletable]
+    public class IntGrowingPart : CoreChildObject<IntGrowingPart, IntGrowingOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     /// <summary>A soft-deletable table that loses its soft-delete columns in the add-column suite.</summary>
     [Deletable(DeleteBehavior.Soft)]
     public class IntGrowingSoftItem : CoreObject<IntGrowingSoftItem>
@@ -311,6 +330,37 @@ namespace TFM.Nucleus.IntegrationTests
 
         [DatabaseColumn]
         public int? Quantity { get => GetValue<int?>(); set => SetValue(value); }
+    }
+
+    /// <summary>
+    /// A pinned table another table's key points at, which the naming suite moves to its old name
+    /// with <see cref="IntLegacyResident"/>, so the start that adopts them drops a key first.
+    /// </summary>
+    [DatabaseTable(Table)]
+    [LegacyTableNames(OldTable)]
+    public class IntLegacyKeeper : IntNamingRoot<IntLegacyKeeper>
+    {
+        public const string Table = "tbl_IntLegacyKeeper";
+        public const string OldTable = "tbl_IntLegacyKeeperOld";
+
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    /// <summary>A pinned table with a foreign key to <see cref="IntLegacyKeeper"/>.</summary>
+    [DatabaseTable(Table)]
+    [LegacyTableNames(OldTable)]
+    public class IntLegacyResident : IntNamingRoot<IntLegacyResident>
+    {
+        public const string Table = "tbl_IntLegacyResident";
+        public const string OldTable = "tbl_IntLegacyResidentOld";
+
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public IntLegacyKeeper? Keeper { get => GetValue<IntLegacyKeeper>(); set => SetValue(value); }
     }
 
     // ---- The child model: declared deletes, removals, validation, forceSave, lazy collections ----

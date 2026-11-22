@@ -370,6 +370,43 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### On SQL Server, adopting an old table timed out after a key drop (November 2026)
+
+- **The adoption read the catalog after the update had dropped a key.** The schema update drops
+  the keys to and from every table it changes or adopts inside its transaction, then the adoption
+  read the catalog to find the old tables. The catalog reader has a connection of its own, and on
+  SQL Server its read of the table names waited on the schema locks the transaction's own key drop
+  held, until the statement timed out and the start failed. Any start that dropped a key and then
+  adopted a table hit it: old tables with a key between them, as a store's test leaves its tables
+  when it moves them back to their old names, or an adoption in the same start as a change to a
+  table with a key. PostgreSQL and SQLite read the catalog without waiting. The catalog is now
+  read for the adoption before the transaction runs anything (`ReadCatalogForAdoption`); a key
+  drop changes no table name, so the snapshot still answers which tables exist. Cover:
+  `TableNamingIntegrationTests.OldNameTablesWithAKeyBetweenThem_AreRenamed_AndTheKeyIsCreatedAgain`
+  on every engine, which timed out on SQL Server before the fix.
+
+### The test database could not drop a key column (November 2026)
+
+- **`DropColumnsSql` did not drop a column's foreign key.** It dropped the column's `NCI_` index
+  and `DF_` default on SQL Server and its `NCI_` and `UQ_` indexes on SQLite, as it did before
+  foreign keys, so once a child's `Parent` carried `FK_<table>_Parent` both engines refused to drop
+  the column. A store's test that takes a child table back to a shape from before its rows were
+  children failed on SQL Server and SQLite and passed on PostgreSQL, which drops the key with the
+  column. SQL Server's statement now drops every key on the column first, found in the catalog
+  rather than by its name. SQLite cannot drop a column a key uses at all, because the key is part
+  of the column's definition, so `NucleusTestDatabase.DropColumnsAsync` (new, virtual) rebuilds the
+  table without the columns there, by SQLite's own procedure, and runs the statement elsewhere.
+  Cover: `AddColumnIntegrationTests.AKeyColumn_DroppedByTheTestDatabase_IsAddedBackWithItsKey` on
+  every engine.
+- **Four foreign key tests relied on the keys without the schema lock.**
+  `EveryReference_HasAKeyInTheDatabase_AndTheSchemaIsCurrent` checks the whole schema, and three
+  others expect a key to refuse a write or a delete, while
+  `AKeyOverRowsThatPointAtNothing_IsCreatedUnchecked_WithAWarning_AndChecksNewRows` drops the
+  resident key under the lock. Run by the other target framework meanwhile, the orphan test's
+  resident was written with no key to refuse it and left behind, and every later start created
+  the key unchecked over it, so `ARebuildOfATableKeysPointAt_KeepsItsRows_AndTheKeys` failed on
+  every run after. The four take the schema lock.
+
 ### A broken foreign key did not say which reference (November 2026)
 
 - **A key violation was a plain `DatabaseException`.** A caller could tell it was a key, not which

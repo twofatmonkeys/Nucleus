@@ -86,6 +86,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task EveryReference_HasAKeyInTheDatabase_AndTheSchemaIsCurrent()
         {
             var manager = Manager();
+            using var schema = await Fixture.SchemaLockAsync();
             var provider = (RelationalDataProvider)manager.Providers.GetProvider(typeof(IntKeyResident));
 
             Assert.Contains(provider.Schema.GetTableSchema(typeof(IntKeyResident))!.ForeignKeys, k => k.Column.ColumnName == "Keeper");
@@ -97,6 +98,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task ARowPointingAtARowThatIsNotThere_IsRefused_AndNothingIsWritten()
         {
             var manager = Manager();
+            using var schema = await Fixture.SchemaLockAsync();
             var name = Tag("fk-orphan");
             // Not forceSave: the keeper is never written, so the resident would point at nothing.
             var resident = new IntKeyResident { Name = name, Keeper = new IntKeyKeeper { Name = name } };
@@ -112,6 +114,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task ARefusedDelete_NamesTheReferenceThatStillPointsAtTheRow()
         {
             var manager = Manager();
+            using var schema = await Fixture.SchemaLockAsync();
             var name = Tag("fk-named");
             var keeper = new IntKeyKeeper { Name = name };
             await manager.SaveAsync(keeper, Ct);
@@ -180,6 +183,7 @@ namespace TFM.Nucleus.IntegrationTests
         public async Task AHardDelete_ClearsWhatSoftDeletedRowsPointAt_ButALiveRowStillStopsIt()
         {
             var manager = Manager();
+            using var schema = await Fixture.SchemaLockAsync();
             var name = Tag("fk-soft");
             var gone = new IntKeyKeeper { Name = $"{name}-gone" };
             var kept = new IntKeyKeeper { Name = $"{name}-kept" };

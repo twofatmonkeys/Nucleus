@@ -77,8 +77,17 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
     public override string DeleteAllSql(string table) => $"DELETE FROM [dbo].[{table}]";
 
     /// <inheritdoc />
-    /// <remarks>A column cannot be dropped while an index or a default constraint depends on it, so those go first.</remarks>
-    public override string DropColumnsSql(string table, params string[] columns) => string.Concat(columns.Select(c =>
+    /// <remarks>
+    /// A column cannot be dropped while a foreign key, an index or a default constraint depends on
+    /// it, so those go first. The keys on the column are found in the catalog, whatever their names,
+    /// and dropped by dynamic SQL, with a variable per column so one batch declares each once.
+    /// </remarks>
+    public override string DropColumnsSql(string table, params string[] columns) => string.Concat(columns.Select((c, i) =>
+        $"DECLARE @fk{i} nvarchar(max); SET @fk{i} = N''; " +
+        $"SELECT @fk{i} = @fk{i} + N'ALTER TABLE [dbo].[{table}] DROP CONSTRAINT ' + QUOTENAME(fk.name) + N'; ' " +
+        "FROM sys.foreign_keys fk JOIN sys.foreign_key_columns fc ON fc.constraint_object_id = fk.object_id " +
+        $"WHERE fk.parent_object_id = OBJECT_ID(N'dbo.{table}') AND COL_NAME(fc.parent_object_id, fc.parent_column_id) = N'{c}'; " +
+        $"IF @fk{i} <> N'' EXEC (@fk{i}); " +
         $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'NCI_{table}_{c}' AND object_id = OBJECT_ID(N'dbo.{table}')) DROP INDEX [NCI_{table}_{c}] ON [dbo].[{table}]; " +
         $"IF OBJECT_ID(N'dbo.DF_{table}_{c}', N'D') IS NOT NULL ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [DF_{table}_{c}]; " +
         $"ALTER TABLE [dbo].[{table}] DROP COLUMN [{c}]; "));

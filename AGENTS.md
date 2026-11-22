@@ -82,7 +82,8 @@ everything else reads `TableSchema.TableName`. `BuildSchema` refuses two types w
 and an old name that is another type's table. A missing table with exactly one old table present
 (`[LegacyTableNames]`, or its full-name form when `RenameFullNameTables` is set) is renamed by
 `ISchemaDialect.AdoptTable` inside the schema transaction, compared again and updated like any
-existing table; several old tables fail the update rather than being merged. The provider
+existing table (the catalog is read for it before the transaction runs anything, because on SQL
+Server the catalog reader waits on the transaction's own key drops); several old tables fail the update rather than being merged. The provider
 SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalProviderOptions`,
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
