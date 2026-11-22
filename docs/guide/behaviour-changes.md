@@ -3,6 +3,13 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A broken foreign key names the reference
+
+- **A key violation is a `ForeignKeyViolationException`**, a `DatabaseException` of kind
+  `ForeignKeyViolation` as before, which names the reference whose key broke (`EntityType`,
+  `PropertyName`, `ColumnName`, `ReferencedType`, `Is<T>(name)`). A `catch (DatabaseException)`
+  still catches it. SQLite does not name the key, so there the names are null.
+
 ## Foreign keys on SQLite
 
 - **SQLite keeps the same foreign keys as the other engines**, in each key column's definition (see

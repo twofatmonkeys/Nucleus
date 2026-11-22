@@ -76,6 +76,13 @@ namespace TFM.Nucleus.Data.SQLite
         /// [TableIndex] with exactly those keys in that order. A primary key violation is the
         /// table's PK_ name, which Nucleus does not manage, so it resolves to no rule.
         /// </summary>
+        /// <summary>SQLite reports a broken key (787) without naming it, so the exception names no reference.</summary>
+        protected override bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName)
+        {
+            physicalKeyName = null;
+            return SqliteErrors.Classify(exception).Kind == DatabaseErrorKind.ForeignKeyViolation;
+        }
+
         protected override bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName)
         {
             physicalIndexName = null;

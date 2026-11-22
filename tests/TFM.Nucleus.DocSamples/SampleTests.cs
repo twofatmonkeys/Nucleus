@@ -85,6 +85,10 @@ namespace PortlyPrimate
             var desk = new KeeperDesk(sanctuary.Data);
             await desk.WeighAsync(gerald, new WeighIn { MonkeyName = "Gerald", WeightKg = 14.6m, Notes = "Gerald: no change" }, Ct);
             Assert.Equal("Gerald", (await desk.FindAsync(gerald.ID, Ct))!.Name);
+
+            var (refused, reportedBy) = await Samples.ForeignKeyViolationAsync(Ct);
+            Assert.True(refused);
+            Assert.Null(reportedBy);
         }
 
         [Fact]

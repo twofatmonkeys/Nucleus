@@ -79,6 +79,13 @@ It is a [`DatabaseException`](#failures) of kind `UniqueViolation`, never transi
 provider's own exception as its inner exception. The manager's `Save` and `SaveAsync` throw it as
 it is, not wrapped, so the filters below work on them as they do on a context's save.
 
+A broken foreign key is a `ForeignKeyViolationException`, of kind `ForeignKeyViolation`, never
+transient, thrown as it is in the same way (see [Foreign keys](schema.md#foreign-keys)). It names the
+reference whose key broke, which is the side that points: `EntityType`, `PropertyName` and
+`ColumnName` are the entity and the property holding the reference, `ReferencedType` the entity it
+points at, and `Is<T>(name)` tests for it. On a refused delete they name the entity still pointing
+at the row. SQLite does not say which key broke, so there the names are null and `Is<T>` is false.
+
 <!-- sample: unique-violation -->
 ```csharp
 try

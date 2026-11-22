@@ -126,7 +126,9 @@ are created and compared by their keys alone. I/O in the dialect interfaces take
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
-the rule once, on the failure path only. It derives from `DatabaseException` (Abstractions), which
+the rule once, on the failure path only. A broken foreign key is a `ForeignKeyViolationException`
+(Abstractions) naming the reference on the side that points, mapped the same way from the key name
+a provider's `TryGetForeignKeyViolation` gives (none on SQLite, which does not name the key). It derives from `DatabaseException` (Abstractions), which
 every database failure is, on every path (open, read, write, delete, commit, rollback, schema,
 subscription), one level over the driver's exception: `Kind`, `IsTransient` (worth another
 attempt and nothing applied), `MayHaveBeenApplied`, `Operation` and `Attempts`. A provider names its
