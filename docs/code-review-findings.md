@@ -370,6 +370,27 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### A failed cache refresh retried on every read, and the cache handed out its list (November 2026)
+
+- **A failed refresh retried on every read, silently.** When a background refresh failed (the
+  database down, say), `NucleusCache.Refresh` reset `RefreshScheduled` and the entry was still past
+  its interval, so the next cached read started another background load, and so did every read
+  after it for as long as the outage lasted; the failure was swallowed, because the cache had no
+  logger. It predates the refresh fix above. The entry now carries `NextRefreshTicks`, set one
+  `refreshInterval` after a failure and written before the flag is reset, and a refresh starts
+  only past it; the failure is logged as a warning through `NucleusCache.Logger`, which the
+  manager sets to its own logger. Cover:
+  `Refresh_ThatFails_WaitsOneIntervalBeforeTheNext_AndKeepsServingTheCachedRows`,
+  `Refresh_ThatFails_LogsOneWarning` and `TheManager_GivesTheCacheItsLogger_UnlessItHasOne`.
+- **The public `NucleusCache.GetOrLoad` handed out the cache's own list.** It is reachable through
+  `ObjectDataManager.Cache`, so a caller that edited it changed it for every reader, and since the
+  cached stream read that list, an edit while a query of every row was enumerated threw
+  "Collection was modified". The cache now keeps its rows as an array it builds at the fill and
+  no caller holds; `GetOrLoad` and `GetOrLoadAsync` return a copy (the one copy rule, moved from
+  the manager into the cache), and the stream reads the array (`RowsAsync`). Cover:
+  `GetOrLoad_ReturnsAListOfTheCallersOwn` and
+  `EditingAListTheCacheHandedOut_DuringAStream_DoesNotBreakTheStream`.
+
 ### Queryable operators read every match, and the cache had one fill path (November 2026)
 
 - **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable loaded every match and

@@ -455,7 +455,9 @@ Each read of every row returns a list of its own, so adding to it or removing fr
 nothing for anyone else. The objects in it are shared by every caller, so a change to one is seen
 by every reader of the cache before it is saved.
 Past `refreshInterval` a read still gets the cached rows at once while they are read again in the
-background; past `cacheLifetime` the read waits for them.
+background; past `cacheLifetime` the read waits for them. A background read that fails is logged
+as a warning, the cached rows stay, and the next background read starts one `refreshInterval`
+later.
 
 A `[Cacheable]` type cannot have a lazy (`[RetrieveOnDemand]`) child collection, and cannot be the
 one side of a linked collection: its cached instances are shared by every caller.

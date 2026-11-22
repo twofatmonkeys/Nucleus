@@ -3,16 +3,18 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace TFM.Nucleus.Data
 {
     /// <summary>
     /// The layered in-memory cache for [Cacheable] entity types. Each entry holds the type's
-    /// whole unfiltered collection plus a Guid index over it, so LoadAll and LoadByID are both
+    /// whole unfiltered rows plus a Guid index over them, so LoadAll and LoadByID are both
     /// O(1). Population is single-flight (concurrent misses share one load), on the synchronous
     /// or the asynchronous path. CacheLifetime is a hard expiry; CacheRefreshInterval serves the
-    /// stale entry while a background load replaces it. Hand-rolled, with no external caching
-    /// dependency.
+    /// stale entry while a background load replaces it, and a failed refresh waits one interval
+    /// before the next. The rows are an array only the cache holds: every list it hands out is a
+    /// copy over the shared objects. Hand-rolled, with no external caching dependency.
     /// </summary>
     public sealed class NucleusCache
     {
@@ -24,19 +26,34 @@ namespace TFM.Nucleus.Data
             _clock = clock ?? (() => DateTimeOffset.UtcNow);
         }
 
+        /// <summary>
+        /// Where a failed background refresh is reported. The manager sets it to its own logger
+        /// when it has one and the cache has none, so a cache shared by several managers keeps
+        /// the first one's.
+        /// </summary>
+        internal ILogger? Logger { get; set; }
+
         private sealed class CacheEntry
         {
-            public required object Collection { get; init; }
+            /// <summary>The rows, a <c>T[]</c> no caller holds, so nothing outside can change it.</summary>
+            public required object Rows { get; init; }
             public required ConcurrentDictionary<Guid, ICoreObject> Index { get; init; }
             public required DateTimeOffset PopulatedAt { get; init; }
             public int RefreshScheduled;
+
+            /// <summary>
+            /// The earliest time, in UTC ticks, a refresh may start: the population time, and one
+            /// refresh interval after a failed refresh, so a database that is down sees at most
+            /// one background load per interval.
+            /// </summary>
+            public long NextRefreshTicks;
         }
 
         /// <summary>
-        /// Returns the cached collection for <typeparamref name="T"/>, loading it (single-flight)
-        /// on a miss or hard expiry. Past the refresh interval the stale collection is returned
-        /// immediately and a background load replaces it. A fill already running on the
-        /// asynchronous path is waited for.
+        /// Returns the cached rows of <typeparamref name="T"/> as a list of the caller's own over
+        /// the shared objects, loading them (single-flight) on a miss or hard expiry. Past the
+        /// refresh interval the stale rows are returned immediately and a background load replaces
+        /// them. A fill already running on the asynchronous path is waited for.
         /// </summary>
         public NucleusCollection<T> GetOrLoad<T>(IObjectSchema schema, Func<NucleusCollection<T>> loader, bool forceRefresh = false)
             where T : ICoreObject<T>, new()
@@ -44,7 +61,7 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(loader);
             // A synchronous caller waits on the database anyway. An asynchronous fill runs on the
             // thread pool, so waiting for it here cannot block its own continuation.
-            return (NucleusCollection<T>)EntryTask<T>(schema, loader, null, forceRefresh).GetAwaiter().GetResult().Collection;
+            return CopyOf(RowsOf<T>(EntryTask<T>(schema, loader, null, forceRefresh).GetAwaiter().GetResult()));
         }
 
         /// <summary>
@@ -55,11 +72,35 @@ namespace TFM.Nucleus.Data
         /// </summary>
         internal async Task<NucleusCollection<T>> GetOrLoadAsync<T>(IObjectSchema schema, Func<CancellationToken, Task<NucleusCollection<T>>> loader,
             bool forceRefresh, CancellationToken cancellationToken)
+            where T : ICoreObject<T>, new() =>
+            CopyOf(await RowsAsync<T>(schema, loader, forceRefresh, cancellationToken).ConfigureAwait(false));
+
+        /// <summary>
+        /// The cached rows themselves, filled as <see cref="GetOrLoadAsync{T}"/> fills them, with
+        /// no copy: for a reader that only reads, such as a stream. Nothing changes the array once
+        /// it is built.
+        /// </summary>
+        internal async Task<IReadOnlyList<T>> RowsAsync<T>(IObjectSchema schema, Func<CancellationToken, Task<NucleusCollection<T>>> loader,
+            bool forceRefresh, CancellationToken cancellationToken)
             where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(loader);
-            var entry = await EntryTask<T>(schema, null, loader, forceRefresh).WaitAsync(cancellationToken).ConfigureAwait(false);
-            return (NucleusCollection<T>)entry.Collection;
+            return RowsOf<T>(await EntryTask<T>(schema, null, loader, forceRefresh).WaitAsync(cancellationToken).ConfigureAwait(false));
+        }
+
+        private static T[] RowsOf<T>(CacheEntry entry) => (T[])entry.Rows;
+
+        /// <summary>
+        /// A list of the caller's own over the cached objects, so adding to or removing from it
+        /// changes nothing for any other reader. The objects are shared.
+        /// </summary>
+        private static NucleusCollection<T> CopyOf<T>(IReadOnlyList<T> rows) where T : ICoreObject<T>, new()
+        {
+            var copy = new NucleusCollection<T>();
+            // The rows are always the cache's array, which List<T>.AddRange copies in one step;
+            // the collection's own Add raises an event per object.
+            ((List<T>)copy).AddRange(rows);
+            return copy;
         }
 
         /// <summary>
@@ -136,7 +177,8 @@ namespace TFM.Nucleus.Data
             }
 
             var entry = task.Result;
-            var age = _clock() - entry.PopulatedAt;
+            var now = _clock();
+            var age = now - entry.PopulatedAt;
             if (schema.CacheLifetime > 0 && age >= TimeSpan.FromSeconds(schema.CacheLifetime))
             {
                 // Hard expiry: reload in-line (single-flight via the replacing Lazy).
@@ -144,9 +186,13 @@ namespace TFM.Nucleus.Data
                 return EntryTask(schema, load, loadAsync, forceRefresh: false);
             }
 
-            if (schema.CacheRefreshInterval > 0 && age >= TimeSpan.FromSeconds(schema.CacheRefreshInterval) &&
-                Interlocked.CompareExchange(ref entry.RefreshScheduled, 1, 0) == 0)
-                Refresh(type, lazy, entry, load, loadAsync);
+            if (schema.CacheRefreshInterval > 0)
+            {
+                var interval = TimeSpan.FromSeconds(schema.CacheRefreshInterval);
+                if (age >= interval && now.UtcTicks >= Volatile.Read(ref entry.NextRefreshTicks) &&
+                    Interlocked.CompareExchange(ref entry.RefreshScheduled, 1, 0) == 0)
+                    Refresh(type, lazy, entry, interval, load, loadAsync);
+            }
 
             return task;
         }
@@ -169,9 +215,11 @@ namespace TFM.Nucleus.Data
         /// Loads the type again in the background while readers keep the stale entry, then swaps
         /// the new entry in, but only over the entry it refreshes: an eviction meanwhile (a save or
         /// a delete) or a newer load wins, so a refresh that read before a save cannot bring back
-        /// what the save changed.
+        /// what the save changed. A failed refresh keeps the stale entry, is logged, and lets the
+        /// next refresh start only one <paramref name="interval"/> later: retried on the next
+        /// read, a database that was down took a background load per cached read.
         /// </summary>
-        private void Refresh<T>(Type type, Lazy<Task<CacheEntry>> stale, CacheEntry entry, Func<NucleusCollection<T>>? load,
+        private void Refresh<T>(Type type, Lazy<Task<CacheEntry>> stale, CacheEntry entry, TimeSpan interval, Func<NucleusCollection<T>>? load,
             Func<CancellationToken, Task<NucleusCollection<T>>>? loadAsync)
             where T : ICoreObject<T>, new()
         {
@@ -182,10 +230,15 @@ namespace TFM.Nucleus.Data
                     var collection = loadAsync != null ? await loadAsync(CancellationToken.None).ConfigureAwait(false) : load!();
                     _entries.TryUpdate(type, new Lazy<Task<CacheEntry>>(Task.FromResult(Build(collection))), stale);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // The stale entry stays; the next read past the interval tries again.
+                    // The wait is written before the flag is reset, so no reader sees the reset
+                    // without it.
+                    Volatile.Write(ref entry.NextRefreshTicks, (_clock() + interval).UtcTicks);
                     Interlocked.Exchange(ref entry.RefreshScheduled, 0);
+                    Logger?.LogWarning(ex,
+                        "Refreshing the cached {EntityType} rows failed. The cached rows are still served, and the next refresh starts in {Seconds} s.",
+                        type.FullName, interval.TotalSeconds);
                 }
             });
         }
@@ -213,14 +266,18 @@ namespace TFM.Nucleus.Data
 
         private CacheEntry Build<T>(NucleusCollection<T> collection) where T : ICoreObject<T>, new()
         {
+            // The loader's list is not kept: the cache reads only an array no caller holds.
+            T[] rows = [.. collection];
             var index = new ConcurrentDictionary<Guid, ICoreObject>();
-            foreach (var obj in collection)
+            foreach (var obj in rows)
                 index[obj.ID] = obj;
+            var populatedAt = _clock();
             return new CacheEntry
             {
-                Collection = collection,
+                Rows = rows,
                 Index = index,
-                PopulatedAt = _clock(),
+                PopulatedAt = populatedAt,
+                NextRefreshTicks = populatedAt.UtcTicks,
             };
         }
     }

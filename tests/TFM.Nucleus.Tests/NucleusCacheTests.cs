@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace TFM.Nucleus.Tests
 {
     [Cacheable(refreshInterval: 0, cacheLifetime: 300)]
@@ -21,6 +23,13 @@ namespace TFM.Nucleus.Tests
         private static IObjectSchema Schema<T>() where T : ICoreObject<T>, new() => new ObjectSchemaProvider().Get<T>()!;
 
         private static NucleusCollection<T> Collection<T>() where T : ICoreObject<T>, new() => [new T()];
+
+        /// <summary>
+        /// True when <paramref name="actual"/> is a list of its own holding the one object
+        /// <paramref name="loaded"/> held: the cache hands out copies, never the loader's list.
+        /// </summary>
+        private static bool Holds<T>(NucleusCollection<T> loaded, NucleusCollection<T> actual) where T : ICoreObject<T>, new() =>
+            !ReferenceEquals(loaded, actual) && actual.Count == 1 && ReferenceEquals(loaded[0], actual[0]);
 
         private sealed class TestClock
         {
@@ -203,9 +212,9 @@ namespace TFM.Nucleus.Tests
             var loaded = Collection<CachedWidget>();
             gate.SetResult(loaded);
 
-            Assert.Same(loaded, await first);
-            Assert.Same(loaded, await second);
-            Assert.Same(loaded, await third);
+            Assert.True(Holds(loaded, await first));
+            Assert.True(Holds(loaded, await second));
+            Assert.True(Holds(loaded, await third));
             Assert.Equal(1, loads);
         }
 
@@ -224,7 +233,7 @@ namespace TFM.Nucleus.Tests
 
             var loaded = Collection<CachedWidget>();
             gate.SetResult(loaded);
-            Assert.Same(loaded, await staying);
+            Assert.True(Holds(loaded, await staying));
             Assert.True(cache.IsCached(typeof(CachedWidget)));
         }
 
@@ -239,7 +248,7 @@ namespace TFM.Nucleus.Tests
             Assert.False(cache.IsCached(typeof(CachedWidget)));
 
             var loaded = Collection<CachedWidget>();
-            Assert.Same(loaded, await cache.GetOrLoadAsync<CachedWidget>(schema, _ => Task.FromResult(loaded), false, Ct));
+            Assert.True(Holds(loaded, await cache.GetOrLoadAsync<CachedWidget>(schema, _ => Task.FromResult(loaded), false, Ct)));
         }
 
         [Fact]
@@ -251,7 +260,7 @@ namespace TFM.Nucleus.Tests
             Assert.Throws<InvalidOperationException>(() => cache.GetOrLoad<CachedWidget>(schema, () => throw new InvalidOperationException("down")));
 
             var loaded = Collection<CachedWidget>();
-            Assert.Same(loaded, cache.GetOrLoad(schema, () => loaded));
+            Assert.True(Holds(loaded, cache.GetOrLoad(schema, () => loaded)));
         }
 
         [Fact]
@@ -273,15 +282,15 @@ namespace TFM.Nucleus.Tests
             }
 
             // The read past the interval is answered at once and starts the reload in the background.
-            Assert.Same(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct));
+            Assert.True(Holds(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct)));
             Assert.True(SpinWait.SpinUntil(() => Volatile.Read(ref reloads) == 1, TimeSpan.FromSeconds(10)));
             // Reads while it runs still get the stale entry, and start no second reload.
-            Assert.Same(stale, cache.GetOrLoad<RefreshingWidget>(schema, () => throw new InvalidOperationException("a load in-line")));
+            Assert.True(Holds(stale, cache.GetOrLoad<RefreshingWidget>(schema, () => throw new InvalidOperationException("a load in-line"))));
 
             var fresh = Collection<RefreshingWidget>();
             gate.SetResult(fresh);
             Assert.True(SpinWait.SpinUntil(
-                () => ReferenceEquals(fresh, cache.GetOrLoad<RefreshingWidget>(schema, () => throw new InvalidOperationException("a load in-line"))),
+                () => Holds(fresh, cache.GetOrLoad<RefreshingWidget>(schema, () => throw new InvalidOperationException("a load in-line"))),
                 TimeSpan.FromSeconds(10)));
             Assert.Equal(1, reloads);
         }
@@ -307,8 +316,158 @@ namespace TFM.Nucleus.Tests
             await Task.Delay(100, Ct); // give the background reload time to try its swap
 
             var afterTheSave = Collection<RefreshingWidget>();
-            Assert.Same(afterTheSave, cache.GetOrLoad(schema, () => afterTheSave));
+            Assert.True(Holds(afterTheSave, cache.GetOrLoad(schema, () => afterTheSave)));
         }
+
+        [Fact]
+        public void GetOrLoad_ReturnsAListOfTheCallersOwn()
+        {
+            var cache = new NucleusCache();
+            var schema = Schema<CachedWidget>();
+            var loaded = Collection<CachedWidget>();
+
+            var mine = cache.GetOrLoad(schema, () => loaded);
+            var theirs = cache.GetOrLoad<CachedWidget>(schema, () => throw new InvalidOperationException("a second load"));
+            Assert.NotSame(mine, theirs);
+
+            // Neither the caller's list nor the loader's reaches what the cache reads.
+            mine.Clear();
+            mine.Add(new CachedWidget { Name = "added by one caller" });
+            loaded.Clear();
+
+            Assert.True(Holds(Collection(theirs[0]), cache.GetOrLoad<CachedWidget>(schema, () => throw new InvalidOperationException("a second load"))));
+            Assert.True(cache.TryGetById<CachedWidget>(theirs[0].ID, out var found));
+            Assert.Same(theirs[0], found);
+        }
+
+        [Fact]
+        public async Task EditingAListTheCacheHandedOut_DuringAStream_DoesNotBreakTheStream()
+        {
+            // The stream reads the cache's rows directly. When the public GetOrLoad handed out the
+            // cache's own list, editing it part-way through a stream threw "Collection was modified".
+            var (manager, provider, _) = NewManager();
+            provider.SetupRows<CachedWidget>(Row("one"), Row("two"), Row("three"));
+            var streamed = new List<CachedWidget>();
+
+            await foreach (var widget in manager.Get<CachedWidget>().WithCancellation(Ct))
+            {
+                streamed.Add(widget);
+                var handedOut = manager.Cache.GetOrLoad<CachedWidget>(Schema<CachedWidget>(), () => throw new InvalidOperationException("a second load"));
+                handedOut.Clear();
+                handedOut.Add(new CachedWidget { Name = "added by a caller" });
+            }
+
+            Assert.Equal(["one", "two", "three"], streamed.Select(w => w.Name));
+            Assert.Equal(3, manager.Load<CachedWidget>().Count);
+        }
+
+        [Fact]
+        public async Task Refresh_ThatFails_WaitsOneIntervalBeforeTheNext_AndKeepsServingTheCachedRows()
+        {
+            var clock = new TestClock();
+            var cache = new NucleusCache(() => clock.Now);
+            var schema = Schema<RefreshingWidget>();
+            var stale = Collection<RefreshingWidget>();
+            await cache.GetOrLoadAsync<RefreshingWidget>(schema, _ => Task.FromResult(stale), false, Ct);
+            var attempts = 0;
+            var fresh = Collection<RefreshingWidget>();
+            var down = true;
+            Task<NucleusCollection<RefreshingWidget>> Reload(CancellationToken _)
+            {
+                Interlocked.Increment(ref attempts);
+                return Volatile.Read(ref down)
+                    ? Task.FromException<NucleusCollection<RefreshingWidget>>(new InvalidOperationException("the database is down"))
+                    : Task.FromResult(fresh);
+            }
+
+            // Past the interval of 60 s: the read gets the cached rows and starts a refresh, which fails.
+            clock.Now = clock.Now.AddSeconds(61);
+            Assert.True(Holds(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct)));
+            Assert.True(SpinWait.SpinUntil(() => Volatile.Read(ref attempts) == 1, TimeSpan.FromSeconds(10)));
+            await Task.Delay(50, Ct); // the failure resets the refresh after the attempt is counted
+
+            // Reads straight after, and up to a whole interval after the failure, start no refresh.
+            for (var i = 0; i < 5; i++)
+                Assert.True(Holds(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct)));
+            clock.Now = clock.Now.AddSeconds(59);
+            Assert.True(Holds(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct)));
+            await Task.Delay(50, Ct);
+            Assert.Equal(1, Volatile.Read(ref attempts));
+
+            // One interval after the failure the next read starts one refresh, which succeeds.
+            Volatile.Write(ref down, false);
+            clock.Now = clock.Now.AddSeconds(1);
+            Assert.True(Holds(stale, await cache.GetOrLoadAsync<RefreshingWidget>(schema, Reload, false, Ct)));
+            Assert.True(SpinWait.SpinUntil(
+                () => Holds(fresh, cache.GetOrLoad<RefreshingWidget>(schema, () => throw new InvalidOperationException("a load in-line"))),
+                TimeSpan.FromSeconds(10)));
+            Assert.Equal(2, Volatile.Read(ref attempts));
+        }
+
+        [Fact]
+        public async Task Refresh_ThatFails_LogsOneWarning()
+        {
+            var clock = new TestClock();
+            var log = new CapturingLogger();
+            var cache = new NucleusCache(() => clock.Now) { Logger = log };
+            var schema = Schema<RefreshingWidget>();
+            await cache.GetOrLoadAsync<RefreshingWidget>(schema, _ => Task.FromResult(Collection<RefreshingWidget>()), false, Ct);
+            var down = new InvalidOperationException("the database is down");
+
+            clock.Now = clock.Now.AddSeconds(61);
+            await cache.GetOrLoadAsync<RefreshingWidget>(schema, _ => Task.FromException<NucleusCollection<RefreshingWidget>>(down), false, Ct);
+            Assert.True(SpinWait.SpinUntil(() => log.Count == 1, TimeSpan.FromSeconds(10)));
+            await cache.GetOrLoadAsync<RefreshingWidget>(schema, _ => Task.FromException<NucleusCollection<RefreshingWidget>>(down), false, Ct);
+            await Task.Delay(50, Ct);
+
+            var entry = Assert.Single(log.Entries);
+            Assert.Equal(LogLevel.Warning, entry.Level);
+            Assert.Same(down, entry.Exception);
+            Assert.Contains(typeof(RefreshingWidget).FullName!, entry.Message);
+        }
+
+        [Fact]
+        public void TheManager_GivesTheCacheItsLogger_UnlessItHasOne()
+        {
+            var mine = new CapturingLogger<ObjectDataManager>();
+            var manager = new ObjectDataManager(new DataProviderRegistry([new FakeDataProvider()]), new ObjectSchemaProvider(), mine);
+            Assert.Same(mine, manager.Cache.Logger);
+
+            var first = new CapturingLogger();
+            var shared = new NucleusCache { Logger = first };
+            var second = new ObjectDataManager(new DataProviderRegistry([new FakeDataProvider()]), new ObjectSchemaProvider(), mine, cache: shared);
+            Assert.Same(first, second.Cache.Logger);
+        }
+
+        private static NucleusCollection<T> Collection<T>(T obj) where T : ICoreObject<T>, new() => [obj];
+
+        /// <summary>Records what is logged, for the refresh failure tests.</summary>
+        private class CapturingLogger : ILogger
+        {
+            private readonly List<(LogLevel Level, Exception? Exception, string Message)> _entries = [];
+
+            public IReadOnlyList<(LogLevel Level, Exception? Exception, string Message)> Entries
+            {
+                get { lock (_entries) return [.. _entries]; }
+            }
+
+            public int Count
+            {
+                get { lock (_entries) return _entries.Count; }
+            }
+
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                lock (_entries)
+                    _entries.Add((logLevel, exception, formatter(state, exception)));
+            }
+        }
+
+        private sealed class CapturingLogger<T> : CapturingLogger, ILogger<T>;
 
         [Fact]
         public void LoadAll_NonCacheableType_AlwaysHitsProvider()
