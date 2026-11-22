@@ -182,8 +182,26 @@ public abstract class NucleusTestDatabase
     /// <summary>Deletes every row of the table.</summary>
     public abstract string DeleteAllSql(string table);
 
-    /// <summary>Drops columns from a table, with whatever index or default depends on them.</summary>
+    /// <summary>
+    /// Drops columns from a table, with whatever foreign key, index or default depends on them. On
+    /// SQLite a foreign key is part of its column's definition and <c>DROP COLUMN</c> refuses a
+    /// column that has one, so this statement fails there for a key column, such as a child's
+    /// <c>Parent</c>; <see cref="DropColumnsAsync"/> drops any column on every engine.
+    /// </summary>
     public abstract string DropColumnsSql(string table, params string[] columns);
+
+    /// <summary>
+    /// Drops columns from a table, with whatever foreign key, index or default depends on them, on
+    /// every engine. It runs <see cref="DropColumnsSql"/>, except on SQLite when a column has a
+    /// foreign key: the table is then rebuilt without the columns, keeping its rows, its other
+    /// columns' definitions and the indexes that do not use them. Hold
+    /// <see cref="SchemaLockAsync"/> around it and the stack that puts the columns back.
+    /// </summary>
+    public virtual Task DropColumnsAsync(string table, IEnumerable<string> columns, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(columns);
+        return ExecuteAsync(DropColumnsSql(table, [.. columns]), token);
+    }
 
     /// <summary>Drops the table when it exists.</summary>
     public abstract string DropTableIfExistsSql(string table);

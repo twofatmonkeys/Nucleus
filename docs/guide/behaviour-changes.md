@@ -3,6 +3,15 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## The test database drops key columns
+
+- **`DropColumnsSql` drops a column's foreign keys on SQL Server.** It dropped only the column's
+  index and default, so since foreign keys it failed on a key column such as a child's `Parent`.
+- **`DropColumnsAsync(table, columns)` drops any column on every engine.** SQLite cannot drop a
+  column a foreign key uses, so there it rebuilds the table without the columns, keeping the rows
+  and the other indexes; `DropColumnsSql` still fails on SQLite for a key column. A test that drops
+  a key column calls `DropColumnsAsync`, under the schema lock.
+
 ## A broken foreign key names the reference
 
 - **A key violation is a `ForeignKeyViolationException`**, a `DatabaseException` of kind

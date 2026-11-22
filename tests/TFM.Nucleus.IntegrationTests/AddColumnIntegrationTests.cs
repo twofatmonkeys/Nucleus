@@ -11,6 +11,8 @@ namespace TFM.Nucleus.IntegrationTests
     {
         private const string GrowingTable = "tbl_TFM_Nucleus_IntegrationTests_IntGrowingItem";
         private const string SoftTable = "tbl_TFM_Nucleus_IntegrationTests_IntGrowingSoftItem";
+        private const string OwnerTable = "tbl_TFM_Nucleus_IntegrationTests_IntGrowingOwner";
+        private const string PartTable = "tbl_TFM_Nucleus_IntegrationTests_IntGrowingPart";
         private const int Rows = 500;
 
         protected static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -100,6 +102,52 @@ namespace TFM.Nucleus.IntegrationTests
             finally
             {
                 await ExecuteAsync(DeleteAllSql(SoftTable));
+            }
+        }
+
+        // A child's Parent carries a foreign key, which every engine refuses to drop a column under:
+        // the test database's drop removes the key first, or on SQLite, where the key is part of the
+        // column, rebuilds the table without it. The next start adds the column and its key back.
+        [Fact]
+        public async Task AKeyColumn_DroppedByTheTestDatabase_IsAddedBackWithItsKey()
+        {
+            var manager = Fixture.RequireManager();
+            using var schema = await Fixture.SchemaLockAsync();
+            await ExecuteAsync(DeleteAllSql(PartTable));
+            await ExecuteAsync(DeleteAllSql(OwnerTable));
+            var owners = Enumerable.Range(0, 10).Select(i =>
+            {
+                var owner = new IntGrowingOwner { Name = $"owner-{i}" };
+                owner.Parts.Add(new IntGrowingPart { Name = $"part-{i}-a" });
+                owner.Parts.Add(new IntGrowingPart { Name = $"part-{i}-b" });
+                return owner;
+            }).ToList();
+            await manager.SaveAsync(owners);
+            try
+            {
+                await Fixture.Database.DropColumnsAsync(PartTable, ["Parent"], Ct);
+
+                using var stack = await Fixture.StartStackAsync(_ => { });
+
+                Assert.Equal(DataProviderStatus.Ok, stack.Provider.Status);
+                // A missing key, or its index, leaves the schema not current.
+                Assert.Equal(DataProviderStatus.Ok, await stack.Provider.CheckSchemaIsCurrentAsync());
+                Assert.Equal(owners.Count * 2, await Fixture.Database.RowCountAsync(PartTable, Ct));
+                var loaded = await stack.Manager.Get<IntGrowingOwner>().Where(o => o.Name!.StartsWith("owner-")).ToListAsync(Ct);
+                Assert.Equal(owners.Select(o => o.ID).Order(), loaded.Select(o => o.ID).Order());
+                // The rows lost their parent with the column.
+                Assert.All(loaded, o => Assert.Empty(o.Parts));
+
+                var fresh = new IntGrowingOwner { Name = "fresh" };
+                fresh.Parts.Add(new IntGrowingPart { Name = "fresh-part" });
+                await stack.Manager.SaveAsync(fresh, Ct);
+                var reloaded = await stack.Manager.LoadByIDAsync<IntGrowingOwner>(fresh.ID, cancellationToken: Ct);
+                Assert.Equal("fresh-part", Assert.Single(reloaded!.Parts).Name);
+            }
+            finally
+            {
+                await ExecuteAsync(DeleteAllSql(PartTable));
+                await ExecuteAsync(DeleteAllSql(OwnerTable));
             }
         }
 

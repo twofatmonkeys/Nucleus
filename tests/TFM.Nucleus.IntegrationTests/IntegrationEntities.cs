@@ -148,6 +148,25 @@ namespace TFM.Nucleus.IntegrationTests
         public int? Extra { get => GetValue<int?>(); set => SetValue(value); }
     }
 
+    /// <summary>
+    /// The owner of a child whose Parent column, which carries a foreign key, the add-column suite
+    /// drops from a populated table, as a table written before its rows were children would be.
+    /// </summary>
+    public class IntGrowingOwner : CoreObject<IntGrowingOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<IntGrowingPart, IntGrowingOwner> Parts => GetChildCollection<IntGrowingPart, IntGrowingOwner>();
+    }
+
+    [Deletable]
+    public class IntGrowingPart : CoreChildObject<IntGrowingPart, IntGrowingOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     /// <summary>A soft-deletable table that loses its soft-delete columns in the add-column suite.</summary>
     [Deletable(DeleteBehavior.Soft)]
     public class IntGrowingSoftItem : CoreObject<IntGrowingSoftItem>
