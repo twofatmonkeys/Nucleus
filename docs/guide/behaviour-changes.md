@@ -3,6 +3,17 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A saved object's Timestamp moves in memory
+
+- **Every row a save writes takes the client clock as its `Timestamp` when the save commits.**
+  Only a new object did: a loaded object kept the value it was loaded with after any number of
+  updates, though the server had stamped the row each time. Now the object the save was asked for,
+  and each child, link or member the save wrote because it was new or changed, takes the clock; a
+  row the save did not write keeps its value, as the stored row does. The rows of one save share
+  one value. A rollback puts back the value each object had before its first save in the
+  transaction. The stored value is still not read back, so the two differ by the clocks and the
+  engine's precision.
+
 ## A cancelled commit rolls back, and every open is retried
 
 - **A commit or rollback given a cancelled token rolls the transaction back.** `CommitAsync` threw

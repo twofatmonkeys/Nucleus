@@ -211,8 +211,11 @@ obsolete; it is public surface, so it stays until a major version. Found with li
 ### Timestamp in memory is the client clock (decided October 2026)
 
 The server stamps `Timestamp` on every write, and output parameters can now read a stored value
-back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock at the
-first save, and an update does not refresh it. Reading it back was measured with the save
+back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock. Until
+November 2026 that was the clock at the first save, and an update left a loaded object with its
+loaded value. Now every row a save wrote (the object saved, and each dependent that was new or
+changed) takes one boxed clock value per save when it commits, and a rollback puts the old value
+back, which costs one box per saved root and nothing per row. Reading it back was measured with the save
 benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`, 15 interleaved rounds, median
 overhead against the client clock), against a 2% bar:
 

@@ -50,10 +50,11 @@ namespace TFM.Nucleus
         /// When the row was last written. The server stamps the stored value on every write. A
         /// save writes the object saved and only the rows below it that are new or changed, so a
         /// child's stamp moves when the child changes, not on every save of its parent. The
-        /// value in memory is the client clock at the first commit and is not read back, because
-        /// reading it back slowed batched and bulk saves by 10% to 65% (see
-        /// docs/code-review-findings.md). Mark a column of your own ReturnOutputToProperty to have
-        /// a server value read back.
+        /// stamped value is not read back, because reading it back slowed batched and bulk saves
+        /// by 10% to 65% (see docs/code-review-findings.md). In memory, each row a save wrote
+        /// takes the client clock when the save is committed, so it is close to the stored value
+        /// but not equal to it. Mark a column of your own ReturnOutputToProperty to have a server
+        /// value read back.
         /// </summary>
         [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
             SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
@@ -86,10 +87,15 @@ namespace TFM.Nucleus
         /// was built from, before anything here is committed); every object commits its held
         /// children and forgets the removals the save deleted. With an <paramref name="undo"/>
         /// log, each object records what it changes first, so a transaction that does not commit
-        /// can put it back.
+        /// can put it back. <paramref name="stamp"/> is the boxed Timestamp of the commit, boxed
+        /// once by the root and shared by every row below it the save wrote.
         /// </summary>
-        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger, CommitUndoLog? undo)
+        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger, CommitUndoLog? undo, object? stamp = null)
         {
+            // The rows the save wrote, as RelationalDataProvider.WriteQueries decides: the object
+            // the save was asked for always, a dependent only when it has something of its own.
+            // Read before anything is committed, which clears both.
+            var written = isRootObj || SaveGraph.IsChanged(this);
             var graph = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]) : null;
             var links = graph?.Links ?? [];
             var members = graph?.Members ?? [];
@@ -116,10 +122,10 @@ namespace TFM.Nucleus
                 }
                 _serverValues.Clear();
             }
-            // Timestamp is stamped by the server but not read back, so a new object takes the
-            // local clock here. A loaded object keeps the value it was loaded with.
-            if (!_properties.ContainsKey(nameof(Timestamp)))
-                _properties[nameof(Timestamp)] = DateTimeOffset.Now;
+            // Timestamp is stamped by the server but not read back, so a row the save wrote takes
+            // the local clock here. A row it did not write keeps the value it was loaded with.
+            if (written)
+                _properties[nameof(Timestamp)] = stamp ??= DateTimeOffset.Now;
             _isNew = false;
             if (ObjectSchema.HasNucleusChildCollections)
                 foreach (var coll in NucleusChildCollections)
@@ -130,7 +136,7 @@ namespace TFM.Nucleus
                     {
                         // Not as a root: the root's graph already holds the links below its children.
                         if (child is CoreObject coreChild)
-                            coreChild.CommitChanges(false, false, null, undo);
+                            coreChild.CommitChanges(false, false, null, undo, stamp);
                         else
                             CommitDependent(child, undo);
                     }
@@ -144,7 +150,7 @@ namespace TFM.Nucleus
             foreach (var link in links)
             {
                 if (link is CoreObject coreLink)
-                    coreLink.CommitChanges(makeReadOnly, false, null, undo);
+                    coreLink.CommitChanges(makeReadOnly, false, null, undo, stamp);
                 else
                     CommitDependent(link, undo);
             }
@@ -153,7 +159,7 @@ namespace TFM.Nucleus
             foreach (var member in members)
             {
                 if (member is CoreObject coreMember)
-                    coreMember.CommitChanges(makeReadOnly, false, null, undo);
+                    coreMember.CommitChanges(makeReadOnly, false, null, undo, stamp);
                 else
                     CommitDependent(member, undo);
             }
@@ -178,7 +184,9 @@ namespace TFM.Nucleus
         private sealed class CommitUndo(CoreObject owner) : ICommitUndo
         {
             private readonly bool _wasNew = owner._isNew;
-            private readonly bool _hadTimestamp = owner._properties.ContainsKey(nameof(Timestamp));
+            // The Timestamp from before the first commit, which every commit that wrote the row moved.
+            private readonly (bool Had, object? Value) _timestamp =
+                owner._properties.TryGetValue(nameof(Timestamp), out var stamp) ? (true, stamp) : (false, null);
             // The stored value of each property a commit wrote, from before the first commit;
             // HadValue false when the property held nothing. Only for an object that was not new:
             // one that was new goes back to holding every value as a change.
@@ -260,8 +268,6 @@ namespace TFM.Nucleus
                     foreach (var pending in owner._newProperties)
                         owner._properties[pending.Key] = pending.Value;
                     owner._newProperties.Clear();
-                    if (!_hadTimestamp)
-                        owner._properties.Remove(nameof(Timestamp));
                     owner._isNew = true;
                 }
                 else if (_originals != null)
@@ -283,6 +289,10 @@ namespace TFM.Nucleus
                             owner._newProperties[key] = current;
                     }
                 }
+                if (_timestamp.Had)
+                    owner._properties[nameof(Timestamp)] = _timestamp.Value;
+                else
+                    owner._properties.Remove(nameof(Timestamp));
                 owner._isValidated = false;
                 if (_removals != null)
                     foreach (var (collection, removed) in _removals)

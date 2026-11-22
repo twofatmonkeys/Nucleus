@@ -207,6 +207,12 @@ namespace TFM.Nucleus.IntegrationTests
                 line.Breaks.Add(new IntRosterBreak { Minutes = 10 });
                 await SaveAsync(manager, loaded, path);
 
+                // In memory, the rows the save wrote take the client clock and the clean line keeps
+                // its loaded stamp. The client and server clocks differ, so only equality is checked.
+                Assert.NotEqual(before[loaded.ID], loaded.Timestamp);
+                Assert.NotEqual(before[pause.ID], pause.Timestamp);
+                Assert.Equal(before[line.ID], line.Timestamp);
+
                 var reloaded = await LoadRosterAsync(manager, name);
                 var after = Stamps(reloaded);
                 var reloadedLine = reloaded.Lines.Single(l => l.ID == line.ID);
