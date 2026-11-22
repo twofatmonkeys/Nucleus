@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.Data.SQLite
 {
@@ -18,6 +19,41 @@ namespace TFM.Nucleus.Data.SQLite
 
         /// <summary>SQLITE_CONSTRAINT_PRIMARYKEY: the primary key was violated.</summary>
         public const int PrimaryKeyViolation = 1555;
+
+        /// <summary>True when the failure is one another attempt may pass, such as an open that failed while the file was locked.</summary>
+        public static bool IsTransient(Exception exception) => Classify(exception).IsTransient;
+
+        /// <summary>
+        /// What the first SQLite error in the chain is. The driver does not say whether an error
+        /// is transient (<c>SqliteException.IsTransient</c> is always false), so it is read from the
+        /// result code: SQLITE_BUSY and SQLITE_LOCKED are a wait for another connection's lock
+        /// that ran out of <c>BusyTimeoutSeconds</c>, which another attempt can pass.
+        /// </summary>
+        public static DatabaseErrorClass Classify(Exception exception)
+        {
+            for (Exception? e = exception; e != null; e = e.InnerException)
+                if (e is SqliteException sqlite)
+                    return Classify(sqlite);
+            return DatabaseFailures.ClassifyDefault(exception);
+        }
+
+        private static DatabaseErrorClass Classify(SqliteException exception) => exception.SqliteExtendedErrorCode switch
+        {
+            UniqueViolation or PrimaryKeyViolation => new(DatabaseErrorKind.UniqueViolation, false),
+            // SQLITE_CONSTRAINT_FOREIGNKEY and SQLITE_CONSTRAINT_NOTNULL.
+            787 => new(DatabaseErrorKind.ForeignKeyViolation, false),
+            1299 => new(DatabaseErrorKind.NotNullViolation, false),
+            _ => exception.SqliteErrorCode switch
+            {
+                // SQLITE_BUSY and SQLITE_LOCKED, with every extended code of each.
+                5 or 6 => new(DatabaseErrorKind.Timeout, true),
+                // SQLITE_TOOBIG: a value over the engine's own size limit.
+                18 => new(DatabaseErrorKind.ValueTooLong, false),
+                // SQLITE_CANTOPEN and SQLITE_NOTADB: the file is missing, unreadable or not a database.
+                14 or 26 => new(DatabaseErrorKind.ConnectionFailed, false),
+                _ => DatabaseErrorClass.Other,
+            },
+        };
 
         private const string Marker = "constraint failed: ";
         private const string IndexMarker = "index '";

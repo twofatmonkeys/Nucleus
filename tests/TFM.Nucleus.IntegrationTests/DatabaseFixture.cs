@@ -25,6 +25,9 @@ namespace TFM.Nucleus.IntegrationTests
         /// </summary>
         public ObjectDataManager? Manager => (ObjectDataManager?)_stack?.Manager;
 
+        /// <summary>The warnings and errors the shared stack has logged.</summary>
+        public CapturingLoggerProvider? Log => _stack?.Log;
+
         /// <summary>The provider, in skip messages and lock names.</summary>
         public string ProviderName => Database.ProviderName;
 
@@ -79,6 +82,16 @@ namespace TFM.Nucleus.IntegrationTests
             RequireSettings();
             return Manager!;
         }
+
+        /// <summary>
+        /// Deletes the <see cref="IntWidget"/> rows whose name starts with <paramref name="prefix"/>.
+        /// IntWidget is not [Deletable], because a test checks that its delete is refused, so a test
+        /// that writes widgets cleans up with a statement of its own. Widgets left behind pile up
+        /// in the shared database, and a load whose condition scans the table slows with them.
+        /// </summary>
+        internal Task DeleteWidgetsAsync(string prefix, CancellationToken token) =>
+            Database.ExecuteAsync(
+                $"{Database.DeleteAllSql(NucleusEntityTable.For(typeof(IntWidget)).TableName)} WHERE \"Name\" LIKE '{prefix}%'", token);
 
         /// <summary>The cross-process lock of a suite that resets its tables, per provider.</summary>
         internal Task<NucleusTestLock> LockAsync(string suite) => Database.LockAsync(suite);

@@ -6,6 +6,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using TFM.Nucleus.Data.Providers;
 using TFM.Nucleus.Abstractions.Interfaces;
 
 namespace TFM.Nucleus.Data
@@ -17,8 +18,9 @@ namespace TFM.Nucleus.Data
     /// attached but not completed, on a context of its own through one provider. The objects read
     /// are bound to <c>linkLoader</c> when they are completed, and their lazy collections load
     /// through the same provider and loader, so everything below them reads from the same stack.
-    /// Retries and timeouts are the provider's: a connection open retries a transient failure, and
-    /// the command runs under the provider's command timeout.
+    /// Retries and timeouts are the provider's: an open retries a transient failure
+    /// (<c>ConnectAttempts</c>), the read is attempted again under its <c>RetryAttempts</c>, and the
+    /// command runs under its <c>StatementTimeoutSeconds</c>.
     /// </summary>
     internal static class KeyedRowLoader
     {
@@ -61,20 +63,30 @@ namespace TFM.Nucleus.Data
             where T : ICoreObject<T>, new()
         {
             var query = Query<T>(provider, keyProperty, key);
-            using var context = provider.CreateContext();
-            var loaded = ChildGraphBinder.BuildAttached<T>(query, context.GetDataSet(query), c => ChildCollectionLoader.Load(provider, c, linkLoader), linkLoader);
-            return [.. loaded.Cast<ICoreObject>()];
+            return OperationRetry.Run(provider, (provider, query, linkLoader), static s =>
+            {
+                using var context = s.provider.CreateContext();
+                var loaded = ChildGraphBinder.BuildAttached<T>(s.query, context.GetDataSet(s.query), Lazy(s.provider, s.linkLoader), s.linkLoader);
+                return (List<ICoreObject>)[.. loaded.Cast<ICoreObject>()];
+            });
         }
 
         private static async Task<List<ICoreObject>> RowsOfAsync<T>(IDataProvider provider, string keyProperty, Guid key, ILinkedObjectLoader linkLoader,
             CancellationToken token) where T : ICoreObject<T>, new()
         {
             var query = Query<T>(provider, keyProperty, key);
-            using var context = await provider.CreateContextAsync(token: token).ConfigureAwait(false);
-            var loaded = ChildGraphBinder.BuildAttached<T>(query, await context.GetDataSetAsync(query, token).ConfigureAwait(false),
-                c => ChildCollectionLoader.Load(provider, c, linkLoader), linkLoader);
-            return [.. loaded.Cast<ICoreObject>()];
+            return await OperationRetry.RunAsync(provider, (provider, query, linkLoader), static async (s, ct) =>
+            {
+                using var context = await s.provider.CreateContextAsync(token: ct).ConfigureAwait(false);
+                var loaded = ChildGraphBinder.BuildAttached<T>(s.query, await context.GetDataSetAsync(s.query, ct).ConfigureAwait(false),
+                    Lazy(s.provider, s.linkLoader), s.linkLoader);
+                return (List<ICoreObject>)[.. loaded.Cast<ICoreObject>()];
+            }, token).ConfigureAwait(false);
         }
+
+        /// <summary>How the lazy collections of the rows read load: through the same provider and loader.</summary>
+        private static Action<INucleusChildCollection> Lazy(IDataProvider provider, ILinkedObjectLoader linkLoader) =>
+            c => ChildCollectionLoader.Load(provider, c, linkLoader);
 
         /// <summary>The select of the rows by their key, with their own non-lazy collections.</summary>
         private static ISelectQuery Query<T>(IDataProvider provider, string keyProperty, Guid key) where T : ICoreObject<T>, new()

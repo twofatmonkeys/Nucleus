@@ -195,6 +195,8 @@ namespace TFM.Nucleus.Tests
 
             var statement = Assert.Single(store.InTransaction);
             Assert.Equal(SqlServerSchemaDialect.AddColumnsSql(table, [table["Key"], table["Extra"]], []), statement);
+            Assert.True(store.Committed, "The update commits its transaction explicitly.");
+            Assert.False(store.RolledBack);
             Assert.Contains(store.OutsideTransaction, s => s.StartsWith("CREATE NONCLUSTERED INDEX [NCI_tbl_TFM_Nucleus_Tests_TestGrowingWidget_Key]", StringComparison.Ordinal));
         }
 

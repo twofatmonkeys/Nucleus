@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Queries;
 
 namespace TFM.Nucleus.Data.Schema
 {
@@ -27,6 +28,22 @@ namespace TFM.Nucleus.Data.Schema
         public ConcurrentDictionary<Type, TableSchema> TableCache { get; } = [];
 
         public DataSchemaStatus Status { get; private set; } = DataSchemaStatus.NotInitialized;
+
+        /// <summary>
+        /// Which of this provider's types' rows point at which others', the order a save writes
+        /// and a delete removes several types in. Built with the tables.
+        /// </summary>
+        internal ReferenceGraph References { get; private set; } = ReferenceGraph.Empty;
+
+        /// <summary>
+        /// True when the provider's rows of a type are its own: the registry sends them to it. A
+        /// provider can hold tables for types another provider stores, and a key to one of those
+        /// would refuse every write. Every type, when not set.
+        /// </summary>
+        internal Func<Type, bool>? Routes { get; init; }
+
+        /// <summary>The provider keeps foreign keys: the store asks for them and the dialect can write them.</summary>
+        private bool KeepsForeignKeys => _store.ForeignKeys && Dialect.SupportsForeignKeys;
 
         private ISchemaDialect Dialect => _store.Dialect;
 
@@ -86,7 +103,121 @@ namespace TFM.Nucleus.Data.Schema
             EnsureTableNamesAreDistinct(tables);
             EnsureLinkedCollectionsAreStoredTogether(tables);
             EnsureForceSaveLinksAreRoots(tables);
+            References = new ReferenceGraph(tables.Select(t => t.ObjectSchema));
+            BuildForeignKeys(tables);
             return tables;
+        }
+
+        /// <summary>
+        /// The foreign key of each column that holds another row's ID: a child's parent, a stored
+        /// [LinkedObject], the key a [LinkedBy] collection names, and a [ForeignKey(typeof(T))]
+        /// column, unless [ForeignKey(false)] drops it. A key is kept only to a table that holds
+        /// every row the column can point at: a concrete type with no stored derived types, whose
+        /// rows this provider keeps, from a table whose rows it keeps too. A convention key that
+        /// cannot hold is left out; a [ForeignKey(typeof(T))] that cannot fails the build. [ForeignKey] mistakes fail the
+        /// build whether or not the provider keeps keys.
+        /// </summary>
+        private void BuildForeignKeys(IReadOnlyList<TableSchema> tables)
+        {
+            foreach (var table in tables)
+            {
+                table.ForeignKeys = [];
+                table.SoftReferencesIn = [];
+                foreach (var column in table.Columns)
+                    column.HasForeignKey = false;
+            }
+            var linkedBy = new Dictionary<(Type Many, string Property), Type>();
+            foreach (var table in tables)
+                if (table.ObjectSchema.HasLinkedCollections)
+                    foreach (var collection in table.ObjectSchema.LinkedCollectionProperties)
+                        linkedBy[(collection.LinkedType!, table.ObjectSchema.GetLinkedCollectionKey(collection).Name)] = table.ObjectSchema.Type;
+
+            var keys = new List<ForeignKeySchema>();
+            foreach (var table in tables)
+            {
+                var schema = table.ObjectSchema;
+                foreach (var property in schema.AllProperties)
+                    if (DeclaredKey(property) is not null && table.FindByPropertyName(property.Name) is null)
+                        throw new InvalidOperationException(
+                            $"{schema.Name}.{property.Name} has [ForeignKey] but is not a stored column. Give it [DatabaseColumn], or remove [ForeignKey].");
+                foreach (var column in table.Columns)
+                {
+                    var property = column.PropertySchema;
+                    var declared = DeclaredKey(property);
+                    var (target, source) = property.IsParentObject ? (property.Type, ForeignKeySource.Parent)
+                        : property.IsLinkedObject ? (property.Type, ForeignKeySource.LinkedObject)
+                        : linkedBy.TryGetValue((schema.Type, property.Name), out var one) ? (one, ForeignKeySource.LinkedBy)
+                        : ((Type?)null, ForeignKeySource.Declared);
+                    if (declared != null)
+                    {
+                        var where = $"{schema.Name}.{property.Name}";
+                        if (!declared.Enabled)
+                        {
+                            if (source == ForeignKeySource.Parent)
+                                throw new InvalidOperationException($"{where} is a child's parent, whose key is always kept. Remove [ForeignKey(false)].");
+                            continue;
+                        }
+                        if (declared.ReferencedType is { } named)
+                        {
+                            if (target != null && target != named)
+                                throw new InvalidOperationException(
+                                    $"{where} holds a {target.Name}, but its [ForeignKey] names {named.Name}. Name the type the property holds, or use [ForeignKey] without a type.");
+                            (target, source) = (named, target == null ? ForeignKeySource.Declared : source);
+                        }
+                        if (target == null)
+                            throw new InvalidOperationException(
+                                $"{where} has [ForeignKey] without a type, but it is not a reference Nucleus knows. Name the type it holds the ID of: [ForeignKey(typeof(...))].");
+                        if (column.Intent != ColumnTypeIntent.Guid)
+                            throw new InvalidOperationException($"{where} has [ForeignKey], but a key column holds an ID, which is a Guid.");
+                        if (declared.OnDelete == ForeignKeyAction.SetNull && source == ForeignKeySource.Parent)
+                            throw new InvalidOperationException($"{where} is a child's parent, which cannot be set to null when its parent is deleted.");
+                    }
+                    if (target == null || !KeepsForeignKeys)
+                        continue;
+                    if (WhyNoKey(table, target, tables, out var referenced) is { } reason)
+                    {
+                        // A key named by hand must hold; [ForeignKey] without a type only sets the
+                        // options of the key the reference would get.
+                        if (declared?.ReferencedType != null)
+                            throw new InvalidOperationException($"{schema.Name}.{property.Name} has [ForeignKey] to {target.Name}, which cannot hold: {reason}.");
+                        _logger?.LogDebug("No foreign key for {table}.{column}: {reason}.", table.TableName, column.ColumnName, reason);
+                        continue;
+                    }
+                    column.HasForeignKey = true;
+                    keys.Add(new ForeignKeySchema(table, column, referenced!, declared?.OnDelete ?? ForeignKeyAction.NoAction, source));
+                }
+            }
+            foreach (var group in keys.GroupBy(k => k.Table))
+                group.Key.ForeignKeys = [.. group];
+            // A soft-deleted row keeps its reference; a hard delete of the row it points at clears
+            // it first. A key the database sets to null needs nothing.
+            foreach (var group in keys.Where(k => k.OnDelete == ForeignKeyAction.NoAction && SoftDelete.Applies(k.Table)).GroupBy(k => k.Referenced))
+                group.Key.SoftReferencesIn = [.. group];
+        }
+
+        private static ForeignKeyAttribute? DeclaredKey(IPropertySchema property) =>
+            (ForeignKeyAttribute?)Attribute.GetCustomAttribute(property.PropertyInfo, typeof(ForeignKeyAttribute), inherit: true);
+
+        /// <summary>Why a key from <paramref name="table"/> to <paramref name="target"/> cannot hold, or null when it can.</summary>
+        private string? WhyNoKey(TableSchema table, Type target, IReadOnlyList<TableSchema> tables, out TableSchema? referenced)
+        {
+            referenced = null;
+            if (Routes?.Invoke(table.ObjectSchema.Type) == false)
+                return $"another provider keeps the rows of {table.ObjectSchema.Name}";
+            if (target.IsAbstract || target.IsInterface)
+                return $"{target.Name} is abstract, so the rows it can point at are in the tables of the types derived from it";
+            if (!TableCache.TryGetValue(target, out referenced) || Routes?.Invoke(target) == false)
+            {
+                referenced = null;
+                return $"another provider keeps the rows of {target.Name}";
+            }
+            var derived = tables.FirstOrDefault(t => t.ObjectSchema.Type != target && target.IsAssignableFrom(t.ObjectSchema.Type));
+            if (derived != null)
+            {
+                referenced = null;
+                return $"{derived.ObjectSchema.Name} derives from {target.Name} and is stored in a table of its own, so the column can point at either table";
+            }
+            return null;
         }
 
         /// <summary>
@@ -250,6 +381,8 @@ namespace TFM.Nucleus.Data.Schema
                 }
                 if (Dialect.Extras is { } extras && !await extras.AreCurrentAsync(tables, async, cancellationToken))
                     indexesMatch = false;
+                if (Dialect.SupportsForeignKeys && !await ForeignKeysAreCurrent(tables, async, cancellationToken))
+                    indexesMatch = false;
                 return indexesMatch ? DataSchemaStatus.Ok : DataSchemaStatus.NotCurrent;
             }
             catch (Exception ex)
@@ -280,13 +413,21 @@ namespace TFM.Nucleus.Data.Schema
             try
             {
                 var tables = GetTables().ToList();
+                await DropKeysOfTablesToChange(transaction, tables, async, cancellationToken);
                 await AdoptLegacyTables(transaction, tables, async, cancellationToken);
+                // After the adoptions, whose compare starts each adopted table afresh.
+                await MarkTablesWhoseInlineKeysChange(tables, async, cancellationToken);
+                List<TableSchema> rebuilt = [];
                 foreach (var table in tables.Where(x => !x.IsCurrent))
                 {
                     try
                     {
                         if (!await TryAddColumns(transaction, table, async, cancellationToken))
+                        {
+                            if (table.ExistsInDatabase)
+                                rebuilt.Add(table);
                             await RebuildTable(transaction, table, async, cancellationToken);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -295,12 +436,18 @@ namespace TFM.Nucleus.Data.Schema
                         throw new Exception($"Error updating schema for table: {table.TableName}", ex);
                     }
                 }
-                // Disposing commits the rebuilds; indexes and extras are synced outside the transaction.
+                // Indexes and extras are synced outside the transaction.
+                await transaction.CommitAsync(async, cancellationToken);
                 disposed = true;
                 await Dispose(transaction, async);
                 await SyncColumnIndexes(tables, async, cancellationToken);
                 if (Dialect.Extras is { } extras)
                     await extras.SyncAsync(tables, async, cancellationToken);
+                // After the indexes, so every key column is indexed before its key is checked.
+                if (Dialect.SupportsForeignKeys && Dialect.ForeignKeysInline)
+                    await ReportOrphansOfRebuiltTables(rebuilt, async, cancellationToken);
+                else if (Dialect.SupportsForeignKeys)
+                    await SyncForeignKeys(tables, async, cancellationToken);
                 return DataSchemaStatus.Ok;
             }
             catch (Exception ex)
@@ -480,6 +627,155 @@ namespace TFM.Nucleus.Data.Schema
                     _logger?.LogInformation("Created table index {index} on table {tablename} in {seconds:0.0} s.", name, table.TableName,
                         System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
                 }
+            }
+        }
+
+        /// <summary>
+        /// True when every table has exactly the Nucleus-named keys it needs. A key whose existing
+        /// rows were not checked when it was created still counts, with a warning each start.
+        /// </summary>
+        private async ValueTask<bool> ForeignKeysAreCurrent(IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            var dbKeys = await _store.Catalog.ReadForeignKeysAsync(async, cancellationToken);
+            var current = true;
+            foreach (var table in tables)
+            {
+                var (drop, create) = SchemaComparer.DiffForeignKeys(table, dbKeys, Dialect);
+                if (drop.Count > 0 || create.Count > 0)
+                {
+                    _logger?.LogWarning("Foreign key schema is not current for table: {tablename}. Missing or changed: {missing}. Unexpected: {unexpected}",
+                        table.TableName, string.Join(", ", create.Select(k => Dialect.PhysicalName(k.Name))), string.Join(", ", drop));
+                    current = false;
+                }
+            }
+            foreach (var key in dbKeys.Where(k => !k.IsChecked))
+                _logger?.LogWarning("Foreign key {key} on table {tablename} does not cover the rows that were there when it was created: some point at rows that do not exist. " +
+                    "Rows written since are checked.", key.KeyName, key.TableName);
+            return current;
+        }
+
+        /// <summary>
+        /// Drops, in the schema transaction, every Nucleus-named key from or to a table the update
+        /// is about to change or adopt. A rebuild renames the table and drops it after the copy,
+        /// and a key that went with the renamed table would stop the drop (or keep pointing at
+        /// it). The keys are created again after the commit.
+        /// </summary>
+        private async ValueTask DropKeysOfTablesToChange(ISchemaTransaction transaction, IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            // Inline keys go with their table's own definition, and are replaced with it.
+            if (!Dialect.SupportsForeignKeys || Dialect.ForeignKeysInline)
+                return;
+            var changing = new HashSet<string>(Dialect.IdentifierComparer);
+            foreach (var table in tables.Where(t => !t.IsCurrent))
+            {
+                changing.Add(Dialect.PhysicalName(table.TableName));
+                foreach (var candidate in AdoptionCandidates(table))
+                    changing.Add(Dialect.PhysicalName(candidate));
+            }
+            if (changing.Count == 0)
+                return;
+            foreach (var key in await _store.Catalog.ReadForeignKeysAsync(async, cancellationToken))
+                if (changing.Contains(key.TableName!) || changing.Contains(key.ReferencedTableName!))
+                {
+                    _logger?.LogInformation("Dropping foreign key {key} on table {tablename} while its tables change.", key.KeyName, key.TableName);
+                    await transaction.ExecuteAsync(Dialect.DropForeignKey(key.TableName!, key.KeyName!), async, cancellationToken);
+                }
+        }
+
+        /// <summary>
+        /// On an engine that keeps keys only with their table, marks for a rebuild each existing
+        /// table whose keys differ from what the schema needs: a key it lacks on a column it already
+        /// has, or one it has that is not needed or has changed. A key on a column the update adds
+        /// is written with the column, so it needs no rebuild. Read from the catalog as it stood
+        /// before the update, a table about to be adopted under its old name.
+        /// </summary>
+        private async ValueTask MarkTablesWhoseInlineKeysChange(IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            if (!Dialect.SupportsForeignKeys || !Dialect.ForeignKeysInline)
+                return;
+            var snapshot = await _store.Catalog.ReadAsync(async, cancellationToken);
+            var dbKeys = await _store.Catalog.ReadForeignKeysAsync(async, cancellationToken);
+            var comparer = Dialect.IdentifierComparer;
+            foreach (var table in tables)
+            {
+                var physical = Dialect.PhysicalName(table.TableName);
+                var source = snapshot.Tables.Contains(physical, comparer) ? physical
+                    : PresentAdoptionCandidates(table, snapshot) is [var adopted] ? Dialect.PhysicalName(adopted)
+                    : null;
+                if (source == null)
+                    continue;
+                // The keys and columns of the table as it is stored, under the name it will have.
+                var stored = dbKeys.Where(k => comparer.Equals(k.TableName, source)).Select(k => new CatalogForeignKey
+                {
+                    TableName = physical,
+                    KeyName = $"{IndexNaming.ForeignKeyPrefix}{table.TableName}_{k.ColumnName}",
+                    ColumnName = k.ColumnName,
+                    ReferencedTableName = k.ReferencedTableName,
+                    ReferencedColumnName = k.ReferencedColumnName,
+                    OnDelete = k.OnDelete,
+                    IsChecked = k.IsChecked,
+                }).ToList();
+                var (drop, create) = SchemaComparer.DiffForeignKeys(table, stored, Dialect);
+                var columnExists = (ForeignKeySchema key) => snapshot.Columns.Any(c =>
+                    comparer.Equals(c.TableName, source) && comparer.Equals(c.Name, key.Column.ColumnName));
+                if (drop.Count > 0 || create.Any(columnExists))
+                {
+                    _logger?.LogInformation("Rebuilding table {tablename} for its foreign keys: missing or changed {missing}, not needed {unexpected}.",
+                        table.TableName, string.Join(", ", create.Select(k => k.Name)), string.Join(", ", drop));
+                    table.RebuildForKeys = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// On an engine that keeps keys only with their table, a rebuild copies the rows without
+        /// checking them against the keys. Counts, for each key of each rebuilt table, the rows that
+        /// point at missing rows, and reports them as a warning: Nucleus never changes rows to make
+        /// a key fit, and rows written after it are checked.
+        /// </summary>
+        private async ValueTask ReportOrphansOfRebuiltTables(IReadOnlyList<TableSchema> rebuilt, bool async, CancellationToken cancellationToken)
+        {
+            foreach (var key in rebuilt.SelectMany(t => t.ForeignKeys))
+            {
+                var orphans = await _store.Catalog.ReadCountAsync(Dialect.CountOrphans(key), async, cancellationToken);
+                if (orphans > 0)
+                    _logger?.LogWarning("Foreign key {key} on table {tablename} does not cover {count} existing rows that point at rows of {referenced} " +
+                        "that do not exist. Rows written from now on are checked. Remove or correct those rows to have the key cover every row.",
+                        key.Name, key.Table.TableName, orphans, key.Referenced.TableName);
+            }
+        }
+
+        /// <summary>
+        /// Brings each table's keys in line with the entity model: drops the Nucleus-named keys it
+        /// no longer needs or whose definition changed, then creates the missing ones. A key whose
+        /// table already holds rows pointing at missing rows is created without checking them, and
+        /// the count is logged as a warning: Nucleus never changes rows to make a key fit.
+        /// </summary>
+        private async ValueTask SyncForeignKeys(IReadOnlyList<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            var dbKeys = await _store.Catalog.ReadForeignKeysAsync(async, cancellationToken);
+            List<ForeignKeySchema> toCreate = [];
+            foreach (var table in tables)
+            {
+                var (drop, create) = SchemaComparer.DiffForeignKeys(table, dbKeys, Dialect);
+                foreach (var keyName in drop)
+                {
+                    _logger?.LogInformation("Dropping foreign key {key} on table {tablename}.", keyName, table.TableName);
+                    await _store.Catalog.ExecuteAsync(Dialect.DropForeignKey(Dialect.PhysicalName(table.TableName), keyName), async, cancellationToken);
+                }
+                toCreate.AddRange(create);
+            }
+            // Every drop first: a changed key keeps its name, and a table can be both.
+            foreach (var key in toCreate)
+            {
+                var orphans = await _store.Catalog.ReadCountAsync(Dialect.CountOrphans(key), async, cancellationToken);
+                if (orphans > 0)
+                    _logger?.LogWarning("Creating foreign key {key} on table {tablename} without checking its {count} existing rows that point at rows of {referenced} " +
+                        "that do not exist. Rows written from now on are checked. Remove or correct those rows to have the key cover every row.",
+                        Dialect.PhysicalName(key.Name), key.Table.TableName, orphans, key.Referenced.TableName);
+                else
+                    _logger?.LogInformation("Creating foreign key {key} on table {tablename}.", Dialect.PhysicalName(key.Name), key.Table.TableName);
+                await _store.Catalog.ExecuteAsync(Dialect.AddForeignKey(key, checkExisting: orphans == 0), async, cancellationToken);
             }
         }
 

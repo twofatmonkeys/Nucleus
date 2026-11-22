@@ -34,15 +34,24 @@ namespace TFM.Nucleus.Data.PostgreSQL
         internal static async Task<IChangeSubscription> CreateAsync(PostgresDataProvider provider, CancellationToken token = default)
         {
             var table = provider.GetTableSchema<T>();
-            var subscription = new PostgresChangeSubscription<T>(provider.Config, PostgresSchemaDialect.NotifyChannel(table.TableName));
+            // The LISTEN connection is one of the provider's MaxConnectionPoolSize, held for the
+            // subscription's life and across reconnects: taken first, so a full budget fails as
+            // PoolExhausted instead of waiting on the driver's pool.
+            var slot = await provider.ConnectionSlots.AcquireAsync(token);
+            var subscription = new PostgresChangeSubscription<T>(provider.Config, PostgresSchemaDialect.NotifyChannel(table.TableName)) { Slot = slot };
             try
             {
                 await subscription.ConnectAsync(token);
             }
-            catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException or TimeoutException or OperationCanceledException)
+            catch (Exception ex)
             {
+                // Whatever failed, the connection and the slot are released before it propagates.
                 await subscription.DisposeConnectionAsync();
-                throw new Exception($"Unable to register a change subscription for {typeof(T).FullName}. {ex.Message}", ex);
+                slot.Dispose();
+                if (DatabaseFailures.IsDatabaseFailure(ex))
+                    throw DatabaseFailures.Translate($"Unable to register a change subscription for {typeof(T).FullName}. {ex.Message}", ex,
+                        PostgresErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
+                throw;
             }
             subscription._listening = Task.Run(subscription.ListenAsync);
             return subscription;
@@ -50,10 +59,10 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         private async Task ConnectAsync(CancellationToken token)
         {
-            var connection = _config.BuildConnection(useTransaction: false);
+            var connection = _config.BuildConnection();
             try
             {
-                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, _config.ConnectAttempts), PostgresErrors.IsTransient, token);
+                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, _config.ConnectAttempts), PostgresErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), token);
                 connection.Notification += OnNotification;
                 await using var command = connection.CreateCommand();
                 command.CommandText = $"LISTEN {Quote(_channel)}";

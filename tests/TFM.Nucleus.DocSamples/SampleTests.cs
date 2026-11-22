@@ -69,6 +69,8 @@ namespace PortlyPrimate
             Assert.Empty(reloaded!.Naps);
 
             Assert.True(await Samples.UniqueViolationAsync(Ct));
+            await Samples.WeighWithRetryAsync(gerald, new WeighIn { MonkeyName = "Gerald", WeightKg = 14.8m, Notes = "before the move" }, Ct);
+            await Samples.StatementTimeoutAsync(Ct);
             Assert.Equal(1, await Samples.DeletesAsync(Ct));
             Assert.Equal(1, await Samples.SearchAsync(Ct));
 
@@ -83,6 +85,10 @@ namespace PortlyPrimate
             var desk = new KeeperDesk(sanctuary.Data);
             await desk.WeighAsync(gerald, new WeighIn { MonkeyName = "Gerald", WeightKg = 14.6m, Notes = "Gerald: no change" }, Ct);
             Assert.Equal("Gerald", (await desk.FindAsync(gerald.ID, Ct))!.Name);
+
+            var (refused, reportedBy) = await Samples.ForeignKeyViolationAsync(Ct);
+            Assert.True(refused);
+            Assert.Null(reportedBy);
         }
 
         [Fact]
@@ -127,7 +133,7 @@ namespace PortlyPrimate
             foreach (Action<IServiceCollection> register in new Action<IServiceCollection>[]
             {
                 s => Registration.SqlServer(s, "secret"), s => Registration.Postgres(s, "secret"),
-                s => Registration.Sqlite(s), s => Registration.TwoDatabases(s, "secret"),
+                s => Registration.Sqlite(s), s => Registration.TwoDatabases(s, "secret"), Registration.RetryPolicy,
             })
             {
                 var each = new ServiceCollection();

@@ -76,6 +76,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
 
         protected override bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName) =>
             PostgresErrors.TryGetUniqueViolation(exception, out physicalIndexName);
+
+        protected override bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName) =>
+            PostgresErrors.TryGetForeignKeyViolation(exception, out physicalKeyName);
+
+        protected override DatabaseErrorClass ClassifyFailure(Exception exception) => PostgresErrors.Classify(exception);
     }
 
     /// <summary>What the PostgreSQL provider gives its <see cref="SchemaManager"/>.</summary>
@@ -99,6 +104,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
         public TableNamingPolicy TableNaming => _provider.Options.TableNaming;
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
+
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
 
         public ISchemaDialect Dialect => _dialect;
 

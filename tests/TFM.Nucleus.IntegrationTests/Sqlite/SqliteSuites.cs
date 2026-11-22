@@ -8,6 +8,35 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
     public sealed class SqliteCrudIntegrationTests(SqliteFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
+    public sealed class SqliteTransactionCommitIntegrationTests(SqliteFixture fixture) : TransactionCommitIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteConnectionLimitIntegrationTests(SqliteFixture fixture) : ConnectionLimitIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteRetryPolicyIntegrationTests(SqliteFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        // SQLite has no statement time limit: the wait for the write lock is its busy timeout.
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) =>
+            ((TFM.Nucleus.Data.SQLite.SqliteConfiguration)options).BusyTimeoutSeconds = 1;
+    }
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteDatabaseFailureIntegrationTests(SqliteFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        protected override bool ReadsWaitForWriters => false;
+
+        protected override DatabaseOperation BlockedWriteFailsAt => DatabaseOperation.Open;
+
+        // A file that is not there: every connection but the one that creates the database opens read-write without creating it.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) =>
+            options.Database = Path.Combine(Path.GetTempPath(), $"nucleus-missing-{Guid.NewGuid():N}", "missing.db");
+    }
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteContextSaveIntegrationTests(SqliteFixture fixture) : ContextSaveIntegrationTests(fixture);
+
+    [Collection(SqliteCollection.Name)]
     public sealed class SqliteManagerLoadIntegrationTests(SqliteFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(SqliteCollection.Name)]
@@ -154,6 +183,36 @@ namespace TFM.Nucleus.IntegrationTests.Sqlite
             return "SELECT group_concat(CASE WHEN name = 'sqlite_autoindex_' || tbl_name || '_1' THEN 'PK_' || tbl_name ELSE name END, ',') " +
                    $"FROM sqlite_schema WHERE tbl_name = '{literal}' AND type IN ('index', 'trigger')";
         }
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
+
+    [Collection(SqliteCollection.Name)]
+    public sealed class SqliteForeignKeyIntegrationTests(SqliteFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        // SQLite cannot change a column's type: the column is replaced by one declared narrower.
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE \"{table}\" RENAME COLUMN \"{column}\" TO \"{column}_wide\"; " +
+            $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" VARCHAR({length}) NULL; " +
+            $"UPDATE \"{table}\" SET \"{column}\" = \"{column}_wide\"; " +
+            $"ALTER TABLE \"{table}\" DROP COLUMN \"{column}_wide\"";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override bool KeysCanBeDroppedByHand => false;
+
+        // SQLite reports a broken key (787) without naming it.
+        protected override bool EngineNamesTheKey => false;
+
+        protected override string DropForeignKeySql(string table, string key) =>
+            throw new NotSupportedException("A SQLite key is part of its table's definition.");
+
+        // SQLite keys are never left unchecked by Nucleus's own reckoning, so this is whether it exists.
+        protected override string KeyIsCheckedSql(string key) =>
+            "SELECT count(*) FROM sqlite_schema m JOIN pragma_foreign_key_list(m.name) fk " +
+            $"WHERE 'FK_' || m.name || '_' || fk.\"from\" = '{key}'";
 
         protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 

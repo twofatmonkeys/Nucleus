@@ -41,18 +41,18 @@ namespace TFM.Nucleus.Data.SQLite
             SupportsOffsetPaging = true,
         };
 
-        internal SqliteDataContext CreateSqliteDataContext(SqliteDataContext? parent, bool useTransaction, bool useDependency, bool bypassChecks = false)
+        internal SqliteDataContext CreateSqliteDataContext(SqliteDataContext? parent, bool useTransaction, bool useDependency, bool bypassChecks = false, bool forSchema = false)
         {
             if (!bypassChecks)
                 EnsureReady();
-            return SqliteDataContext.Create(this, parent, useTransaction, useDependency);
+            return SqliteDataContext.Create(this, parent, useTransaction, useDependency, forSchema);
         }
 
-        internal async Task<SqliteDataContext> CreateSqliteDataContextAsync(SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token, bool bypassChecks = false)
+        internal async Task<SqliteDataContext> CreateSqliteDataContextAsync(SqliteDataContext? parent, bool useTransaction, bool useDependency, CancellationToken token, bool bypassChecks = false, bool forSchema = false)
         {
             if (!bypassChecks)
                 await EnsureReadyAsync();
-            return await SqliteDataContext.CreateAsync(this, parent, useTransaction, useDependency, token);
+            return await SqliteDataContext.CreateAsync(this, parent, useTransaction, useDependency, token, forSchema);
         }
 
         protected override IDataContext CreateDataContext(IDataContext? parent, bool useTransaction, bool useDependency) =>
@@ -68,12 +68,21 @@ namespace TFM.Nucleus.Data.SQLite
         protected override Exception ProviderException(DataProviderErrorKind kind, string? message = null) =>
             message == null ? new SqliteDataProviderException(kind) : new SqliteDataProviderException(message, kind);
 
+        protected override DatabaseErrorClass ClassifyFailure(Exception exception) => SqliteErrors.Classify(exception);
+
         /// <summary>
         /// SQLite names the columns a unique violation broke, not the index, so the index is
         /// found from them: the column's own unique index for one column, or the unique
         /// [TableIndex] with exactly those keys in that order. A primary key violation is the
         /// table's PK_ name, which Nucleus does not manage, so it resolves to no rule.
         /// </summary>
+        /// <summary>SQLite reports a broken key (787) without naming it, so the exception names no reference.</summary>
+        protected override bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName)
+        {
+            physicalKeyName = null;
+            return SqliteErrors.Classify(exception).Kind == DatabaseErrorKind.ForeignKeyViolation;
+        }
+
         protected override bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName)
         {
             physicalIndexName = null;
@@ -124,6 +133,8 @@ namespace TFM.Nucleus.Data.SQLite
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
 
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
+
         public ISchemaDialect Dialect { get; } = new SqliteSchemaDialect();
 
         public ICatalogReader Catalog { get; }
@@ -132,8 +143,8 @@ namespace TFM.Nucleus.Data.SQLite
         public async ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken) =>
             new DbSchemaTransaction<SqliteDataContext>(
                 async
-                    ? await _provider.CreateSqliteDataContextAsync(null, true, false, cancellationToken, true)
-                    : _provider.CreateSqliteDataContext(null, true, false, true),
+                    ? await _provider.CreateSqliteDataContextAsync(null, true, false, cancellationToken, bypassChecks: true, forSchema: true)
+                    : _provider.CreateSqliteDataContext(null, true, false, bypassChecks: true, forSchema: true),
                 table => new SchemaStatement(SqliteCatalogReader.ColumnsQuery(table)),
                 SqliteCatalogReader.ReadColumn);
     }
@@ -146,6 +157,10 @@ namespace TFM.Nucleus.Data.SQLite
         }
 
         internal SqliteDataProviderException(string message, DataProviderErrorKind kind) : base(message, kind)
+        {
+        }
+
+        internal SqliteDataProviderException(string message, DataProviderErrorKind kind, Exception innerException) : base(message, kind, innerException)
         {
         }
     }

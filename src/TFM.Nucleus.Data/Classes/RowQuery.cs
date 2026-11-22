@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using TFM.Nucleus.Data.Providers;
 using TFM.Nucleus.Data.Queries;
 
 namespace TFM.Nucleus.Data
@@ -25,21 +26,39 @@ namespace TFM.Nucleus.Data
         private readonly List<(string Property, bool Descending)> _order = [];
         private readonly List<string> _groupBy = [];
         private readonly List<(MeasureKind Kind, string? Property, string Alias)> _measures = [];
+        private bool _includeDeleted;
 
         /// <param name="provider">The provider that stores <typeparamref name="T"/>.</param>
         /// <param name="predicate">The rows to read, or null for every row.</param>
         public RowQuery(IDataProvider provider, Expression<Func<T, bool>>? predicate)
-            : this(provider, predicate?.Body ?? Expression.Constant(true))
+            : this(provider, predicate?.Body ?? Expression.Constant(true), includeDeleted: false)
         {
         }
 
-        private RowQuery(IDataProvider provider, Expression predicateBody)
+        /// <param name="provider">The provider that stores <typeparamref name="T"/>.</param>
+        /// <param name="expression">
+        /// The rows to read as any expression a load translates: a predicate body, or a queryable's
+        /// expression (its chain of Where calls).
+        /// </param>
+        /// <param name="includeDeleted">True to read the rows marked deleted as well.</param>
+        internal RowQuery(IDataProvider provider, Expression expression, bool includeDeleted)
         {
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
-            _predicate = predicateBody;
+            _predicate = expression ?? throw new ArgumentNullException(nameof(expression));
+            _includeDeleted = includeDeleted;
         }
 
         private bool IsAggregate => _groupBy.Count > 0 || _measures.Count > 0;
+
+        /// <summary>
+        /// Also reads the rows of a soft-deletable type that are marked deleted, as
+        /// <c>LoadOptions.IncludeDeleted</c> does for a load. Without it a row read sees live rows only.
+        /// </summary>
+        public RowQuery<T> IncludeDeleted()
+        {
+            _includeDeleted = true;
+            return this;
+        }
 
         /// <summary>The properties each row returns, named by property. Not with <see cref="GroupBy"/> or a measure.</summary>
         public RowQuery<T> Select(params Expression<Func<T, object?>>[] properties)
@@ -99,14 +118,33 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>Every row, one at a time as the database returns it. Each row is its own object and can be kept.</summary>
-        public async IAsyncEnumerable<ResultRow> StreamAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public IAsyncEnumerable<ResultRow> StreamAsync(CancellationToken cancellationToken = default) => Stream(null, cancellationToken);
+
+        /// <summary>
+        /// The rows as the database returns them: of <paramref name="built"/>, a query already built,
+        /// or of this read when it is null. One iterator, so a read pays for no second one.
+        /// </summary>
+        private async IAsyncEnumerable<ResultRow> Stream(SelectQuery? built, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            if (ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
+            if (built == null && ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
                 yield break;
-            var query = Build();
+            var query = built ?? Build();
             var names = ResultRow.IndexOf(query.ResultColumns!);
-            await using var context = await _provider.CreateContextAsync(token: cancellationToken).ConfigureAwait(false);
-            await foreach (var row in context.StreamAsync(query, cancellationToken).ConfigureAwait(false))
+            // Opening and the first row are attempted again as the provider's policy says; a read
+            // that has handed out a row is not.
+            await foreach (var row in OperationRetry.StreamAsync(_provider, (provider: _provider, query, names), static async (s, ct) =>
+            {
+                var context = await s.provider.CreateContextAsync(token: ct).ConfigureAwait(false);
+                return new OpenedStream<ResultRow>(context, Rows(context.StreamAsync(s.query, ct), s.names, ct).GetAsyncEnumerator(ct));
+            }, cancellationToken).ConfigureAwait(false))
+                yield return row;
+        }
+
+        /// <summary>Each streamed row as a row of its own, to keep.</summary>
+        private static async IAsyncEnumerable<ResultRow> Rows(IAsyncEnumerable<StreamingRow> rows, IReadOnlyDictionary<string, int> names,
+            [EnumeratorCancellation] CancellationToken token)
+        {
+            await foreach (var row in rows.WithCancellation(token).ConfigureAwait(false))
                 yield return new ResultRow(names, [.. row.Values]);
         }
 
@@ -129,12 +167,15 @@ namespace TFM.Nucleus.Data
             query.Take = take;
             query.WithTotalCount = true;
             var names = ResultRow.IndexOf(query.ResultColumns!);
-            await using var context = await _provider.CreateContextAsync(token: cancellationToken).ConfigureAwait(false);
-            using var dataSet = await context.GetDataSetAsync(query, cancellationToken).ConfigureAwait(false);
-            var rows = new List<ResultRow>(dataSet.RowCount);
-            for (var i = 0; i < dataSet.RowCount; i++)
-                rows.Add(new ResultRow(names, [.. dataSet[i]]));
-            return new RowPage(rows, dataSet.TotalRowCount ?? rows.Count, skip, take);
+            return await OperationRetry.RunAsync(_provider, (provider: _provider, query, names, skip, take), static async (s, ct) =>
+            {
+                await using var context = await s.provider.CreateContextAsync(token: ct).ConfigureAwait(false);
+                using var dataSet = await context.GetDataSetAsync(s.query, ct).ConfigureAwait(false);
+                var rows = new List<ResultRow>(dataSet.RowCount);
+                for (var i = 0; i < dataSet.RowCount; i++)
+                    rows.Add(new ResultRow(s.names, [.. dataSet[i]]));
+                return new RowPage(rows, dataSet.TotalRowCount ?? rows.Count, s.skip, s.take);
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>How many rows match, counted in the database. Ignores any columns, order or groups asked for.</summary>
@@ -142,10 +183,29 @@ namespace TFM.Nucleus.Data
         {
             if (ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
                 return 0;
-            var counting = new RowQuery<T>(_provider, _predicate).Count("Rows");
+            var counting = new RowQuery<T>(_provider, _predicate, _includeDeleted).Count("Rows");
             await foreach (var row in counting.StreamAsync(cancellationToken).ConfigureAwait(false))
                 return row.Get<long>("Rows");
             return 0;
+        }
+
+        /// <summary>
+        /// True when a row matches, read as the ID of at most one row. Ignores any columns, order or
+        /// groups asked for.
+        /// </summary>
+        internal async Task<bool> AnyAsync(CancellationToken cancellationToken)
+        {
+            if (ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
+                return false;
+            var reading = new RowQuery<T>(_provider, _predicate, _includeDeleted);
+            // Named, not selected: x => x.ID on a type parameter reads ID through ICoreObject.
+            reading._select.Add(nameof(ICoreObject.ID));
+            var query = reading.Build();
+            query.Skip = 0;
+            query.Take = 1;
+            await foreach (var _ in Stream(query, cancellationToken).ConfigureAwait(false))
+                return true;
+            return false;
         }
 
         /// <summary>The query this read runs, built against the provider's table for <typeparamref name="T"/>.</summary>
@@ -158,6 +218,8 @@ namespace TFM.Nucleus.Data
 
             // A row read never fills child collections.
             query.LinkedQueries.Clear();
+            if (_includeDeleted)
+                query.IncludeDeleted = true;
 
             if (IsAggregate)
             {

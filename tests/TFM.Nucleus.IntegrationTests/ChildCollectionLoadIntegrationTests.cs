@@ -96,8 +96,8 @@ namespace TFM.Nucleus.IntegrationTests
         [Fact]
         public async Task SavingALoadedParent_KeepsItsChildrenAttached()
         {
-            // A save writes each loaded child back (its Timestamp at least), so the Parent bound
-            // at load must be the real parent, or the rows would be re-pointed.
+            // A save of the renamed parent leaves its unchanged children unwritten, and binding
+            // them at load must not make them dirty, or the save would re-point their rows.
             var manager = fixture.RequireManager();
             var name = Tag("sv");
             await SaveBundleAsync(name, files: 2);

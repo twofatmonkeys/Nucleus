@@ -23,8 +23,21 @@ namespace TFM.Nucleus.Tests
         public List<string> InTransaction { get; } = [];
         public List<string> OutsideTransaction { get; } = [];
         public List<(LogLevel Level, string Message)> Logged { get; } = [];
-        public CatalogSnapshot Snapshot { get; }
+        public CatalogSnapshot Snapshot { get; set; }
+
+        /// <summary>The foreign keys the database holds.</summary>
+        public List<CatalogForeignKey> Keys { get; set; } = [];
+
+        /// <summary>What every orphan count returns.</summary>
+        public long Orphans { get; set; }
+
+        /// <summary>The store asks for foreign keys; off unless a test turns it on.</summary>
+        public bool ForeignKeys { get; init; }
+
+        /// <summary>Which types the provider's rows are its own; every type when null.</summary>
+        public Func<Type, bool>? Routes { get; init; }
         public bool RolledBack { get; private set; }
+        public bool Committed { get; private set; }
 
         /// <summary>
         /// The columns the schema transaction reads back for a table. By default a table the store
@@ -33,13 +46,13 @@ namespace TFM.Nucleus.Tests
         /// </summary>
         public Func<string, IReadOnlyList<CatalogColumn>>? ColumnsInTransaction { get; init; }
 
-        public SchemaManager Manager() => new(this, this, this);
+        public SchemaManager Manager() => new(this, this, this) { Routes = Routes };
 
         public Type? RootType => null;
         public bool ReadOnlySchema => false;
         public TableNamingPolicy TableNaming { get; init; } = TableNamingPolicy.FullName;
         public bool RenameFullNameTables { get; init; }
-        public ISchemaDialect Dialect { get; } = new SqlServerSchemaDialect(null);
+        public ISchemaDialect Dialect { get; init; } = new SqlServerSchemaDialect(null);
         public ICatalogReader Catalog => this;
 
         public ValueTask<ISchemaTransaction> BeginRebuildAsync(bool async, CancellationToken cancellationToken) =>
@@ -54,6 +67,15 @@ namespace TFM.Nucleus.Tests
         {
             OutsideTransaction.Add(statement.Text);
             return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IReadOnlyList<CatalogForeignKey>>(Keys);
+
+        public ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
+        {
+            OutsideTransaction.Add(statement.Text);
+            return ValueTask.FromResult(Orphans);
         }
 
         public IObjectSchema? Get<T>() => Get(typeof(T));
@@ -88,6 +110,12 @@ namespace TFM.Nucleus.Tests
 
             public ValueTask<IReadOnlyList<CatalogColumn>> ReadColumnsAsync(string tableName, bool async, CancellationToken cancellationToken) =>
                 ValueTask.FromResult((store.ColumnsInTransaction ?? store.DefaultColumns)(tableName));
+
+            public ValueTask CommitAsync(bool async, CancellationToken cancellationToken)
+            {
+                store.Committed = true;
+                return ValueTask.CompletedTask;
+            }
 
             public void Rollback() => store.RolledBack = true;
             public void Dispose() { }

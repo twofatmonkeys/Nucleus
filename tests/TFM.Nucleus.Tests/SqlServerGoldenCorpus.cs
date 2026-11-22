@@ -48,6 +48,15 @@
                 SqlServerSchemaDialect.CreateFullTextIndexSql("tbl_X"),
                 SqlServerSchemaDialect.AddFullTextColumnSql("tbl_X", "Searchable"));
 
+            // Foreign keys: added checked or not, with a delete action, dropped, and the orphan count.
+            var keeperKey = QueryGoldenCorpus.KeyOf(typeof(FkResident), "Keeper");
+            var sqlDialect = new SqlServerSchemaDialect(null);
+            cases["ddl.fk.add"] = () => sqlDialect.AddForeignKey(keeperKey, checkExisting: true).Text;
+            cases["ddl.fk.add.nocheck"] = () => sqlDialect.AddForeignKey(keeperKey, checkExisting: false).Text;
+            cases["ddl.fk.add.setnull"] = () => sqlDialect.AddForeignKey(QueryGoldenCorpus.KeyOf(typeof(FkResident), "Backup"), checkExisting: true).Text;
+            cases["ddl.fk.drop"] = () => sqlDialect.DropForeignKey(keeperKey.Table.TableName, keeperKey.Name).Text;
+            cases["ddl.fk.orphans"] = () => sqlDialect.CountOrphans(keeperKey).Text;
+
             foreach (var type in QueryGoldenCorpus.SchemaTypes())
                 cases[$"ddl.create.{type.Name}"] = () =>
                     string.Join("\n--\n", SqlServerSchemaDialect.CreateTableStatements(QueryGoldenCorpus.TableOf(type)));

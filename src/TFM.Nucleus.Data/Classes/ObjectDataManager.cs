@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -14,6 +15,7 @@ using System.Threading.Tasks;
 using TFM.Nucleus;
 using TFM.Nucleus.Abstractions.Interfaces;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data
 {
@@ -38,10 +40,10 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Saves the object with its child collections (deleting the stored children removed from
-        /// them) and the forceSave links it reaches, in one transaction. A failure rolls back. A
-        /// <see cref="UniqueViolationException"/>, an <see cref="OperationCanceledException"/>, a
-        /// <see cref="DataProviderException"/> and a <see cref="DataContextException"/> are thrown
-        /// as they are; any other failure is wrapped.
+        /// them) and the forceSave links it reaches, in one transaction. A failure rolls back and
+        /// is thrown as it was: a database failure as a <see cref="DatabaseException"/> (a
+        /// <see cref="UniqueViolationException"/> for a broken unique index), a cancellation as an
+        /// <see cref="OperationCanceledException"/>, and nothing wrapped.
         /// </summary>
         Task SaveAsync<T>(T obj, CancellationToken token) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support a cancellable save.");
@@ -96,11 +98,13 @@ namespace TFM.Nucleus.Data
         /// work that must share one transaction across several types on that provider. The
         /// caller owns the outcome, and the manager's guarantees do not apply inside it:
         /// <list type="bullet">
-        /// <item>Disposing a transactional context commits it unless <see cref="IDataContext.Rollback"/>
-        /// or <see cref="IDataContext.TryRollback"/> was called. A failed statement does not roll
-        /// it back by itself, so catch, roll back and rethrow.</item>
-        /// <item>An object saved through it is marked saved as soon as its writes run, before the
-        /// commit; after a rollback, reload it.</item>
+        /// <item>Commit a transactional context with <see cref="IDataContext.CommitAsync"/>. A
+        /// failure of anything it runs marks it for rollback; until v3, one disposed without a
+        /// commit or a rollback still commits, unless the provider's <c>RequireCommit</c> is set.</item>
+        /// <item>An object saved through it is marked saved as its writes run. If the transaction
+        /// rolls back or its commit fails, the object is put back as it was before its first save
+        /// in that transaction, with any change made since still pending, so it can be saved
+        /// again without being reloaded.</item>
         /// <item>No <c>[Cacheable]</c> cache is evicted.</item>
         /// </list>
         /// Prefer <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/> when the objects
@@ -201,6 +205,9 @@ namespace TFM.Nucleus.Data
             _loggerFactory = loggerFactory;
             _options = options ?? new NucleusOptions();
             Cache = cache ?? new NucleusCache();
+            // A failed background refresh is reported here. A cache another manager already gave
+            // its logger keeps it.
+            Cache.Logger ??= logger;
         }
 
         /// <summary>The layered cache backing [Cacheable] types (whole collection + Guid index).</summary>
@@ -325,43 +332,41 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// Saves the objects in one transaction, as <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/>
         /// does. Each object is validated first, and a rule that fails is thrown as it is. A
-        /// failure after that rolls back; the failures <see cref="PassesThrough"/> names are thrown
-        /// as they are, any other is wrapped. The objects are marked saved once the transaction
-        /// has committed.
+        /// failure after that rolls back and is thrown as the context threw it. The objects are
+        /// marked saved once the transaction has committed.
         /// </summary>
         public INucleusCollection<T>? Save<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(objs);
             var list = objs as IList<T> ?? objs.ToList();
             SaveChecks.Run(list);
-            try
+            var provider = ProviderFor<T>();
+            var linkTypes = LinkTypes(list);
+            // An attempt builds the queries again: running a save's queries changes them.
+            var wrote = OperationRetry.Run(provider, (provider, list), static s =>
             {
-                var provider = ProviderFor<T>();
-                var linkTypes = LinkTypes(list);
-                var queries = provider.CreateSaveQueries(list);
+                var queries = s.provider.CreateSaveQueries(s.list);
                 if (queries.Count == 0)
-                    return null;
-                // Disposing the context commits it, so the objects are marked saved only after.
-                using (var context = provider.CreateContext(ContextOptions.Transactional))
+                    return false;
+                // The objects are marked saved only once the context has committed.
+                using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                try
                 {
-                    try
-                    {
-                        foreach (var query in queries)
-                            context.ExecuteQuery(query);
-                    }
-                    catch
-                    {
-                        context.TryRollback();
-                        throw;
-                    }
+                    foreach (var query in queries)
+                        context.ExecuteQuery(query);
+                    context.Commit();
                 }
-                MarkSaved(list, [typeof(T), .. linkTypes]);
-                return new NucleusCollection<T>(list);
-            }
-            catch (Exception ex) when (!PassesThrough(ex))
-            {
-                throw new Exception("Error saving objects", ex);
-            }
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
+                return true;
+            });
+            if (!wrote)
+                return null;
+            MarkSaved(list, [typeof(T), .. linkTypes]);
+            return new NucleusCollection<T>(list);
         }
 
         /// <summary>
@@ -376,14 +381,6 @@ namespace TFM.Nucleus.Data
             foreach (var type in writtenTypes)
                 EvictCache(type);
         }
-
-        /// <summary>
-        /// The failures a save throws as they are, as its context does: a unique violation, a
-        /// cancellation, and the provider's and the context's own exceptions. A save wraps any other
-        /// in "Error saving objects".
-        /// </summary>
-        private static bool PassesThrough(Exception ex) =>
-            ex is UniqueViolationException or OperationCanceledException or DataProviderException or DataContextException;
 
         /// <summary>
         /// The types of the forceSave links and linked collection members a save writes or deletes,
@@ -411,45 +408,43 @@ namespace TFM.Nucleus.Data
         /// stored children removed from them) and the forceSave links they reach. Each object is
         /// validated first (<c>Validate()</c>, then <c>PreSave()</c>), and a rule that fails is
         /// thrown as it is. A failure after that rolls back, keeping the pending changes and
-        /// removals for a retry. A <see cref="UniqueViolationException"/>, an
-        /// <see cref="OperationCanceledException"/>, a <see cref="DataProviderException"/> and a
-        /// <see cref="DataContextException"/> are thrown as they are; any other failure is wrapped.
-        /// The objects are marked saved once the transaction has committed.
+        /// removals for a retry, and is thrown as the context threw it: a database failure as a
+        /// <see cref="DatabaseException"/> (a <see cref="UniqueViolationException"/> for a broken
+        /// unique index), a cancellation as an <see cref="OperationCanceledException"/>. The
+        /// objects are marked saved once the transaction has committed.
         /// </summary>
         public async Task<INucleusCollection<T>?> SaveAsync<T>(IEnumerable<T> objs, CancellationToken token) where T : ICoreObject<T>, new()
         {
             ArgumentNullException.ThrowIfNull(objs);
             var list = objs as IList<T> ?? objs.ToList();
             SaveChecks.Run(list);
-            try
+            var provider = ProviderFor<T>();
+            var linkTypes = LinkTypes(list);
+            // An attempt builds the queries again: running a save's queries changes them.
+            var wrote = await OperationRetry.RunAsync(provider, (provider, list), static async (s, ct) =>
             {
-                var provider = ProviderFor<T>();
-                var linkTypes = LinkTypes(list);
-                var queries = provider.CreateSaveQueries(list);
+                var queries = s.provider.CreateSaveQueries(s.list);
                 if (queries.Count == 0)
-                    return null;
-
-                // Disposing the context commits it, so the objects are marked saved only after.
-                await using (var context = await provider.CreateContextAsync(ContextOptions.Transactional, token))
+                    return false;
+                // The objects are marked saved only once the context has committed.
+                await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                try
                 {
-                    try
-                    {
-                        foreach (var query in queries)
-                            await context.ExecuteQueryAsync(query, token);
-                    }
-                    catch
-                    {
-                        context.TryRollback();
-                        throw;
-                    }
+                    foreach (var query in queries)
+                        await context.ExecuteQueryAsync(query, ct);
+                    await context.CommitAsync(ct);
                 }
-                MarkSaved(list, [typeof(T), .. linkTypes]);
-                return new NucleusCollection<T>(list);
-            }
-            catch (Exception ex) when (!PassesThrough(ex))
-            {
-                throw new Exception("Error saving objects", ex);
-            }
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
+                return true;
+            }, token);
+            if (!wrote)
+                return null;
+            MarkSaved(list, [typeof(T), .. linkTypes]);
+            return new NucleusCollection<T>(list);
         }
 
 
@@ -461,16 +456,21 @@ namespace TFM.Nucleus.Data
         {
             foreach (var (provider, queries, types) in BuildDeleteQueriesByProvider(objs))
             {
-                using var context = provider.CreateContext(ContextOptions.Transactional);
-                try
+                OperationRetry.Run(provider, (provider, queries), static s =>
                 {
-                    context.ExecuteQueries(queries);
-                }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                    using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                    try
+                    {
+                        context.ExecuteQueries(s.queries);
+                        context.Commit();
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
+                    return true;
+                });
                 foreach (var type in types)
                     EvictCache(type);
             }
@@ -483,16 +483,21 @@ namespace TFM.Nucleus.Data
         {
             foreach (var (provider, queries, types) in BuildDeleteQueriesByProvider(objs))
             {
-                using var context = await provider.CreateContextAsync(ContextOptions.Transactional, cancellationToken);
-                try
+                await OperationRetry.RunAsync(provider, (provider, queries), static async (s, ct) =>
                 {
-                    await context.ExecuteQueriesAsync(queries, cancellationToken);
-                }
-                catch
-                {
-                    context.TryRollback();
-                    throw;
-                }
+                    using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                    try
+                    {
+                        await context.ExecuteQueriesAsync(s.queries, ct);
+                        await context.CommitAsync(ct);
+                    }
+                    catch
+                    {
+                        context.TryRollback();
+                        throw;
+                    }
+                    return true;
+                }, cancellationToken);
                 foreach (var type in types)
                     EvictCache(type);
             }
@@ -507,7 +512,12 @@ namespace TFM.Nucleus.Data
         /// </summary>
         private List<(IDataProvider Provider, IQuery[] Queries, Type[] Types)> BuildDeleteQueriesByProvider<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
-            var groups = GroupDeleteRoots(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
+            var byType = GroupDeleteRoots(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
+            // A type is deleted before the types its rows point at, so no row is left pointing
+            // at one the delete removed. Every reference between them is declared on one of the
+            // types or a child of one, so their own schemas are the graph.
+            IEnumerable<KeyValuePair<Type, List<ICoreObject>>> groups = byType.Count < 2 ? byType
+                : new ReferenceGraph(byType.Values.Select(v => v[0].ObjectSchema)).ForDeletes([.. byType], static g => g.Key);
             return [.. groups
                 .GroupBy(g => _registry.GetProvider(g.Key))
                 .Select(providerGroup => (providerGroup.Key,
@@ -552,17 +562,22 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(predicate);
             if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
                 return 0;
-            using var context = ProviderFor<T>().CreateContext(ContextOptions.Transactional);
-            int affected;
-            try
+            var provider = ProviderFor<T>();
+            var affected = OperationRetry.Run(provider, (provider, predicate), static s =>
             {
-                affected = context.DeleteWhere(predicate);
-            }
-            catch
-            {
-                context.TryRollback();
-                throw;
-            }
+                using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                try
+                {
+                    var affected = context.DeleteWhere(s.predicate);
+                    context.Commit();
+                    return affected;
+                }
+                catch
+                {
+                    context.TryRollback();
+                    throw;
+                }
+            });
             EvictCache(typeof(T));
             return affected;
         }
@@ -573,17 +588,22 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(predicate);
             if (!ExpressionParser.CheckDeletePredicate(predicate.Body))
                 return 0;
-            await using var context = await ProviderFor<T>().CreateContextAsync(ContextOptions.Transactional, cancellationToken);
-            int affected;
-            try
+            var provider = ProviderFor<T>();
+            var affected = await OperationRetry.RunAsync(provider, (provider, predicate), static async (s, ct) =>
             {
-                affected = await context.DeleteWhereAsync(predicate, cancellationToken);
-            }
-            catch
-            {
-                await context.TryRollbackAsync(cancellationToken);
-                throw;
-            }
+                await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                try
+                {
+                    var affected = await context.DeleteWhereAsync(s.predicate, ct);
+                    await context.CommitAsync(ct);
+                    return affected;
+                }
+                catch
+                {
+                    await context.TryRollbackAsync(ct);
+                    throw;
+                }
+            }, cancellationToken);
             EvictCache(typeof(T));
             return affected;
         }
@@ -602,7 +622,10 @@ namespace TFM.Nucleus.Data
 
         #endregion
 
-        /// <summary>Loads every row; [Cacheable] types serve the shared cached collection.</summary>
+        /// <summary>
+        /// Loads every row. A [Cacheable] type answers from its cache, with a list of its own that
+        /// holds the shared cached objects.
+        /// </summary>
         public NucleusCollection<T> Load<T>(bool forceRefresh = false) where T : ICoreObject<T>, new()
         {
             var schema = _objectSchema.Get<T>();
@@ -611,8 +634,30 @@ namespace TFM.Nucleus.Data
             return LoadAllFromProvider<T>();
         }
 
-        private NucleusCollection<T> LoadAllFromProvider<T>() where T : ICoreObject<T>, new() =>
-            LoadCore<T>(Expression.Constant(true), [], [], false);
+        /// <summary>
+        /// Every row of a type, read from the database: what the cache is filled with. It does not
+        /// go through <see cref="LoadCore{T}"/>, which answers an unfiltered read of a [Cacheable]
+        /// type from the cache.
+        /// </summary>
+        private NucleusCollection<T> LoadAllFromProvider<T>() where T : ICoreObject<T>, new()
+        {
+            var provider = ProviderFor<T>();
+            return Load<T>(provider, ParseSelect<T>(provider, Expression.Constant(true), [], [], false), []);
+        }
+
+        /// <inheritdoc cref="LoadAllFromProvider{T}"/>
+        private Task<NucleusCollection<T>> LoadAllFromProviderAsync<T>(CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            var provider = ProviderFor<T>();
+            return LoadAsync<T>(provider, ParseSelect<T>(provider, Expression.Constant(true), [], [], false), [], cancellationToken);
+        }
+
+        /// <summary>
+        /// Every row of a [Cacheable] type from its cache, filled on the asynchronous path on a
+        /// miss, as a list of the caller's own.
+        /// </summary>
+        private Task<NucleusCollection<T>> LoadAllCachedAsync<T>(IObjectSchema schema, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken);
 
         /// <summary>
         /// One page of rows plus the unpaged total count, fetched in a single round trip.
@@ -666,16 +711,19 @@ namespace TFM.Nucleus.Data
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
-            using var context = await provider.CreateContextAsync(token: cancellationToken);
-            var dataSet = await context.GetDataSetAsync(query, cancellationToken);
-            var rows = ChildGraphBinder.BuildCollection<T>(query, dataSet, LazyLoader, this, excluded);
-            var result = new PagedResult<T>(rows)
+            return await OperationRetry.RunAsync(provider, (manager: this, provider, query, excluded, skip, take), static async (s, ct) =>
             {
-                Skip = skip,
-                Take = take,
-            };
-            result.TotalCount = dataSet.TotalRowCount ?? result.Count;
-            return result;
+                using var context = await s.provider.CreateContextAsync(token: ct);
+                var dataSet = await context.GetDataSetAsync(s.query, ct);
+                var rows = ChildGraphBinder.BuildCollection<T>(s.query, dataSet, s.manager.LazyLoader, s.manager, s.excluded);
+                var result = new PagedResult<T>(rows)
+                {
+                    Skip = s.skip,
+                    Take = s.take,
+                };
+                result.TotalCount = dataSet.TotalRowCount ?? result.Count;
+                return result;
+            }, cancellationToken);
         }
 
         /// <summary>Loads by primary key; [Cacheable] types answer from the Guid index in O(1).</summary>
@@ -710,8 +758,8 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
-                return FromCache<T>(id);
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema))
+                return FromCache<T>(schema, id);
             return LoadCore<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted).FirstOrDefault();
         }
 
@@ -722,8 +770,8 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// Loads by primary key on the asynchronous path, leaving the named child collections
         /// unloaded and loading the named lazy ones with it. A [Cacheable] type answers from its
-        /// cache when nothing is excluded or included; a cold cache is filled on the synchronous
-        /// path once, as <c>Load&lt;T&gt;()</c> fills it, since the cache has no asynchronous fill.
+        /// cache when nothing is excluded or included, and a cold cache is filled on the
+        /// asynchronous path.
         /// </summary>
         [Obsolete("Two lists of names are easy to pass in place of each other. Use the overload taking LoadOptions.")]
         public Task<T?> LoadByIDAsync<T>(Guid id, IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections,
@@ -731,10 +779,6 @@ namespace TFM.Nucleus.Data
             LoadByIDCoreAsync<T>(id, excludedCollections, includedCollections, false, cancellationToken);
 
         /// <inheritdoc cref="IObjectDataManager.LoadByIDAsync{T}(Guid, LoadOptions?, CancellationToken)"/>
-        /// <remarks>
-        /// A cold cache is filled on the synchronous path once, as <c>Load&lt;T&gt;()</c> fills
-        /// it, since the cache has no asynchronous fill.
-        /// </remarks>
         public Task<T?> LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
         {
             options ??= LoadOptions.Default;
@@ -748,8 +792,8 @@ namespace TFM.Nucleus.Data
             ArgumentNullException.ThrowIfNull(includedCollections);
             if (id == Guid.Empty)
                 return default;
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted))
-                return FromCache<T>(id);
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema))
+                return await FromCacheAsync<T>(schema, id, cancellationToken);
             return (await LoadCoreAsync<T>(ByIdPredicate<T>(id), excludedCollections, includedCollections, includeDeleted, cancellationToken)).FirstOrDefault();
         }
 
@@ -757,14 +801,22 @@ namespace TFM.Nucleus.Data
         /// A [Cacheable] type with nothing excluded or included and live rows only: the cache
         /// holds whole live objects.
         /// </summary>
-        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new() =>
-            !includeDeleted && excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true };
-
-        private T? FromCache<T>(Guid id) where T : ICoreObject<T>, new()
+        private bool AnswersFromCache<T>(IReadOnlyCollection<string> excludedCollections, IReadOnlyCollection<string> includedCollections, bool includeDeleted,
+            [NotNullWhen(true)] out IObjectSchema? schema) where T : ICoreObject<T>, new()
         {
-            Load<T>(); // ensure the collection (and its index) is populated
-            return Cache.TryGetById<T>(id, out var cached) ? cached : default;
+            schema = !includeDeleted && excludedCollections.Count == 0 && includedCollections.Count == 0 && _objectSchema.Get<T>() is { IsCacheable: true } cacheable
+                ? cacheable
+                : null;
+            return schema != null;
         }
+
+        // The lookup reads the entry the fill returned: a separate TryGetById after the fill read
+        // a row as missing when a save evicted the type in between.
+        private T? FromCache<T>(IObjectSchema schema, Guid id) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadById(schema, id, LoadAllFromProvider<T>);
+
+        private Task<T?> FromCacheAsync<T>(IObjectSchema schema, Guid id, CancellationToken cancellationToken) where T : ICoreObject<T>, new() =>
+            Cache.GetOrLoadByIdAsync<T>(schema, id, LoadAllFromProviderAsync<T>, cancellationToken);
 
         /// <summary><c>x =&gt; x.ID == id</c>, as the body a load translates.</summary>
         private static Expression ByIdPredicate<T>(Guid id) where T : ICoreObject<T>, new() =>
@@ -891,20 +943,25 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                // The context validates the objects before it writes, and disposing it commits,
-                // so the objects are marked saved only after.
-                using (var context = providerGroup.Key.CreateContext(ContextOptions.Transactional))
+                // Checked here once, not by the context on each attempt, and marked saved only
+                // once the context has committed.
+                SaveChecks.Run(list);
+                OperationRetry.Run(providerGroup.Key, (provider: providerGroup.Key, list), static s =>
                 {
+                    using var context = s.provider.CreateContext(ContextOptions.Transactional);
+                    LeaveSavedObjectsToManager(context);
                     try
                     {
-                        context.Save(list);
+                        context.Save(s.list);
+                        context.Commit();
                     }
                     catch
                     {
                         context.TryRollback();
                         throw;
                     }
-                }
+                    return true;
+                });
                 MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
         }
@@ -916,20 +973,38 @@ namespace TFM.Nucleus.Data
             foreach (var providerGroup in objs.OfType<ICoreObject>().GroupBy(o => _registry.GetProvider(o.GetType())))
             {
                 var list = providerGroup.ToList();
-                await using (var context = await providerGroup.Key.CreateContextAsync(ContextOptions.Transactional, cancellationToken))
+                SaveChecks.Run(list);
+                await OperationRetry.RunAsync(providerGroup.Key, (provider: providerGroup.Key, list), static async (s, ct) =>
                 {
+                    await using var context = await s.provider.CreateContextAsync(ContextOptions.Transactional, ct);
+                    LeaveSavedObjectsToManager(context);
                     try
                     {
-                        await context.SaveAsync(list, cancellationToken);
+                        await context.SaveAsync(s.list, ct);
+                        await context.CommitAsync(ct);
                     }
                     catch
                     {
-                        await context.TryRollbackAsync(cancellationToken);
+                        await context.TryRollbackAsync(ct);
                         throw;
                     }
-                }
+                    return true;
+                }, cancellationToken);
                 MarkSaved(list, list.Select(o => o.GetType()).Distinct());
             }
+        }
+
+        /// <summary>
+        /// A context checks the objects it saves and marks them saved itself, without the audit
+        /// logger. The batch save of mixed types saves through one, so it turns both off: it checks
+        /// them once before its first attempt, so a retry does not run a save hook again, and marks
+        /// them in <see cref="MarkSaved"/> once the context has committed, as every other manager
+        /// save does.
+        /// </summary>
+        private static void LeaveSavedObjectsToManager(IDataContext context)
+        {
+            if (context is ISaveAcceptance acceptance)
+                acceptance.CallerManagesObjects = true;
         }
 
         /// <summary>
@@ -1034,13 +1109,8 @@ namespace TFM.Nucleus.Data
 
         T? INucleusRuntime.LoadByID<T>(Guid id, LoadOptions? options) where T : default => LoadByID<T>(id, options);
 
-        Task<NucleusCollection<T>> INucleusRuntime.LoadAllAsync<T>(CancellationToken cancellationToken)
-        {
-            // The cache has no asynchronous fill: a [Cacheable] type is answered as Load<T>() answers it.
-            if (_objectSchema.Get<T>() is { IsCacheable: true })
-                return Task.FromResult(Load<T>());
-            return LoadCoreAsync<T>(Expression.Constant(true), [], [], false, cancellationToken);
-        }
+        Task<NucleusCollection<T>> INucleusRuntime.LoadAllAsync<T>(CancellationToken cancellationToken) =>
+            LoadCoreAsync<T>(Expression.Constant(true), [], [], false, cancellationToken);
 
         T? INucleusRuntime.LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options) where T : default =>
             LoadFirst(predicate, options);
@@ -1054,36 +1124,79 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public T? LoadFirst<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null) where T : ICoreObject<T>, new()
         {
-            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
-                return default;
-            using var context = provider.CreateContext();
-            return ChildGraphBinder.BuildCollection<T>(query, context.GetDataSet(query), LazyLoader, this, excluded).FirstOrDefault();
+            ArgumentNullException.ThrowIfNull(predicate);
+            options ??= LoadOptions.Default;
+            return LoadTopCore<T>(predicate, 1, options.Exclude, options.Include, options.IncludeDeleted).FirstOrDefault();
         }
 
         /// <inheritdoc cref="LoadFirst{T}(Expression{Func{T, bool}}, LoadOptions?)"/>
         public async Task<T?> LoadFirstAsync<T>(Expression<Func<T, bool>> predicate, LoadOptions? options = null, CancellationToken cancellationToken = default) where T : ICoreObject<T>, new()
         {
-            if (FirstQuery(predicate, options, out var provider, out var excluded) is not { } query)
-                return default;
-            using var context = await provider.CreateContextAsync(token: cancellationToken);
-            return ChildGraphBinder.BuildCollection<T>(query, await context.GetDataSetAsync(query, cancellationToken), LazyLoader, this, excluded).FirstOrDefault();
-        }
-
-        /// <summary>The select for the first match, or null when the predicate can match nothing.</summary>
-        private ISelectQuery? FirstQuery<T>(Expression<Func<T, bool>> predicate, LoadOptions? options, out IDataProvider provider, out IPropertySchema[] excluded)
-            where T : ICoreObject<T>, new()
-        {
             ArgumentNullException.ThrowIfNull(predicate);
             options ??= LoadOptions.Default;
+            return (await LoadTopCoreAsync<T>(predicate, 1, options.Exclude, options.Include, options.IncludeDeleted, cancellationToken)).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// At most <paramref name="take"/> of the rows a query expression matches, in no particular
+        /// order, with their child collections: the one core behind the first-row loads and the
+        /// queryable's First and Single operators.
+        /// </summary>
+        internal NucleusCollection<T> LoadTopCore<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
+        {
+            if (TopQuery<T>(expression, take, excludedCollections, includedCollections, includeDeleted, out var provider, out var excluded) is not { } query)
+                return [];
+            return Load<T>(provider, query, excluded);
+        }
+
+        /// <inheritdoc cref="LoadTopCore{T}(Expression, int, IReadOnlyCollection{string}, IReadOnlyCollection{string}, bool)"/>
+        internal async Task<NucleusCollection<T>> LoadTopCoreAsync<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            if (TopQuery<T>(expression, take, excludedCollections, includedCollections, includeDeleted, out var provider, out var excluded) is not { } query)
+                return [];
+            return await LoadAsync<T>(provider, query, excluded, cancellationToken);
+        }
+
+        /// <summary>The select for the first <paramref name="take"/> matches, or null when the expression can match nothing.</summary>
+        private ISelectQuery? TopQuery<T>(Expression expression, int take, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, out IDataProvider provider, out IPropertySchema[] excluded)
+            where T : ICoreObject<T>, new()
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
             provider = ProviderFor<T>();
-            excluded = ExcludedCollections<T>(options.Exclude);
-            var included = IncludedCollections<T>(options.Include, excluded);
-            if (ExpressionParser.Classify(predicate) == PredicateShape.MatchesNone)
+            excluded = ExcludedCollections<T>(excludedCollections);
+            var included = IncludedCollections<T>(includedCollections, excluded);
+            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return null;
-            var query = ParseSelect<T>(provider, predicate, excluded, included, options.IncludeDeleted);
+            var query = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
             query.Skip = 0;
-            query.Take = 1;
+            query.Take = take;
             return query;
+        }
+
+        /// <summary>
+        /// True when a row matches a query expression, read as one ID in the database: no child
+        /// query runs and no entity is built. The collection names are still checked, so a name
+        /// that is not a collection of <typeparamref name="T"/> throws as it does on a load.
+        /// </summary>
+        internal Task<bool> AnyCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
+            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).AnyAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// How many rows a query expression matches, counted in the database: no child query runs
+        /// and no entity is built. The collection names are still checked, as on a load.
+        /// </summary>
+        internal Task<long> CountCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
+            IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
+        {
+            IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
+            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).CountAsync(cancellationToken);
         }
 
         Task<T?> INucleusRuntime.LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
@@ -1119,14 +1232,37 @@ namespace TFM.Nucleus.Data
         internal NucleusCollection<T> LoadCore<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+                return Cache.GetOrLoad(schema, LoadAllFromProvider<T>);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return [];
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = ProviderFor<T>().CreateContext();
-            return ChildGraphBinder.BuildCollection<T>(qry, context.GetDataSet(qry), LazyLoader, this, excluded);
+            var provider = ProviderFor<T>();
+            return Load<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded);
         }
+
+        /// <summary>
+        /// The one read of a load's rows into entities, on a context of its own, attempted again
+        /// as the provider's retry policy says.
+        /// </summary>
+        private NucleusCollection<T> Load<T>(IDataProvider provider, ISelectQuery query, IPropertySchema[] excluded) where T : ICoreObject<T>, new() =>
+            OperationRetry.Run(provider, (manager: this, provider, query, excluded), static s =>
+            {
+                using var context = s.provider.CreateContext();
+                return ChildGraphBinder.BuildCollection<T>(s.query, context.GetDataSet(s.query), s.manager.LazyLoader, s.manager, s.excluded);
+            });
+
+        /// <inheritdoc cref="Load{T}(IDataProvider, ISelectQuery, IPropertySchema[])"/>
+        private Task<NucleusCollection<T>> LoadAsync<T>(IDataProvider provider, ISelectQuery query, IPropertySchema[] excluded, CancellationToken token)
+            where T : ICoreObject<T>, new() =>
+            OperationRetry.RunAsync(provider, (manager: this, provider, query, excluded), static async (s, ct) =>
+            {
+                using var context = await s.provider.CreateContextAsync(token: ct);
+                return ChildGraphBinder.BuildCollection<T>(s.query, await context.GetDataSetAsync(s.query, ct), s.manager.LazyLoader, s.manager, s.excluded);
+            }, token);
 
         public async Task<INucleusCollection<T>?> LoadAsync<T>(Expression expression) where T : ICoreObject<T>, new() =>
             await LoadCoreAsync<T>(expression, [], [], false, CancellationToken.None);
@@ -1162,13 +1298,16 @@ namespace TFM.Nucleus.Data
         internal async Task<NucleusCollection<T>> LoadCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+                return await LoadAllCachedAsync<T>(schema, cancellationToken);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 return [];
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            return ChildGraphBinder.BuildCollection<T>(qry, await context.GetDataSetAsync(qry, cancellationToken), LazyLoader, this, excluded);
+            var provider = ProviderFor<T>();
+            return await LoadAsync<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded, cancellationToken);
         }
 
         /// <summary>
@@ -1207,15 +1346,49 @@ namespace TFM.Nucleus.Data
             IReadOnlyCollection<string> includedCollections, bool includeDeleted,
             [EnumeratorCancellation] CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
+            // Every row of a [Cacheable] type, whole and live, is what its cache holds. Its rows are
+            // an array only the cache holds and nothing changes once built, so they are yielded
+            // without a copy; the objects are shared as on every cached read.
+            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+            {
+                foreach (var cached in await Cache.RowsAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return cached;
+                }
+                yield break;
+            }
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
             if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
                 yield break;
-            var qry = ParseSelect<T>(ProviderFor<T>(), expression, excluded, included, includeDeleted);
-            using var context = await ProviderFor<T>().CreateContextAsync(token: cancellationToken);
-            var children = await ChildGraphBinder.LoadAsync(qry, context, LazyLoader, this, cancellationToken);
+            var provider = ProviderFor<T>();
+            var qry = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
+            // Opening, the child graph and the first row are attempted again as the policy says;
+            // a stream that has handed out a row is not.
+            await foreach (var obj in OperationRetry.StreamAsync(provider, (manager: this, provider, qry, excluded), static async (s, ct) =>
+            {
+                var context = await s.provider.CreateContextAsync(token: ct);
+                try
+                {
+                    var children = await ChildGraphBinder.LoadAsync(s.qry, context, s.manager.LazyLoader, s.manager, ct);
+                    return new OpenedStream<T>(context, s.manager.Bind<T>(context.StreamAsync(s.qry, ct), children, s.excluded, ct).GetAsyncEnumerator(ct));
+                }
+                catch
+                {
+                    await context.DisposeAsync();
+                    throw;
+                }
+            }, cancellationToken))
+                yield return obj;
+        }
 
-            await foreach (var row in context.StreamAsync(qry, cancellationToken))
+        /// <summary>Each streamed row as an entity, with its children attached.</summary>
+        private async IAsyncEnumerable<T> Bind<T>(IAsyncEnumerable<StreamingRow> rows, ChildGraphBinder.Graph? children, IPropertySchema[] excluded,
+            [EnumeratorCancellation] CancellationToken token) where T : ICoreObject<T>, new()
+        {
+            await foreach (var row in rows.WithCancellation(token))
             {
                 T obj = new();
                 for (int i = 0; i < row.ColumnNames.Length; i++)

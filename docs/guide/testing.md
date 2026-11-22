@@ -24,10 +24,10 @@ The types in the package:
 
 | Type | What it gives a test |
 |---|---|
-| `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server), `Nucleus:Postgres:*` and `Nucleus:Sqlite:Database` (a file path) user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*`, `NUCLEUS_PG_TEST_*` and `NUCLEUS_SQLITE_TEST_DATABASE` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
-| `NucleusTestDatabase` | `SqlServer`, `Postgres` and `Sqlite`: `IsConfigured`, `SkipReason`, `StartSharedStackAsync` (a fixture's shared stack, booted under the schema lock), `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
+| `NucleusTestDatabaseSettings` | Where the database is: the `Nucleus:*` (SQL Server), `Nucleus:Postgres:*` and `Nucleus:Sqlite:Database` (a file path, which each .NET runtime's run suffixes before the extension, `.net8` or `.net10`, so two runs never write one file; `SqliteTestDatabase.FilePath` is the file in use) user secrets under the id `tfm-nucleus-integrationtests`, or the `NUCLEUS_TEST_*`, `NUCLEUS_PG_TEST_*` and `NUCLEUS_SQLITE_TEST_DATABASE` environment variables. One local configuration serves every repo. `ToString()` leaves the password out. |
+| `NucleusTestDatabase` | `SqlServer`, `Postgres` and `Sqlite` (a `SqlServerTestDatabase`, a `PostgresTestDatabase` and a `SqliteTestDatabase`, whose `StartStackAsync` takes that provider's own options): `IsConfigured`, `SkipReason`, `StartSharedStackAsync` (a fixture's shared stack, booted under the schema lock), `StartStackAsync` (optionally with the provider's options changed), `StartRootedStackAsync` (a provider rooted at one entity type), `LockAsync(suite)` and `SchemaLockAsync()`, and raw SQL for a test's own setup: `ExecuteAsync`, `ScalarAsync`, `TableIdAsync`, `RowCountAsync` and the statements behind them (`RenameTableSql`, `DropTableIfExistsSql`, `CopyTableSql`, `DeleteAllSql`, `DropColumnsSql`). |
 | `NucleusEntityTable` | `NucleusEntityTable.For(typeof(MyEntity))`: the table an entity's rows live in and its `[LegacyTableNames]`, computed without a database, for a test that pins them. `NucleusTestDatabase.MoveToLegacyNamesAsync(entities)` puts live tables back under their old names, so a test can prove the next start adopts them with their rows. |
-| `NucleusTestStack` | A booted stack: `Provider`, `Manager` (an `IObjectDataManager`, what a store under test is given), `Log` (the warnings and errors it logged) and `Services`. Dispose it. |
+| `NucleusTestStack` | A booted stack: `Provider`, `Manager` (an `IObjectDataManager`, what a store under test is given), `Log` (a `CapturingLoggerProvider`: the warnings and errors it logged) and `Services`. Dispose it. |
 | `NucleusTestLock` | A cross-process lock held as an exclusively opened temp file, so the two target framework runs of a suite never reset each other's rows. Waits up to five minutes. |
 
 Three things to know when using it:
@@ -39,9 +39,9 @@ Three things to know when using it:
   code under test the stack's `Manager`.
 
 A PostgreSQL stack sets `MaxConnectionPoolSize` to 20 before the test's own options run, so a test
-can still change it. At the provider default of 100, one process could hold 200 connections. The
-net8.0 and net10.0 runs of a suite share a server whose default `max_connections` is 100, so
-overlapping runs failed with 53300 "too many clients".
+can still change it. At the provider default of 100, one process could take every connection the
+server allows. The net8.0 and net10.0 runs of a suite share a server whose default
+`max_connections` is 100, so overlapping runs failed with 53300 "too many clients".
 
 ## An xunit fixture
 

@@ -46,9 +46,9 @@ namespace TFM.Nucleus.Tests
             options.ConnectRetryCount = 5;
             Assert.Equal(5, options.ConnectAttempts);
 
-            Assert.Equal(15, options.ConnectTimeoutSeconds);
+            Assert.Equal(3, options.ConnectTimeoutSeconds);
             options.ConnectTimeoutSeconds = 40;
-            Assert.Contains("Timeout=40", options.BuildConnectionString("nucleus", useTransaction: false));
+            Assert.Contains("Timeout=40", options.BuildConnectionString("nucleus", pooled: true));
             Assert.Throws<ArgumentOutOfRangeException>(() => options.ConnectTimeoutSeconds = -1);
         }
 
@@ -73,7 +73,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void TheSqlServerException_ReportsItsKind_UnderEitherName()
         {
-            var ex = Assert.Throws<SqlDataProviderException>(() => new SQLConfiguration { Server = "db" }.BuildNewSQLConnection(useTransaction: false));
+            var ex = Assert.Throws<SqlDataProviderException>(() => new SQLConfiguration { Server = "db" }.BuildNewSQLConnection());
 
             Assert.Equal(DataProviderErrorKind.NotConfigured, ex.Kind);
             Assert.Equal(SqlDataProviderExceptionType.NotConfigured, ex.Type);

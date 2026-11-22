@@ -194,6 +194,25 @@ $nucleus$",
 
         public bool IsDuplicateKeyOnIndexBuild(Exception exception) => PostgresErrors.TryGetUniqueViolation(exception, out _);
 
+        public bool SupportsForeignKeys => true;
+
+        /// <summary>
+        /// The key as a named constraint. NOT VALID leaves the rows that were there unchecked;
+        /// every row written after it is checked.
+        /// </summary>
+        public SchemaStatement AddForeignKey(ForeignKeySchema key, bool checkExisting) =>
+            $"ALTER TABLE {TableName(key.Table.TableName)} ADD CONSTRAINT {Quote(key.Name)} FOREIGN KEY ({Quote(key.Column.ColumnName)}) " +
+            $"REFERENCES {TableName(key.Referenced.TableName)} ({Quote(key.Referenced.IdentityColumn!.ColumnName)})" +
+            (key.OnDelete == ForeignKeyAction.SetNull ? " ON DELETE SET NULL" : "") +
+            (checkExisting ? "" : " NOT VALID");
+
+        public SchemaStatement DropForeignKey(string physicalTableName, string physicalKeyName) =>
+            $"ALTER TABLE {TableName(physicalTableName)} DROP CONSTRAINT {Quote(physicalKeyName)}";
+
+        public SchemaStatement CountOrphans(ForeignKeySchema key) =>
+            $"SELECT count(*) FROM {TableName(key.Table.TableName)} c WHERE c.{Quote(key.Column.ColumnName)} IS NOT NULL " +
+            $"AND NOT EXISTS (SELECT 1 FROM {TableName(key.Referenced.TableName)} r WHERE r.{Quote(key.Referenced.IdentityColumn!.ColumnName)} = c.{Quote(key.Column.ColumnName)})";
+
         // ---- Full-text search and change notification objects.
 
         internal static string FullTextIndexName(TableSchema table, ColumnSchema column) => FullTextIndexName(table.TableName, column);

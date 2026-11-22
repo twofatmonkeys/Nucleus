@@ -69,6 +69,19 @@ namespace PortlyPrimate
             #endregion
         }
 
+        public static void RetryPolicy(IServiceCollection services)
+        {
+            #region retry-policy
+            services.AddNucleusSqliteDataProvider(options =>
+            {
+                options.Database = @"C:\ProgramData\PortlyPrimate\sanctuary.db";
+                // A manager save, delete or load that fails transiently, having applied nothing, is
+                // attempted again on a new connection: up to 3 attempts in all, 200 ms then 400 ms apart.
+                options.RetryAttempts = 3;
+            });
+            #endregion
+        }
+
         public static void FromConfiguration(IServiceCollection services, IConfiguration configuration)
         {
             #region register-configuration
@@ -120,20 +133,13 @@ namespace PortlyPrimate
         public Task SaveAllAsync(IReadOnlyList<Monkey> monkeys, CancellationToken ct) =>
             data.SaveAsync(monkeys, ct);                   // one transaction
 
-        // Two types in one transaction. Disposing the context commits, so roll back on failure.
+        // Two types in one transaction, committed when the work is done. A failed save rolls it all back.
         public async Task WeighAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
         {
             await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
-            try
-            {
-                await context.SaveAsync(monkey, ct);       // validates, then writes
-                await context.SaveAsync(weighIn, ct);
-            }
-            catch
-            {
-                await context.RollbackAsync(ct);
-                throw;
-            }
+            await context.SaveAsync(monkey, ct);           // validates, then writes
+            await context.SaveAsync(weighIn, ct);
+            await context.CommitAsync(ct);
         }
     }
     #endregion
@@ -355,6 +361,66 @@ namespace PortlyPrimate
             return false;
         }
 
+        public async Task<(bool Refused, Guid? ReportedBy)> ForeignKeyViolationAsync(CancellationToken ct)
+        {
+            #region foreign-key-violation
+            var colin = new Keeper { Name = "Colin", Email = "colin@portlyprimate.example" };
+            await data.SaveAsync(colin, ct);
+            var report = new MischiefReport { Culprit = "Brenda", Description = "Hid the keeper's keys.", Severity = Severity.Cheeky, ReportedBy = colin.ID };
+            await data.SaveAsync(report, ct);
+
+            var refused = false;
+            try
+            {
+                await data.DeleteAsync(colin, ct);
+            }
+            // SQLite does not say which key broke, so the names are null there.
+            catch (ForeignKeyViolationException ex) when (ex.Is<MischiefReport>(nameof(MischiefReport.ReportedBy)) || ex.EntityType is null)
+            {
+                refused = true;                            // a live report still names Colin
+            }
+
+            await data.DeleteAsync(report, ct);            // soft: the row stays, flagged
+            await data.DeleteAsync(colin, ct);             // the flagged report lets go of Colin first
+            #endregion
+            var stored = await data.LoadByIDAsync<MischiefReport>(report.ID, new LoadOptions { IncludeDeleted = true }, ct);
+            return (refused, stored!.ReportedBy);
+        }
+
+        public async Task WeighWithRetryAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
+        {
+            #region transient-retry
+            // The policy never repeats work on a caller-owned context: the unit of work is the
+            // caller's to repeat, from the start, when the failure says nothing was applied.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
+                    await context.SaveAsync(monkey, ct);
+                    await context.SaveAsync(weighIn, ct);
+                    await context.CommitAsync(ct);
+                    return;
+                }
+                catch (DatabaseException ex) when (ex.IsTransient && attempt < 3)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct);   // a deadlock, a dropped connection, a timeout
+                }
+            }
+            #endregion
+        }
+
+        public async Task StatementTimeoutAsync(CancellationToken ct)
+        {
+            #region statement-timeout
+            // A long job's own statements get five minutes; every other context keeps the provider's limit.
+            await using var context = await data.CreateContextAsync<WeighIn>(
+                new ContextOptions { UseTransaction = true, StatementTimeoutSeconds = 300 }, ct);
+            await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 14.7m, Notes = "after lunch" }, ct);
+            await context.CommitAsync(ct);
+            #endregion
+        }
+
         public async Task<int> DeletesAsync(CancellationToken ct)
         {
             #region deletes
@@ -366,12 +432,14 @@ namespace PortlyPrimate
             var live = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", ct);                                          // empty
             var all = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", new LoadOptions { IncludeDeleted = true }, ct);
             var viaQuery = await data.Get<MischiefReport>().IncludeDeleted().Where(r => r.Culprit == "Brenda").ToListAsync(ct);
+            var ever = await data.Rows<MischiefReport>(r => r.Culprit == "Brenda").IncludeDeleted().CountAsync(ct);    // a row read sees them when asked too
 
             // Delete by predicate: no row is loaded, child rows go too, and the count comes back.
             var removed = await data.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);
             #endregion
             Assert.Empty(live);
             Assert.Single(viaQuery);
+            Assert.Equal(viaQuery.Count, ever);
             return all.Count() + removed;
         }
 
@@ -412,10 +480,13 @@ namespace PortlyPrimate
         public async Task<BananaVariety?> CachedAsync(CancellationToken ct)
         {
             #region cacheable
-            // The first read fills the cache; the rest answer from memory until a save or a delete evicts it.
-            var cavendish = await data.Get<BananaVariety>().FirstOrDefaultAsync(v => v.Name == "Cavendish", ct);
-            var again = await data.LoadByIDAsync<BananaVariety>(cavendish!.ID, ct);   // by ID: an index lookup in memory
+            // The first read of every row fills the cache; later reads of every row or by ID answer
+            // from memory until a save or a delete evicts it.
+            var varieties = await data.LoadAsync<BananaVariety>(cancellationToken: ct);   // a list of your own, over the shared objects
+            var cavendish = varieties.First(v => v.Name == "Cavendish");
+            var again = await data.LoadByIDAsync<BananaVariety>(cavendish.ID, ct);        // by ID: an index lookup in memory
             #endregion
+            Assert.Same(cavendish, again);
             return again;
         }
 

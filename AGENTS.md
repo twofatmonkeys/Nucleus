@@ -87,21 +87,85 @@ SDK (`Providers`: `RelationalDataProvider`, `DbDataContext<TSelf>`, `RelationalP
 `BulkWritePlanner`, `ChangeSubscriptionBase<T>`, `ListenerRefCounter`, `DbSchemaTransaction`)
 runs pooling, the transaction tree, reads, deletes, both write paths and failure translation
 over System.Data.Common; `ProviderRegistration` is the registration every provider's `Add...`
-extensions share, so a provider's extensions only name its types. An engine that lets one
-connection write at a time sets `DbDataContext.AllowsConcurrentWriters` false, and an oversized
-write the bulk engine cannot take then runs its parts in order on its own context instead of
-fanning out to child contexts, which would wait on its write lock. A dialect whose indexes carry no
+extensions share, so a provider's extensions only name its types. `MaxConnectionPoolSize` is the
+one connection limit: a provider's `ConnectionSlots` (one per provider, not per context type)
+counts its root contexts and live change subscriptions, and every connection to the database has
+one connection string with `Enlist=false` and the driver pool sized to the setting, raw strings
+included, so the driver keeps one pool. The startup connections (`master`, the PostgreSQL
+maintenance database) are unpooled. With nothing enlisting, a transactional root opened inside an
+ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
+`ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
+timeout, and retries an open `ConnectAttempts` times (a shared option) when the provider's
+`ClassifyFailure` calls the failure transient. Every open goes through it: a context's, a change
+subscription's and a catalog reader's. The defaults fail fast and alike: nothing waits
+more than 3 s (pool wait, connect, SQLite busy timeout). Every statement a context runs gets
+`StatementTimeoutSeconds` (30, the drivers' default), or its `ContextOptions.StatementTimeoutSeconds`,
+set as each command is prepared, because the command is shared and the bulk engines and schema
+statements set their own on it; SQLite's command timeout is its busy wait, so its context opts out
+(`DbDataContext.AppliesStatementTimeout`) for statements and schema statements alike, and its
+catalog reader sets none. A transactional context is
+committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
+operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
+through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A root's
+`Rollback`/`RollbackAsync` rolls back at once, as its commit commits at once: the transaction
+ends, its locks are released and the undo log is reverted, with the context still open. A child's
+rollback ends the whole tree's transaction the same way, and a commit of any context of the tree
+after it throws `TransactionDoomed`. `TryRollback` is the catch block's form and never throws. The failure paths
+only mark (`MarkForRollback`), because an exception filter must not run a command. A commit or
+rollback given a cancelled token rolls back, before it throws. A context
+disposed without a commit rolls back under `RelationalProviderOptions.RequireCommit` and
+otherwise still commits with a warning (until v3, which makes rolling back the only behaviour).
+Every Nucleus caller commits explicitly. A child (`ContextOptions.Parent`) runs on its root's
+connection and transaction, so a tree is one transaction; it only votes with its own commit. An
+oversized write the bulk engine cannot take runs its parts in order on its own context, on every
+engine: there is no parallel write path, because parts on connections of their own could not
+commit as one. A read leaves the connection open, because closing it with the reader ended the
+transaction. A dialect whose indexes carry no
 included columns sets `ISchemaDialect.SupportsIncludedColumns` false: its `[TableIndex]` indexes
 are created and compared by their keys alone. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
-the rule once, on the failure path only. A `[TableIndex]` can be `Unique`, filtered to rows whose
+the rule once, on the failure path only. A broken foreign key is a `ForeignKeyViolationException`
+(Abstractions) naming the reference on the side that points, mapped the same way from the key name
+a provider's `TryGetForeignKeyViolation` gives (none on SQLite, which does not name the key). It derives from `DatabaseException` (Abstractions), which
+every database failure is, on every path (open, read, write, delete, commit, rollback, schema,
+subscription), one level over the driver's exception: `Kind`, `IsTransient` (worth another
+attempt and nothing applied), `MayHaveBeenApplied`, `Operation` and `Attempts`. A provider names its
+engine's errors once (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, through
+`RelationalDataProvider.ClassifyFailure`), because SqlClient and Microsoft.Data.Sqlite never set
+`DbException.IsTransient`; `DatabaseFailures` (Data) decides from the operation what a failed commit
+(`CommitOutcomeUnknown` unless the engine rejected the transaction) and a failed open are, and
+`DbDataContext.Failure` that a write may have been applied only without a transaction. A failure
+that is not the database's (`DatabaseFailures.IsDatabaseFailure`) propagates as it was thrown, and
+the manager's save wraps nothing. A `[TableIndex]` can be `Unique`, filtered to rows whose
 keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
 fails initialisation without touching the rows. A child's parent column is always indexed:
 `ColumnSchema` sets `Indexed` for the `[ParentObject]` property, so it is an ordinary column index
 (`NCI_<table>_Parent`) on every path that reads `IndexedColumns`, and an existing table gains it in
 place at its next start.
+
+Foreign keys are derived by `SchemaManager.BuildSchema` (`ForeignKeySchema` on
+`TableSchema.ForeignKeys`): a child's parent, a stored `[LinkedObject]`, a `[LinkedBy]` key and a
+`[ForeignKey(typeof(T))]` column (Abstractions), each `NO ACTION` unless `[ForeignKey]` says
+`SetNull`, and `[ForeignKey(false)]` drops one. A key is kept only when the store asks for keys
+(`ISchemaStore.ForeignKeys`, from `RelationalProviderOptions.ForeignKeys`, on by default), the
+dialect writes them (`ISchemaDialect.SupportsForeignKeys`), the registry routes
+both types to this provider (`SchemaManager.Routes`, which `RelationalDataProvider` sets from the
+`DataProviderRegistry` that names itself to its providers) and the referenced type is concrete with
+no stored derived type; a `[ForeignKey(typeof(T))]` that cannot hold fails the build. A key column
+is indexed (`ColumnSchema.HasForeignKey`). The check reads the `FK_` keys
+(`ICatalogReader.ReadForeignKeysAsync`) and `SchemaComparer.DiffForeignKeys` compares them; the
+update drops the keys to and from every table it changes or adopts inside the schema transaction,
+before any rename, and after the commit and the index sync creates the missing keys, counting
+orphans first (`ISchemaDialect.CountOrphans`) and creating a key over orphans unchecked with a
+warning. A hard delete clears, in soft-deleted rows only, the references to what it deletes
+(`TableSchema.SoftReferencesIn`, `DeleteTarget.ClearedReferences`), so a soft-deleted row never
+stops it. Keys are immediate on every engine, because SQL Server has none deferred, which is why
+saves are ordered by `ReferenceGraph`. A dialect whose keys are part of the table's definition
+(`ISchemaDialect.ForeignKeysInline`, SQLite) writes them in `CreateTable` and `AddColumns`, and a
+table whose keys differ is marked `TableSchema.RebuildForKeys` and rebuilt; nothing adds or drops a
+key on its own, and the update reports the orphans each rebuild copied.
 
 `ObjectDataManager` implements both `IObjectDataManager` and
 `INucleusRuntime`, so the static and instance surfaces share one code path. DI registers only
@@ -110,8 +174,16 @@ place at its next start.
 (`LoadByIDAsync`, `LoadAsync`, `LoadPagedAsync`, `LoadStreamAsync`, each taking a typed predicate
 and a `LoadOptions`: names to exclude, names to include, and whether soft-deleted rows are seen),
 `Get<T>()` and `Rows<T>()`. Every public load forwards to one private core per shape
-(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`), which
-the adaptor calls too. A member added to an interface gets a default body, so another
+(`LoadCore`, `LoadCoreAsync`, `LoadPagedCoreAsync`, `LoadStreamCoreAsync`, `LoadByIDCore`,
+`LoadTopCore` for the first rows), which the adaptor calls too. `NucleusCache` holds a
+`[Cacheable]` type's every row as an array only it holds, filled single-flight on either path (an
+asynchronous fill runs on the thread pool, without a caller's token); an unfiltered, live, whole
+load answers from it in `LoadCore`/`LoadCoreAsync` and the stream in `LoadStreamCoreAsync` (which
+reads the array, `RowsAsync`), every list it hands out, `GetOrLoad` included, is a copy over the
+shared objects, and a read by ID looks up the entry its fill returned (`GetOrLoadById`), never the
+cache a second time. Its refresh loads first and swaps the entry in only over the one it
+refreshed, so an eviction meanwhile wins; a failed refresh keeps the entry, logs a warning through
+the manager's logger (`NucleusCache.Logger`) and lets the next start one interval later. A member added to an interface gets a default body, so another
 implementation still compiles: it forwards to an older member where one does the same work
 (`IDataContext.Save(IEnumerable)` to `BulkSave`), and throws `NotSupportedException` otherwise.
 `DataProvider` and `DataProviderStatus` on it are obsolete: they are the unrooted default provider
@@ -120,7 +192,10 @@ that takes an untyped `Expression` accepts a predicate whole or as its body
 (`ExpressionParser.Normalize` unwraps a lambda). `ObjectDataAdaptor<T>`
 is a real LINQ provider; it is both `IQueryable<T>` and `IAsyncEnumerable<T>`, so `Where` and the
 async operators (`ToListAsync` and the rest) are declared on `IObjectDataAdaptor<T>`, or .NET 10's
-`System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. `ExpressionParser` lowers expression trees to the neutral query model,
+`System.Linq.AsyncEnumerable` makes each call on `Get<T>()` ambiguous. First and Single read one
+and two rows, and Any and Count are row reads (one ID, a count) with no child query: the
+extensions reach the adaptor through the internal `INucleusQueryOperators<T>`, because their
+element type has no entity constraint. `ExpressionParser` lowers expression trees to the neutral query model,
 unwrapping the `Convert` nodes the compiler inserts around an enum or widened column so the
 comparison still reads as a column;
 `DataProviderRegistry` routes each entity type to the provider of its nearest registered root,
@@ -179,7 +254,13 @@ Validation (`CoreObject.Validate`), the writes and the commit all read it, so th
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
 manager and `IDataContext.Save`/`SaveAsync`, for one object or a batch): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
-roots. Every save path validates before it builds anything, once per object: the manager's `Save`
+roots, then the linked collection members, with those writes put in a stable topological order by
+`ReferenceGraph` (Data, internal: which types' rows point at which others', a child's references
+folded into its root's chain), so a type is written after the types its rows point at. New rows
+of one table that point at each other are ordered through `TableSchema.SelfReferences`. A delete
+of several types removes each before the types it points at. A row the save reaches (a child, a link or a member) with no changes of its own is not
+written, only the changed rows below it, because its update would only stamp `Timestamp`; the roots
+are always written (`RelationalDataProvider.WriteQueries`). Every save path validates before it builds anything, once per object: the manager's `Save`
 and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
 reaches the caller as thrown, and `DbDataContext` in its save and batch save builders, which also
 covers the manager's save of a batch of mixed types. There is one save: `BulkSave` is the obsolete
@@ -189,10 +270,19 @@ by its parameter count, never by the caller. The synchronous path has no bulk en
 one walk of the dependents (a flag keeps `base.Validate()` from walking them a second time).
 `CoreObject`'s own saves do not validate, because they route through the manager or a context;
 validating there too would run the rules twice. The manager marks objects saved and evicts the
-cache only after disposing the context, which is what commits it, so a failed commit leaves them
-unsaved. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+cache only after its context has committed and been disposed, so a failed commit leaves them
+unsaved. A save through a context's own `Save`/`SaveAsync` (and `CoreObject.SaveAsync(IDataContext)`)
+marks its objects saved as the writes run, through `ICoreObject.CommitChangesInTransaction`, which
+records what each object's commit changed in the root context's `CommitUndoLog` (Abstractions);
+`DbDataContext.EndTransaction` clears the log when the commit returns and reverts it after a
+rollback or a failed commit, which leaves each object as it was before its first save in the
+transaction with later changes still pending. The manager's mixed-type batch save, its one save
+through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
+the audit logger, stays the one place its objects are marked. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
-the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour.
+the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour. A
+child whose effective behaviour is soft under an owner that is deleted hard fails the schema
+build, because the owner's delete would leave the flagged children pointing at a deleted row.
 
 `TFM.Nucleus.Data.SQL` is SQL Server's dialect over that SDK: `SqlServerQueryRenderer` (every
 T-SQL query string), `SqlServerSchemaDialect` and `SqlServerTypeMapper` (every DDL string),
@@ -215,7 +305,13 @@ a subquery, SQL Server ran small tables from the child side, held another parent
 while it read that parent, and deadlocked against a save of the parent, at every level of a
 graph. `SqlServerKeptIdsTests` holds every statement to one table; the opt-in
 `SqlServer\DeadlockStressTests` (`NUCLEUS_DEADLOCK_STRESS=1`, or a worker count) reproduces the
-deadlock if the shape regresses.
+deadlock if the shape regresses. A database the provider creates gets READ_COMMITTED_SNAPSHOT
+(`SQLConfiguration.ReadCommittedSnapshotOnCreate`, set right after `CREATE DATABASE` with
+`NO_WAIT`); an existing one is never altered, and initialise logs a warning when it has the
+setting off. A query marked `Query.WaitForPendingWrites` (the delete's linked-members check, both
+reads) is rendered `WITH(READCOMMITTEDLOCK)`, so it waits for a member being inserted whatever the
+database's setting; the other providers ignore the flag. `SqlServer\ReadCommittedSnapshotTests`
+covers both, and its database-creating tests skip when the test login cannot create a database.
 
 `TFM.Nucleus.Data.PostgreSQL` is PostgreSQL's dialect over the same SDK: `PostgresQueryRenderer`,
 `PostgresSchemaDialect` with `PostgresTypes`, `PostgresCatalogReader` (information_schema and
@@ -257,7 +353,12 @@ older than 3.35 and puts the file in write-ahead log mode (`UseWriteAheadLog`); 
 IMMEDIATE and writers wait `BusyTimeoutSeconds`. `MaxParametersPerCommand` is 2000, far under
 SQLite's 32766, because the driver binds each statement of a command by searching all its
 parameters, so a large multi-statement command is quadratic and holds the write lock throughout
-(an oversized save measured 33 s at 30000 against 0.3 s at 2000). Its output is pinned by
+(an oversized save measured 33 s at 30000 against 0.3 s at 2000). Foreign keys are inline
+(`REFERENCES` in each key column's definition), and every connection a context opens sets
+`foreign_keys` (on, or off under `ForeignKeys = false`) and `legacy_alter_table` off before its
+transaction begins (`SqliteDataContext.PrepareConnectionAsync`); the schema update's context sets
+`foreign_keys` off and `legacy_alter_table` on, so a rebuild can replace a table others point at
+and its rename leaves their `REFERENCES` text alone. Its output is pinned by
 `SqliteGoldens.cs`, built from the same query corpus.
 
 ## Build and test
@@ -293,8 +394,8 @@ and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer
 `DatabaseFixture` is only the xunit v3 shim that boots the collection's stack and turns "not
 configured" into `Assert.SkipWhen`. Store repos write their own thin shim over the same package. A
 stack whose initialisation fails includes its warnings and errors in the message. A PostgreSQL
-stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because the provider
-keeps two pools of `MaxConnectionPoolSize` each and two runs at the default exhausted the server. A fixture boots
+stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because two runs at
+the default of 100 exhausted the server. A fixture boots
 its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
 runs once raced to create the same tables and one of them failed. The net8.0 and
 net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
@@ -374,8 +475,10 @@ warning or an analyzer warning in new code fails CI.
 - Listings that do not need children use `Exclude(...)`; do not split a parent and its children
   into two queries and join them in memory.
 - Take `IObjectDataManager`, never the concrete `ObjectDataManager`, and never reach through its
-  `DataProvider`. A transaction across several types is `CreateContextAsync<T>`, wrapped in a
-  try/catch that rolls back, because disposing the context commits. If a store needs something the
+  `DataProvider`. A transaction across several types is `CreateContextAsync<T>`, ended with
+  `await context.CommitAsync(ct)`. Never rely on dispose to commit: it does only until v3, or until
+  the provider sets `RequireCommit`, and it commits work a failure in your own code should have
+  stopped. If a store needs something the
   interface lacks, that is a Nucleus defect: add it to the interface rather than casting.
 - When Nucleus does not do one of these correctly, that is a Nucleus defect: report it (and
   record it in `docs/code-review-findings.md` and in `docs/guide/known-limits.md`) rather than
@@ -423,7 +526,30 @@ warning or an analyzer warning in new code fails CI.
 - **Spell identity `ID` and database `DB` in member names** (`LoadByID`, `IsDBColumn`). Existing
   members that spell them otherwise stay as they are; do not add a second name to match.
 - **Every exception Nucleus defines derives from `NucleusException`** (Abstractions). A new one
-  does too, and reports what failed through a `Kind` where it has several causes.
+  does too, and reports what failed through a `Kind` where it has several causes. A database
+  failure is a `DatabaseException`, never a bare `Exception`; a new path that reaches the database
+  translates its failures through the provider (`TranslateFailure`, or `DatabaseFailures` with the
+  provider's classifier), and lets anything else propagate as it was thrown.
+- **Nucleus retries an open always, and an operation only when the application asks.** This is
+  the library's retry design; what a caller retries is in the guide's
+  [Retries](docs/guide/saving.md#retries).
+  - An open is retried up to `ConnectAttempts` times, only for a failure the provider classifies
+    as transient, all within the connection's connect timeout.
+  - An operation Nucleus runs on a context of its own (the manager's saves, deletes and loads,
+    streams until their first row, row reads, `KeyedRowLoader`) is retried only under the
+    provider's `RetryAttempts`, 1 (off) by default, and only for a `DatabaseException` with
+    `IsTransient` true, which is never true when the operation may have been applied. Each attempt
+    runs on a new context, and a save's checks and `PreSave` run once, before the first.
+  - Never retried: anything on a caller's context (its transaction is the caller's), a stream
+    that has handed out a row, and a commit whose outcome is unknown.
+  - The last attempt's failure is reported with `IsTransient` false and `Attempts`, so a caller
+    does not stack a retry on the policy.
+  - All of it goes through `OperationRetry` (Data); a new operation on a context of its own uses
+    it rather than a loop of its own, with a struct state and a static lambda, so the policy costs
+    nothing when it is off.
+  - Only the application decides that an operation is worth repeating, which is why the policy is
+    opt-in. A retry that repeated a write whose outcome is unknown, or hid the failure, would be
+    wrong, which is why those are never retried.
 - **Name new attribute and server-function vocabulary by meaning, not by an engine feature.**
   `Indexed`, not `NonClusteredIndex`; `CurrentDateTimeOffset`, not `SYSDATETIMEOFFSET`. The old
   SQL Server names were removed in the November 2026 naming clean-up.
@@ -448,8 +574,15 @@ warning or an analyzer warning in new code fails CI.
   multi-targets itself and one version serves both frameworks.
 - **Keep the workflow files free of configuration.** They are byte identical in every TFM package
   repo and read what they need from `Directory.Build.props` at run time (`VersionMajor`,
-  `PublishToNuGetOrg`, `TargetFrameworks`). If something seems to need a knob in the workflow, add
-  the property to `Directory.Build.props` and read it instead.
+  `PublishToNuGetOrg`, `PublishPrereleaseToNuGetOrg`, `TargetFrameworks`). If something seems to
+  need a knob in the workflow, add the property to `Directory.Build.props` and read it instead.
+- **Three release branches, by convention.** `tag-and-release.yml` releases stable from `master`
+  and prereleases from `beta` (`-beta.M`) and `alpha` (`-alpha.M`), and fails on any other ref. The
+  branch names are fixed across every TFM package repo, not a per repo setting. A prerelease takes
+  the `N` master would cut next, so it sorts below that stable release, and like a stable release it
+  publishes all seven packages on one version. It gets a tag and a prerelease GitHub release but no
+  `release/` branch, and reaches nuget.org only when both nuget.org switches are `true`. See
+  `docs/versioning.md`.
 - **Evolve the public surface additively.** Two production sites already consume these packages,
   and `CoreObject` is the base class of every entity in them. A breaking change to the entity base,
   an attribute, or a registration method is a major version and a coordinated release.

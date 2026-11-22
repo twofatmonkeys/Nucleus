@@ -11,9 +11,9 @@ This repository holds the whole family. Seven packages ship from it, all on one 
 | `TFM.Nucleus.Abstractions` | Contracts: `ICoreObject`, `IDataProvider` and `IDataContext`, the neutral query model (`IQuery`, `IQueryParameter`, `Operator`), schema interfaces, the `DataSet` row buffer, `NucleusCollection` and `NucleusChildCollection`, `PagedResult<T>`, `IChangeSubscription`, `INucleusRuntime`, `NucleusOptions`. Zero SQL. |
 | `TFM.Nucleus` | The core: `CoreObject` entity base classes, attribute-driven schema reflection (`ObjectSchema` and `PropertySchema` with IL-emitted materialisers), change tracking, the static convenience API, `NucleusLoggerProvider`, and DI registration. |
 | `TFM.Nucleus.Data` | Provider-neutral data layer: `ObjectDataManager` (save, load and delete orchestration, cascade, child-graph hydration), `ObjectDataAdaptor<T>` (a LINQ provider with async operators), `ExpressionParser`, `DataProviderRegistry` for multi-provider routing, `NucleusCache`. It also holds the query model and the schema model every provider shares, and the provider SDK a provider package builds on (see [Provider seam](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/provider-authoring.md#the-provider-seam)). Contains no SQL, proven by a tripwire test. |
-| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSqlServerDataProvider`) and `SQLConfiguration`. |
-| `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`) and `PostgresConfiguration`. See [PostgreSQL](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/providers.md#postgresql). |
-| `TFM.Nucleus.Data.SQLite` | SQLite provider for file databases in embedded and local applications (SQLite 3.35 or later, bundled, over Microsoft.Data.Sqlite): query rendering, the SQLite schema dialect and catalog, and write-ahead logging. No change notifications or full-text indexes. Its public surface is its registration (`AddNucleusSqliteDataProvider`) and `SqliteConfiguration`. See [SQLite](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/providers.md#sqlite). |
+| `TFM.Nucleus.Data.SQL` | SQL Server provider: T-SQL rendering, the SQL Server schema dialect and catalog, the SqlBulkCopy engine and SqlDependency change notifications. Its public surface is its registration (`AddNucleusSqlServerDataProvider`), `SQLConfiguration` and the exception its registration throws. |
+| `TFM.Nucleus.Data.PostgreSQL` | PostgreSQL provider (PostgreSQL 16 or later, over Npgsql): query rendering, the PostgreSQL schema dialect and catalog, the COPY bulk engine and LISTEN/NOTIFY change notifications. Its public surface is its registration (`AddNucleusPostgresDataProvider`), `PostgresConfiguration` and the exception its registration throws. See [PostgreSQL](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/providers.md#postgresql). |
+| `TFM.Nucleus.Data.SQLite` | SQLite provider for file databases in embedded and local applications (SQLite 3.35 or later, bundled, over Microsoft.Data.Sqlite): query rendering, the SQLite schema dialect and catalog, and write-ahead logging. No change notifications or full-text indexes. Its public surface is its registration (`AddNucleusSqliteDataProvider`), `SqliteConfiguration` and the exception its registration throws. See [SQLite](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/providers.md#sqlite). |
 | `TFM.Nucleus.Testing` | Live-database test support for anything built on Nucleus, framework neutral: the SQL Server, PostgreSQL and SQLite test database settings, a booted stack per provider, cross-process locks and the raw statements a test sets a table up with. See [Testing against a live database](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/testing.md#testing-against-a-live-database). |
 
 Dependency graph: `Abstractions` <- (`Nucleus`, `Data`) <- (`Data.SQL`, `Data.PostgreSQL`, `Data.SQLite`). The core and neutral layers never reference a concrete provider, and no provider references another, so an application picks its database by picking a provider package, and a store written against the neutral layers works over any of them. `Testing` sits above the providers, because a test picks its database too. See [Stores for other libraries](https://github.com/twofatmonkeys/Nucleus/blob/master/docs/guide/providers.md#stores-for-other-libraries).
@@ -110,20 +110,13 @@ public sealed class KeeperDesk(IObjectDataManager data)
     public Task SaveAllAsync(IReadOnlyList<Monkey> monkeys, CancellationToken ct) =>
         data.SaveAsync(monkeys, ct);                   // one transaction
 
-    // Two types in one transaction. Disposing the context commits, so roll back on failure.
+    // Two types in one transaction, committed when the work is done. A failed save rolls it all back.
     public async Task WeighAsync(Monkey monkey, WeighIn weighIn, CancellationToken ct)
     {
         await using var context = await data.CreateContextAsync<Monkey>(ContextOptions.Transactional, ct);
-        try
-        {
-            await context.SaveAsync(monkey, ct);       // validates, then writes
-            await context.SaveAsync(weighIn, ct);
-        }
-        catch
-        {
-            await context.RollbackAsync(ct);
-            throw;
-        }
+        await context.SaveAsync(monkey, ct);           // validates, then writes
+        await context.SaveAsync(weighIn, ct);
+        await context.CommitAsync(ct);
     }
 }
 ```
@@ -153,4 +146,4 @@ For contributors: [contributing](https://github.com/twofatmonkeys/Nucleus/blob/m
 
 ## Licence
 
-MIT. See [LICENSE.txt](LICENSE.txt).
+MIT. See [LICENSE.txt](https://github.com/twofatmonkeys/Nucleus/blob/master/LICENSE.txt).

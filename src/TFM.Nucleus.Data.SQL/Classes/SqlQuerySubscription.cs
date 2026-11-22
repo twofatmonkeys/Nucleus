@@ -33,12 +33,24 @@ namespace TFM.Nucleus.Data.SQL
             var columns = string.Join(", ", tableSchema.Columns.Select(c => $"[{c.ColumnName}]"));
             var selectText = $"SELECT {columns} FROM [dbo].[{tableSchema.TableName}]";
 
-            var connection = provider.SqlConfig.BuildNewSQLConnection(false);
-            QueryNotificationHost.Acquire(connection.ConnectionString);
-            var subscription = new SqlQuerySubscription<T>(selectText, connection);
+            // The watcher connection is one of the provider's MaxConnectionPoolSize: taken first,
+            // so a full budget fails as PoolExhausted instead of waiting on the driver's pool.
+            var slot = await provider.ConnectionSlots.AcquireAsync(token);
+            SqlConnection connection;
             try
             {
-                await connection.OpenAsync(token);
+                connection = provider.SqlConfig.BuildNewSQLConnection();
+                QueryNotificationHost.Acquire(connection.ConnectionString);
+            }
+            catch
+            {
+                slot.Dispose();
+                throw;
+            }
+            var subscription = new SqlQuerySubscription<T>(selectText, connection) { Slot = slot };
+            try
+            {
+                await ConnectionOpener.OpenAsync(connection, async: true, Math.Max(1, provider.SqlConfig.ConnectAttempts), SqlServerErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), token);
 
                 // Query notifications require ARITHABORT ON; it is the one required SET option
                 // that defaults OFF over TDS.
@@ -56,7 +68,11 @@ namespace TFM.Nucleus.Data.SQL
                 // No half-open state: tear down everything acquired above before rethrowing.
                 await connection.DisposeAsync();
                 QueryNotificationHost.Release(subscription._connectionString);
-                throw new Exception($"Unable to register a query-notification subscription for {typeof(T).FullName}. {ex.Message}", ex);
+                slot.Dispose();
+                if (DatabaseFailures.IsDatabaseFailure(ex))
+                    throw DatabaseFailures.Translate($"Unable to register a query-notification subscription for {typeof(T).FullName}. {ex.Message}", ex,
+                        SqlServerErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
+                throw;
             }
         }
 
@@ -80,9 +96,10 @@ namespace TFM.Nucleus.Data.SQL
                     // Drain only: the registration needs the statement fully executed.
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Unable to execute the query-notification select for {typeof(T).FullName}. {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Unable to execute the query-notification select for {typeof(T).FullName}. {ex.Message}", ex,
+                    SqlServerErrors.Classify(ex), DatabaseOperation.Subscribe, token: token);
             }
         }
 

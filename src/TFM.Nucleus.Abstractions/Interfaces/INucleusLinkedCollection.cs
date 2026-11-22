@@ -50,6 +50,16 @@ namespace TFM.Nucleus.Abstractions.Interfaces
         void AcknowledgeRemovals();
 
         /// <summary>
+        /// Puts back removals that <see cref="AcknowledgeRemovals"/> forgot, because the
+        /// transaction that deleted them rolled back. A member added to the collection again since
+        /// is left where it is.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        void RestoreRemovals(IEnumerable<ICoreObject> removed)
+        {
+        }
+
+        /// <summary>
         /// Adds members read from storage without marking anything changed, and marks the
         /// collection loaded. A member already held (by ID) is skipped. Nucleus calls this when it
         /// loads the collection.

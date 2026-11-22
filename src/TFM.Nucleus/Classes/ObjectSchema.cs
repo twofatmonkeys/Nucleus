@@ -605,6 +605,15 @@ namespace TFM.Nucleus
 
         private readonly record struct DeletePolicy(bool ThroughParent, DeleteBehavior Behavior);
 
+        /// <summary>The schema of the type that owns this one's rows, or null for a root.</summary>
+        private IObjectSchema? Owner()
+        {
+            var ownerType = _parentObjectProperty?.Type;
+            return ownerType is null || ownerType.IsAbstract || !ownerType.IsSubclassOf(typeof(CoreObject))
+                ? null
+                : ObjectSchema.Get(ownerType);
+        }
+
         // The owner chain is walked through each owner's own policy; a type reached again while
         // it is being resolved is its own owner, which no delete could finish.
         [ThreadStatic]
@@ -629,9 +638,15 @@ namespace TFM.Nucleus
                         $"{Type.Name} is [Deletable(false)], but {source} makes its rows deletable through their owner. " +
                         $"Deleting the owner, or removing a {Type.Name} from its collection, would have to delete rows the type forbids deleting. " +
                         "Remove one of the two declarations.", Type);
-                if (IsDeletable)
-                    return new DeletePolicy(true, DeleteBehavior);
-                return enabledAbove ? new DeletePolicy(true, behaviorAbove) : new DeletePolicy(false, DeleteBehavior.Hard);
+                var policy = IsDeletable ? new DeletePolicy(true, DeleteBehavior)
+                    : enabledAbove ? new DeletePolicy(true, behaviorAbove)
+                    : new DeletePolicy(false, DeleteBehavior.Hard);
+                if (policy.Behavior == DeleteBehavior.Soft && Owner() is { IsDeletableThroughParent: true, EffectiveDeleteBehavior: DeleteBehavior.Hard } owner)
+                    throw new ObjectSchemaException(
+                        $"{Type.Name} rows are soft deleted, but its owner {owner.Name} is hard deleted. A delete of a {owner.Name} removes its row " +
+                        $"and keeps the flagged {Type.Name} rows, which would point at a row that no longer exists. " +
+                        $"Make {owner.Name} soft deleted too, or delete {Type.Name} rows hard.", Type);
+                return policy;
             }
             finally
             {
@@ -646,10 +661,8 @@ namespace TFM.Nucleus
         /// </summary>
         private (bool Enabled, DeleteBehavior Behavior, string Source) ResolveAbove()
         {
-            var ownerType = _parentObjectProperty?.Type;
-            if (ownerType is null || ownerType.IsAbstract || !ownerType.IsSubclassOf(typeof(CoreObject)))
+            if (Owner() is not { } owner)
                 return (false, DeleteBehavior.Hard, "");
-            var owner = ObjectSchema.Get(ownerType);
             var collection = owner.TryGetChildCollectionProperty(Type);
             if (collection is null)
                 return (false, DeleteBehavior.Hard, "");

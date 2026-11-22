@@ -24,6 +24,10 @@ namespace TFM.Nucleus
 
         private readonly Dictionary<string, object?> _properties = [];
         private readonly Dictionary<string, object?> _newProperties = [];
+        // The values the server returned for this object's columns during a save that has not
+        // been committed in memory yet. They become stored values when the object's changes are
+        // committed, so a save that fails leaves the object as it was. Null until one arrives.
+        private Dictionary<string, object?>? _serverValues;
         private bool _isValidated = false;
 
 
@@ -43,11 +47,14 @@ namespace TFM.Nucleus
             get { return GetValue<Guid>(); }
         }
         /// <summary>
-        /// When the row was last written. The server stamps the stored value on every write; the
-        /// value in memory is the client clock at the first commit and is not read back, because
-        /// reading it back slowed batched and bulk saves by 10% to 65% (see
-        /// docs/code-review-findings.md). Mark a column of your own ReturnOutputToProperty to have
-        /// a server value read back.
+        /// When the row was last written. The server stamps the stored value on every write. A
+        /// save writes the object saved and only the rows below it that are new or changed, so a
+        /// child's stamp moves when the child changes, not on every save of its parent. The
+        /// stamped value is not read back, because reading it back slowed batched and bulk saves
+        /// by 10% to 65% (see docs/code-review-findings.md). In memory, each row a save wrote
+        /// takes the client clock when the save is committed, so it is close to the stored value
+        /// but not equal to it. Mark a column of your own ReturnOutputToProperty to have a server
+        /// value read back.
         /// </summary>
         [DatabaseColumnAttribute(Indexed = true, IndexDescending = true,
             SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
@@ -73,18 +80,29 @@ namespace TFM.Nucleus
 
 
 
-        private void CommitChanges(bool makeReadOnly, ILogger? logger = null) => CommitChanges(makeReadOnly, true, logger);
+        private void CommitChanges(bool makeReadOnly, ILogger? logger = null) => CommitChanges(makeReadOnly, true, logger, null);
         /// <summary>
         /// Makes pending changes committed once a save has written them. A root also commits the
         /// forceSave links the save wrote (read from the same <see cref="SaveGraph"/> the save
         /// was built from, before anything here is committed); every object commits its held
-        /// children and forgets the removals the save deleted.
+        /// children and forgets the removals the save deleted. With an <paramref name="undo"/>
+        /// log, each object records what it changes first, so a transaction that does not commit
+        /// can put it back. <paramref name="stamp"/> is the boxed Timestamp of the commit, boxed
+        /// once by the root and shared by every row below it the save wrote.
         /// </summary>
-        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger = null)
+        private void CommitChanges(bool makeReadOnly, bool isRootObj, ILogger? logger, CommitUndoLog? undo, object? stamp = null)
         {
+            // The rows the save wrote, as RelationalDataProvider.WriteQueries decides: the object
+            // the save was asked for always, a dependent only when it has something of its own.
+            // Read before anything is committed, which clears both.
+            var written = isRootObj || SaveGraph.IsChanged(this);
             var graph = isRootObj && SaveGraph.CanReachDependents(this) ? SaveGraph.Walk([this]) : null;
             var links = graph?.Links ?? [];
             var members = graph?.Members ?? [];
+            var record = undo?.GetOrAdd(this, () => new CommitUndo(this));
+            record?.BeforeCommit();
+            if (_serverValues is { Count: > 0 })
+                record?.BeforeServerValues(_serverValues.Keys);
             LogChanges(logger);
             if (makeReadOnly)
                 _isReadOnly = true;
@@ -94,42 +112,196 @@ namespace TFM.Nucleus
                     _properties[newProp.Key] = newProp.Value;
                 _newProperties.Clear();
             }
-            // Timestamp is stamped by the server but not read back, so a new object takes the
-            // local clock here. A loaded object keeps the value it was loaded with.
-            if (!_properties.ContainsKey(nameof(Timestamp)))
-                _properties[nameof(Timestamp)] = DateTimeOffset.Now;
+            // What the server stored wins over what the object sent.
+            if (_serverValues is { Count: > 0 })
+            {
+                foreach (var (property, value) in _serverValues)
+                {
+                    _newProperties.Remove(property);
+                    _properties[property] = value;
+                }
+                _serverValues.Clear();
+            }
+            // Timestamp is stamped by the server but not read back, so a row the save wrote takes
+            // the local clock here. A row it did not write keeps the value it was loaded with.
+            if (written)
+                _properties[nameof(Timestamp)] = stamp ??= DateTimeOffset.Now;
             _isNew = false;
             if (ObjectSchema.HasNucleusChildCollections)
                 foreach (var coll in NucleusChildCollections)
                 {
+                    record?.BeforeAcknowledge(coll, coll.RemovedObjects);
                     coll.AcknowledgeRemovals();
                     foreach (var child in coll.ChildObjects)
                     {
                         // Not as a root: the root's graph already holds the links below its children.
                         if (child is CoreObject coreChild)
-                            coreChild.CommitChanges(false, false);
+                            coreChild.CommitChanges(false, false, null, undo, stamp);
                         else
-                            child.CommitChanges();
+                            CommitDependent(child, undo);
                     }
                 }
             if (ObjectSchema.HasLinkedCollections)
                 foreach (var collection in NucleusLinkedCollections)
+                {
+                    record?.BeforeAcknowledge(collection, collection.RemovedMembers);
                     collection.AcknowledgeRemovals();
+                }
             foreach (var link in links)
             {
                 if (link is CoreObject coreLink)
-                    coreLink.CommitChanges(makeReadOnly, false);
+                    coreLink.CommitChanges(makeReadOnly, false, null, undo, stamp);
                 else
-                    link.CommitChanges();
+                    CommitDependent(link, undo);
             }
             // Members are roots of their own, committed as links are: the root's graph holds
             // everything below them.
             foreach (var member in members)
             {
                 if (member is CoreObject coreMember)
-                    coreMember.CommitChanges(makeReadOnly, false);
+                    coreMember.CommitChanges(makeReadOnly, false, null, undo, stamp);
                 else
-                    member.CommitChanges();
+                    CommitDependent(member, undo);
+            }
+        }
+
+        /// <summary>Commits a dependent that is not a <see cref="CoreObject"/>, recording it when the commit is undoable.</summary>
+        private static void CommitDependent(ICoreObject dependent, CommitUndoLog? undo)
+        {
+            if (undo == null)
+                dependent.CommitChanges();
+            else
+                dependent.CommitChangesInTransaction(undo);
+        }
+
+        /// <summary>
+        /// What the commits of one object inside a transaction changed, from before the first, so
+        /// the object can be put back if the transaction does not commit. A property written by any
+        /// of the commits gets its stored value back and its current value as a pending change,
+        /// unless the two are equal; a property no commit wrote is left alone. The removals each
+        /// commit forgot are put back in their collections.
+        /// </summary>
+        private sealed class CommitUndo(CoreObject owner) : ICommitUndo
+        {
+            private readonly bool _wasNew = owner._isNew;
+            // The Timestamp from before the first commit, which every commit that wrote the row moved.
+            private readonly (bool Had, object? Value) _timestamp =
+                owner._properties.TryGetValue(nameof(Timestamp), out var stamp) ? (true, stamp) : (false, null);
+            // The stored value of each property a commit wrote, from before the first commit;
+            // HadValue false when the property held nothing. Only for an object that was not new:
+            // one that was new goes back to holding every value as a change.
+            private Dictionary<string, (bool HadValue, object? Value)>? _originals;
+            // Each property a commit took the server's value for, as it was before the first such
+            // commit: its stored value and its pending one, each with whether it had one. Put back
+            // exactly, since the commit replaced both.
+            private Dictionary<string, (bool HadStored, object? Stored, bool HadPending, object? Pending)>? _serverOriginals;
+            private List<(object Collection, List<ICoreObject> Removed)>? _removals;
+
+            /// <summary>Records the stored value of each pending property not recorded by an earlier commit.</summary>
+            public void BeforeCommit()
+            {
+                if (_wasNew || owner._newProperties.Count == 0)
+                    return;
+                _originals ??= [];
+                foreach (var key in owner._newProperties.Keys)
+                    if (!_originals.ContainsKey(key))
+                        _originals[key] = owner._properties.TryGetValue(key, out var value) ? (true, value) : (false, null);
+            }
+
+            /// <summary>Records each property about to take the server's value that an earlier commit did not.</summary>
+            public void BeforeServerValues(IEnumerable<string> properties)
+            {
+                _serverOriginals ??= [];
+                foreach (var key in properties)
+                    if (!_serverOriginals.ContainsKey(key))
+                    {
+                        var hadStored = owner._properties.TryGetValue(key, out var stored);
+                        var hadPending = owner._newProperties.TryGetValue(key, out var pending);
+                        _serverOriginals[key] = (hadStored, stored, hadPending, pending);
+                    }
+            }
+
+            /// <summary>
+            /// Puts back each property a commit took the server's value for, stored and pending
+            /// value both. An edit made since the commit, pending now because a committed object
+            /// holds its edits as changes, is kept: on a new object <see cref="Revert"/> then makes
+            /// it the value, and on a loaded one it stays pending.
+            /// </summary>
+            private void RevertServerValues()
+            {
+                if (_serverOriginals == null)
+                    return;
+                foreach (var (key, original) in _serverOriginals)
+                {
+                    var editedSince = owner._newProperties.TryGetValue(key, out var edit);
+                    if (original.HadStored)
+                        owner._properties[key] = original.Stored;
+                    else
+                        owner._properties.Remove(key);
+                    if (editedSince)
+                        owner._newProperties[key] = edit;
+                    else if (original.HadPending)
+                        owner._newProperties[key] = original.Pending;
+                    else
+                        owner._newProperties.Remove(key);
+                }
+            }
+
+            /// <summary>Records the removals a collection is about to forget.</summary>
+            public void BeforeAcknowledge(object collection, IEnumerable<ICoreObject> removed)
+            {
+                List<ICoreObject>? list = null;
+                foreach (var obj in removed)
+                    (list ??= []).Add(obj);
+                if (list != null)
+                    (_removals ??= []).Add((collection, list));
+            }
+
+            public void Revert()
+            {
+                // Server values first: a new object's edits since the commit, moved below, and a
+                // loaded one's, kept here, still win over what the property held before.
+                RevertServerValues();
+                if (_wasNew)
+                {
+                    // The edits made since the commit are pending; a new object holds them all.
+                    foreach (var pending in owner._newProperties)
+                        owner._properties[pending.Key] = pending.Value;
+                    owner._newProperties.Clear();
+                    owner._isNew = true;
+                }
+                else if (_originals != null)
+                {
+                    foreach (var (key, original) in _originals)
+                    {
+                        if (_serverOriginals?.ContainsKey(key) == true)
+                            continue;
+                        var current = owner._newProperties.TryGetValue(key, out var pending)
+                            ? pending
+                            : owner._properties.GetValueOrDefault(key);
+                        if (original.HadValue)
+                            owner._properties[key] = original.Value;
+                        else
+                            owner._properties.Remove(key);
+                        if (original.HadValue && Equals(current, original.Value))
+                            owner._newProperties.Remove(key);
+                        else
+                            owner._newProperties[key] = current;
+                    }
+                }
+                if (_timestamp.Had)
+                    owner._properties[nameof(Timestamp)] = _timestamp.Value;
+                else
+                    owner._properties.Remove(nameof(Timestamp));
+                owner._isValidated = false;
+                if (_removals != null)
+                    foreach (var (collection, removed) in _removals)
+                    {
+                        if (collection is INucleusChildCollection children)
+                            children.RestoreRemovals(removed);
+                        else if (collection is INucleusLinkedCollection linked)
+                            linked.RestoreRemovals(removed);
+                    }
             }
         }
 
@@ -449,6 +621,12 @@ namespace TFM.Nucleus
 
         void ICoreObject.CommitChanges(ILogger? logger) => CommitChanges(false, logger);
 
+        void ICoreObject.CommitChangesInTransaction(CommitUndoLog undo, ILogger? logger)
+        {
+            ArgumentNullException.ThrowIfNull(undo);
+            CommitChanges(false, true, logger, undo);
+        }
+
         #endregion
 
 
@@ -492,15 +670,24 @@ namespace TFM.Nucleus
         }
 
         /// <summary>
-        /// Takes the value the server stored for a property during a write. It is coerced as a
-        /// loaded value is, becomes the committed value, and drops any pending client value, so
-        /// committing the object's changes after the write keeps it.
+        /// Takes the value the server stored for a property during a write, coerced as a loaded
+        /// value is. It is held until the object's changes are committed, which happens once the
+        /// save's transaction commits (or, through a caller's context, as its save runs), and then
+        /// becomes the stored value, replacing any value the object sent. Until then the property
+        /// reads as it did, so a save that fails, and is rolled back, leaves the object as it was,
+        /// ready to be saved again. The next save drops anything held from one that did not commit.
         /// </summary>
         public void AcceptServerValue(string property, object? value)
         {
-            _newProperties.Remove(property);
-            _properties[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
+            ArgumentNullException.ThrowIfNull(property);
+            (_serverValues ??= [])[property] = value != null && value != DBNull.Value ? CoerceBoundValue(property, value) : null;
         }
+
+        /// <summary>
+        /// Drops the server values held from a save that did not commit, before a new save writes
+        /// the object: its write returns them again, and one it does not write must not take them.
+        /// </summary>
+        private void DropHeldServerValues() => _serverValues?.Clear();
 
 
 
@@ -728,10 +915,14 @@ namespace TFM.Nucleus
             if (dependents != null)
                 ValidateDependents(dependents);
             EnsureSaveable();
+            DropHeldServerValues();
             PreSave();
             if (dependents != null)
                 foreach (var dependent in dependents)
+                {
+                    dependent.DropHeldServerValues();
                     dependent.PreSave();
+                }
         }
 
         /// <summary>Saves the object through the ambient runtime, which validates it first.</summary>
@@ -744,13 +935,13 @@ namespace TFM.Nucleus
 
         /// <summary>
         /// Saves within a caller-owned context (and transaction); the context validates the object
-        /// first, and the caller commits or rolls back.
+        /// first, and the caller commits or rolls back. The context marks the object saved as its
+        /// writes run, and puts it back as it was if the transaction rolls back or its commit fails.
         /// </summary>
-        public virtual async Task SaveAsync(IDataContext dataContext, CancellationToken token = default)
+        public virtual Task SaveAsync(IDataContext dataContext, CancellationToken token = default)
         {
             ArgumentNullException.ThrowIfNull(dataContext);
-            await dataContext.SaveAsync(this, token);
-            CommitChanges(false);
+            return dataContext.SaveAsync(this, token);
         }
 
         private void EnsureSaveable()

@@ -12,7 +12,7 @@ using TFM.Nucleus.Abstractions.Interfaces;
 
 namespace TFM.Nucleus.Data
 {
-    public class ObjectDataAdaptor<T> : IObjectDataAdaptor<T> where T : ICoreObject<T>, new()
+    public class ObjectDataAdaptor<T> : IObjectDataAdaptor<T>, INucleusQueryOperators<T> where T : ICoreObject<T>, new()
     {
         private readonly ObjectDataManager _odm;
         private bool disposedValue;
@@ -291,6 +291,34 @@ namespace TFM.Nucleus.Data
         /// <summary>One page plus the unpaged total, in a single round trip.</summary>
         public Task<PagedResult<T>> ToPagedResultAsync(int skip, int take, CancellationToken cancellationToken = default) =>
             _odm.LoadPagedCoreAsync<T>(skip, take, QueryExpression is ConstantExpression ? null : QueryExpression, _excluded, _included, _includeDeleted, cancellationToken);
+
+        #endregion
+
+        #region Operators run in the database
+
+        async Task<(bool Found, T? Row)> INucleusQueryOperators<T>.FirstCoreAsync(CancellationToken cancellationToken)
+        {
+            var rows = await _odm.LoadTopCoreAsync<T>(QueryExpression, 1, _excluded, _included, _includeDeleted, cancellationToken);
+            return rows.Count == 0 ? (false, default) : (true, rows[0]);
+        }
+
+        async Task<(bool Found, T? Row)> INucleusQueryOperators<T>.SingleCoreAsync(CancellationToken cancellationToken)
+        {
+            // Two rows are enough to tell one from several.
+            var rows = await _odm.LoadTopCoreAsync<T>(QueryExpression, 2, _excluded, _included, _includeDeleted, cancellationToken);
+            return rows.Count switch
+            {
+                0 => (false, default),
+                1 => (true, rows[0]),
+                _ => throw new InvalidOperationException("Sequence contains more than one element."),
+            };
+        }
+
+        Task<bool> INucleusQueryOperators<T>.AnyCoreAsync(CancellationToken cancellationToken) =>
+            _odm.AnyCoreAsync<T>(QueryExpression, _excluded, _included, _includeDeleted, cancellationToken);
+
+        Task<long> INucleusQueryOperators<T>.CountCoreAsync(CancellationToken cancellationToken) =>
+            _odm.CountCoreAsync<T>(QueryExpression, _excluded, _included, _includeDeleted, cancellationToken);
 
         #endregion
 

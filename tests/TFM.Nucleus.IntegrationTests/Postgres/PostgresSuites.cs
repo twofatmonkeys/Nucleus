@@ -8,6 +8,28 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresCrudIntegrationTests(PostgresFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresTransactionCommitIntegrationTests(PostgresFixture fixture) : TransactionCommitIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresConnectionLimitIntegrationTests(PostgresFixture fixture) : ConnectionLimitIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresRetryPolicyIntegrationTests(PostgresFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.StatementTimeoutSeconds = 1;
+    }
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresDatabaseFailureIntegrationTests(PostgresFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        // Port 1 on the loopback address: nothing listens there, so the connection is refused.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.Server = "127.0.0.1:1";
+    }
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresContextSaveIntegrationTests(PostgresFixture fixture) : ContextSaveIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresManagerLoadIntegrationTests(PostgresFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
@@ -155,6 +177,24 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
                    $"UNION ALL SELECT conname::text FROM pg_constraint WHERE conrelid = {oid} " +
                    $"UNION ALL SELECT tgname::text FROM pg_trigger WHERE tgrelid = {oid} AND NOT tgisinternal) n";
         }
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresForeignKeyIntegrationTests(PostgresFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE \"public\".\"{table}\" ALTER COLUMN \"{column}\" TYPE varchar({length})";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override string DropForeignKeySql(string table, string key) => $"ALTER TABLE \"public\".\"{table}\" DROP CONSTRAINT \"{key}\"";
+
+        protected override string KeyIsCheckedSql(string key) =>
+            $"SELECT CASE WHEN convalidated THEN 1 ELSE 0 END FROM pg_constraint WHERE conname = '{key}'";
 
         protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 

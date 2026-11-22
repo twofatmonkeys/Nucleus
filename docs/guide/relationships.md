@@ -96,7 +96,8 @@ Nucleus does the bookkeeping from there:
   Lazy collections are the exception (below).
 - **Saving.** Save the parent, never a child (a child's own `Save` throws
   `UnableToSaveFromChildObject`). New children are inserted, changed ones updated and removed ones
-  deleted, in one transaction. The deletes run first, so a replacement with the same unique key
+  deleted, in one transaction. An unchanged child is not written, so its `Timestamp` stays put,
+  while its own changed children still are. The deletes run first, so a replacement with the same unique key
   does not collide with the row it replaces. Large batches go to the bulk engine on their own. A
   save that fails rolls back and keeps the removals, so saving again deletes them.
 - **Validating.** The parent's `Validate()` runs `Validate()` on every new or changed child, at
@@ -159,6 +160,10 @@ How the declarations combine:
 of the nearest declaration above it that enables deleting it (the collection's when it names one,
 then the parent's, and so on up), so the lines of a soft-deleted order can be restored with it. A
 child type made soft this way gets the soft-delete columns, added in place like any new column.
+A child cannot be soft under an owner that is deleted hard: deleting the owner would remove its
+row and keep the flagged children, pointing at a row that no longer exists. The schema fails to
+build and names both types; make the owner soft too, or the child hard. A soft child under an
+owner that cannot be deleted at all is fine.
 
 **Removing without a declaration.** Removing a stored child from a collection whose children are
 not deletable throws `InvalidOperationException` from `Remove`, `RemoveAt`, `Clear` or the indexer,
@@ -206,8 +211,18 @@ Every load of the parent leaves its rows out. The collection loads them the firs
 however many threads read it together.
 
 That first read goes through the manager or data context that loaded the parent, on a connection
-of its own and outside any transaction the caller holds. Adding to an unread lazy collection does
-not load it, and the added children save with the parent.
+of its own and outside any transaction the caller holds (see
+[Known limits](known-limits.md#reading) for what that means inside a transaction). Adding to an
+unread lazy collection does not load it, and the added children save with the parent.
+
+You choose what the rows cost:
+
+- `Include(r => r.Naps)` on the parent's read loads them in the same round trip, for every
+  parent it returns. A listing that reads the collection on every row does this.
+- `await collection.LoadAsync()` loads them in one round trip of their own, without blocking a
+  thread, when you decide to.
+- Reading the collection loads them in one round trip of their own, synchronously, on the thread
+  that reads it. A property cannot be awaited, so the implicit read cannot be asynchronous.
 
 <!-- sample: entity-resident -->
 ```csharp
@@ -311,9 +326,16 @@ The first read of the property loads the entity, once, however many threads read
 keeps it. The next read runs no query, and the object is not made dirty. A row that no longer
 exists reads as `null`.
 
+The column has a foreign key (see [Foreign keys](schema.md#foreign-keys)), so the referenced entity
+cannot be deleted while a live row points at it, and a save of a reference to an entity that was
+never saved fails unless the link is `forceSave`. A reference that is meant to outlive its row
+takes `[ForeignKey(false)]`, or `[ForeignKey(OnDelete = ForeignKeyAction.SetNull)]` to have the
+database clear it.
+
 That first read goes through whatever loaded the object, as a lazy collection's does. A manager
 loads it by ID from the provider that stores its type, or from the cache for a `[Cacheable]` type.
-A data context loads it from its own provider, on a connection of its own.
+A data context loads it from its own provider, on a connection of its own, outside the context's
+transaction (see [Known limits](known-limits.md#reading)).
 
 `Resident.Keeper` above is one. The property carries `[DatabaseColumn]` as well as `[LinkedObject]`:
 without it the reference has no column and is not stored. The keeper is an ordinary root:
@@ -393,7 +415,8 @@ each. A one can hold several collections, two of them over one many type when ea
 **Loading.** Reading the property loads nothing. The whole collection loads, in one query, the
 first time a member is read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`,
 `Clear`, `Insert`, `CopyTo`). It loads once however many threads read it, on the synchronous path,
-through the manager or data context that loaded the one.
+through the manager or data context that loaded the one, outside any transaction the caller holds
+(see [Known limits](known-limits.md#reading)).
 
 - `await collection.LoadAsync()` loads it without blocking a thread.
 - Adding does not load it, and the collection of a new one starts loaded and empty.

@@ -8,6 +8,28 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerCrudIntegrationTests(SqlServerFixture fixture) : CrudIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerTransactionCommitIntegrationTests(SqlServerFixture fixture) : TransactionCommitIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerConnectionLimitIntegrationTests(SqlServerFixture fixture) : ConnectionLimitIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerRetryPolicyIntegrationTests(SqlServerFixture fixture) : RetryPolicyIntegrationTests(fixture)
+    {
+        protected override void GiveUpWaitingSoon(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.StatementTimeoutSeconds = 1;
+    }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerDatabaseFailureIntegrationTests(SqlServerFixture fixture) : DatabaseFailureIntegrationTests(fixture)
+    {
+        // Port 1 on the loopback address: nothing listens there, so the connection is refused.
+        protected override void PointAtNothing(TFM.Nucleus.Data.Providers.RelationalProviderOptions options) => options.Server = "127.0.0.1:1";
+    }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerContextSaveIntegrationTests(SqlServerFixture fixture) : ContextSaveIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerManagerLoadIntegrationTests(SqlServerFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
@@ -81,7 +103,14 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerChildSaveIntegrationTests(SqlServerFixture fixture) : ChildSaveIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
-    public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture);
+    public sealed class SqlServerChildModelIntegrationTests(SqlServerFixture fixture) : ChildModelIntegrationTests(fixture)
+    {
+        // Locking read committed waits for a row another transaction holds; a database with
+        // READ_COMMITTED_SNAPSHOT on reads the last committed version instead.
+        protected override async Task<bool> LazyReadWaitsForTheCallerAsync(DatabaseFixture database) =>
+            !Convert.ToBoolean(await database.Database.ScalarAsync(
+                "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID()", TestContext.Current.CancellationToken));
+    }
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerLinkedCollectionIntegrationTests(SqlServerFixture fixture) : LinkedCollectionIntegrationTests(fixture);
@@ -152,6 +181,24 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             $"SELECT STUFF((SELECT ',' + name FROM (" +
             $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.{table}') AND name IS NOT NULL " +
             $"UNION ALL SELECT name FROM sys.objects WHERE parent_object_id = OBJECT_ID(N'dbo.{table}')) n FOR XML PATH('')), 1, 1, '')";
+
+        protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
+
+        protected override Task<object?> ScalarAsync(string sql) => Fixture.Database.ScalarAsync(sql, Ct);
+    }
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerForeignKeyIntegrationTests(SqlServerFixture fixture) : ForeignKeyIntegrationTests(fixture)
+    {
+        protected override string NarrowColumnSql(string table, string column, int length) =>
+            $"ALTER TABLE [dbo].[{table}] ALTER COLUMN [{column}] varchar({length}) NULL";
+
+        protected override string TableIdSql(string table) => Fixture.Database.TableIdSql(table);
+
+        protected override string DropForeignKeySql(string table, string key) => $"ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [{key}]";
+
+        protected override string KeyIsCheckedSql(string key) =>
+            $"SELECT CASE WHEN is_not_trusted = 0 THEN 1 ELSE 0 END FROM sys.foreign_keys WHERE name = '{key}'";
 
         protected override Task ExecuteAsync(string sql) => Fixture.Database.ExecuteAsync(sql, Ct);
 

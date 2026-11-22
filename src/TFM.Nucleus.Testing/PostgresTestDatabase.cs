@@ -19,15 +19,14 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
     protected override string ConfigurationHint => "set the Nucleus:Postgres:* user secrets or NUCLEUS_PG_TEST_* environment variables.";
 
     /// <summary>
-    /// The connection pool of every provider this database registers, unless the test's own
-    /// <c>configure</c> sets another. The provider keeps two Npgsql pools of this size, one for
-    /// transactional connections and one for the rest (their connection strings differ by
-    /// <c>Enlist</c>), so at the default of 100 one test process could hold 200 connections
-    /// against PostgreSQL's default <c>max_connections</c> of 100. The net8.0 and net10.0 runs
-    /// share the server, and a store's suite failed with 53300 "too many clients" whenever their
-    /// PostgreSQL tests overlapped, with up to 99 connections idle in the pools. At 20, two runs
-    /// hold at most 80, which leaves room for the setup statements and a tool. A full pool waits
-    /// for a free connection rather than failing.
+    /// The connection limit of every provider this database registers, unless the test's own
+    /// <c>configure</c> sets another. At the default of 100, one test process could take every
+    /// connection PostgreSQL's default <c>max_connections</c> of 100 allows. The net8.0 and
+    /// net10.0 runs share the server, and a store's suite failed with 53300 "too many clients"
+    /// whenever their PostgreSQL tests overlapped (the provider then kept two pools of the limit,
+    /// which made it worse). At 20, a provider holds at most 20 connections, its change
+    /// subscriptions included, so two runs' shared stacks leave room for the stacks a test starts
+    /// of its own, the setup statements and a tool.
     /// </summary>
     private const int TestPoolSize = 20;
 
@@ -72,6 +71,25 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
         await using var command = new NpgsqlCommand(sql, connection);
         var value = await command.ExecuteScalarAsync(token);
         return value is DBNull ? null : value;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>ACCESS EXCLUSIVE, the one mode that conflicts with every other, readers included.</remarks>
+    public override async Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default)
+    {
+        var connection = await OpenAsync(token);
+        try
+        {
+            var transaction = await connection.BeginTransactionAsync(token);
+            await using var command = new NpgsqlCommand($"LOCK TABLE \"public\".\"{table}\" IN ACCESS EXCLUSIVE MODE", connection, transaction);
+            await command.ExecuteNonQueryAsync(token);
+            return new HeldLock(connection, transaction);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
     }
 
     /// <inheritdoc />

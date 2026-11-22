@@ -113,6 +113,16 @@ namespace TFM.Nucleus
         IEnumerable<ICoreObject> INucleusChildCollection.RemovedObjects => RemovedChildren.Cast<ICoreObject>();
         void INucleusChildCollection.AcknowledgeRemovals() => AcknowledgeRemovals();
 
+        void INucleusChildCollection.RestoreRemovals(IEnumerable<ICoreObject> removed)
+        {
+            ArgumentNullException.ThrowIfNull(removed);
+            foreach (var obj in removed)
+                if (obj is TChild child
+                    && !_inner.Any(c => ReferenceEquals(c, child))
+                    && !_removedChildren.Any(c => ReferenceEquals(c, child)))
+                    _removedChildren.Add(child);
+        }
+
         /// <summary>
         /// True when removing a stored child and saving the parent deletes its row. Declared by
         /// [Deletable] on the child type, on the collection property, or on the parent or an owner

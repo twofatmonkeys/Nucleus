@@ -155,6 +155,9 @@ namespace TFM.Nucleus.Data.Queries
             }
         }
 
+        /// <summary>True when a level of the delete clears soft-deleted references before it deletes.</summary>
+        public bool ClearsReferences => Targets(Root).Any(t => t.ClearedReferences.Count > 0);
+
         /// <summary>Throws when the delete has no condition and would remove every row.</summary>
         public void EnsureHasCondition()
         {
@@ -179,6 +182,7 @@ namespace TFM.Nucleus.Data.Queries
             Parent = parent;
             ParentColumn = parentColumn;
             SetParameters = SoftDelete.Applies(table) ? SoftDelete.NewSetParameters() : [];
+            ClearedReferences = !IsSoft && table is Schema.TableSchema { SoftReferencesIn.Count: > 0 } stored ? stored.SoftReferencesIn : [];
         }
 
         public IDataTableSchema Table { get; }
@@ -195,5 +199,14 @@ namespace TFM.Nucleus.Data.Queries
         public Parameter[] SetParameters { get; }
 
         public bool IsSoft => SetParameters.Length > 0;
+
+        /// <summary>
+        /// The keys of soft-deleted types that point at this table, which a hard delete clears in
+        /// the soft-deleted rows before it deletes: a soft-deleted row keeps its references, and
+        /// its key would otherwise refuse the delete because of a row nobody sees. A reference to
+        /// a row that no longer exists reads as null, so readers see no change. Empty for a soft
+        /// delete, which keeps the rows they point at, and when the provider keeps no keys.
+        /// </summary>
+        public IReadOnlyList<Schema.ForeignKeySchema> ClearedReferences { get; }
     }
 }

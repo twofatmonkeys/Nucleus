@@ -34,12 +34,21 @@ namespace TFM.Nucleus.Data.SQLite
         /// </summary>
         public bool UseWriteAheadLog { get; set; } = true;
 
-        private int _busyTimeoutSeconds = 30;
+        private int _busyTimeoutSeconds = 3;
 
         /// <summary>
         /// How long a command waits for another connection's write lock, in seconds, before it
         /// fails. SQLite lets one connection write at a time; every other writer, in this process or
-        /// another, waits up to this long.
+        /// another, waits up to this long. 3 by default: the failure goes back to the caller, who
+        /// decides whether to wait longer or retry. An application that writes heavily from
+        /// several connections raises it. A wait that runs out fails with a transient
+        /// <see cref="DatabaseException"/> of kind <see cref="DatabaseErrorKind.Timeout"/>.
+        /// <para>
+        /// It is the only time limit SQLite has. The driver's command timeout is this wait for the
+        /// lock, not a limit on a running statement, so
+        /// <see cref="RelationalProviderOptions.StatementTimeoutSeconds"/> is ignored here: a
+        /// statement runs until it finishes, and a cancelled token does not stop one under way.
+        /// </para>
         /// </summary>
         public int BusyTimeoutSeconds
         {

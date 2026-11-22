@@ -28,6 +28,8 @@ namespace TFM.Nucleus.Data.Schema
             {
                 var physical = dialect.PhysicalName(table.TableName);
                 table.MissingSoftDeleteColumns.Clear();
+                // Set by an update for a rebuild it has done; a compare starts from the catalog.
+                table.RebuildForKeys = false;
                 if (!snapshot.Tables.Contains(physical, comparer))
                 {
                     table.ExistsInDatabase = false;
@@ -75,7 +77,7 @@ namespace TFM.Nucleus.Data.Schema
         {
             if (!table.ExistsInDatabase)
                 return new TableUpdatePlan(TableUpdateKind.Create, [], []);
-            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase)
+            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase || table.RebuildForKeys)
                 return new TableUpdatePlan(TableUpdateKind.Rebuild, [], []);
             return new TableUpdatePlan(TableUpdateKind.AddColumns,
                 [.. table.Columns.Where(c => !c.ExistsInDatabase)],
@@ -115,6 +117,46 @@ namespace TFM.Nucleus.Data.Schema
                     create.Add(col);
             }
             return (drop, create);
+        }
+
+        /// <summary>
+        /// Compares the keys a table needs against the Nucleus-named keys the database has on it.
+        /// Returns the physical key names to drop (no longer needed, or a different column, table
+        /// or delete action) and the keys to create. An unchecked key that otherwise matches is
+        /// kept: checking it again would fail for the same rows.
+        /// </summary>
+        public static (List<string> drop, List<ForeignKeySchema> create) DiffForeignKeys(
+            TableSchema table, IEnumerable<CatalogForeignKey> dbKeys, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            var physicalTable = dialect.PhysicalName(table.TableName);
+            var existing = dbKeys
+                .Where(k => comparer.Equals(k.TableName, physicalTable) && IndexNaming.IsForeignKeyName(k.KeyName))
+                .ToList();
+            List<string> drop = [];
+            List<ForeignKeySchema> create = [];
+            foreach (var key in existing)
+            {
+                var required = table.ForeignKeys.FirstOrDefault(k => comparer.Equals(dialect.PhysicalName(k.Name), key.KeyName));
+                if (required == null || !ForeignKeyMatches(required, key, dialect))
+                    drop.Add(key.KeyName!);
+            }
+            foreach (var key in table.ForeignKeys)
+            {
+                var name = dialect.PhysicalName(key.Name);
+                if (!existing.Any(k => comparer.Equals(k.KeyName, name)) || drop.Contains(name, comparer))
+                    create.Add(key);
+            }
+            return (drop, create);
+        }
+
+        private static bool ForeignKeyMatches(ForeignKeySchema key, CatalogForeignKey existing, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            return comparer.Equals(existing.ColumnName, key.Column.ColumnName)
+                && comparer.Equals(existing.ReferencedTableName, dialect.PhysicalName(key.Referenced.TableName))
+                && comparer.Equals(existing.ReferencedColumnName, key.Referenced.IdentityColumn!.ColumnName)
+                && existing.OnDelete == key.OnDelete;
         }
 
         /// <summary>

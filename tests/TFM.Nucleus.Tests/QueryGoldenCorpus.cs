@@ -24,6 +24,24 @@ namespace TFM.Nucleus.Tests
         private static T Loaded<T>(Guid id) where T : CoreObject =>
             ObjectSchema<T>.BuildObjectViaReflection(new Dictionary<string, object?> { ["ID"] = id });
 
+        /// <summary>
+        /// The tables of the foreign key test entities as a provider that keeps keys builds them:
+        /// each with its keys, and the soft references a hard delete clears.
+        /// </summary>
+        public static IReadOnlyDictionary<Type, TableSchema> KeyedTables { get; } = BuildKeyedTables();
+
+        private static Dictionary<Type, TableSchema> BuildKeyedTables()
+        {
+            var store = new RecordingSchemaStore(new([], [], []),
+                typeof(FkKeeper), typeof(FkHammock), typeof(FkResident), typeof(FkNap), typeof(FkTroop), typeof(FkMember)) { ForeignKeys = true };
+            var manager = store.Manager();
+            manager.BuildSchema();
+            return manager.TableCache.ToDictionary(p => p.Key, p => p.Value);
+        }
+
+        /// <summary>A key of <paramref name="type"/>'s table, by column.</summary>
+        public static ForeignKeySchema KeyOf(Type type, string column) => KeyedTables[type].ForeignKeys.Single(k => k.Column.ColumnName == column);
+
         /// <summary>Finds any type's table, for the child collection queries of a select.</summary>
         private static TableSchema? AnyTable(Type type) => Table(type);
 
@@ -81,13 +99,7 @@ namespace TFM.Nucleus.Tests
         private string LinkedMembersOfDelete<TOne, TMany>(string keyColumn, Action<SelectQuery> condition)
             where TOne : ICoreObject where TMany : ICoreObject
         {
-            var ones = new SelectQuery(renderer, Table<TOne>(), AnyTable);
-            ones.LinkedQueries.Clear();
-            condition(ones);
-            var members = new SelectQuery(renderer, Table<TMany>(), AnyTable);
-            members.LinkedQueries.Clear();
-            members.Columns = ["ID"];
-            ones.AddChildQuery(members, keyColumn);
+            var members = RelationalDataProvider.MembersQuery(renderer, Table<TOne>(), condition, Table<TMany>(), keyColumn, AnyTable);
             return members.BuildQuery(includeChildQueries: false);
         }
 
@@ -173,6 +185,12 @@ namespace TFM.Nucleus.Tests
                 ["rows.grouped.keys"] = () => Grouped<TestWidget>(["Name", "Quantity"], null, (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.total"] = () => Grouped<TestWidget>([], q => q.Where.And("Name", "a"), (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.soft"] = () => Grouped<TestSoftWidget>(["Name"], null, (MeasureKind.Count, null, "Rows")),
+                // As a queryable's AnyAsync reads it: one ID. And its CountAsync and RowQuery's
+                // IncludeDeleted, which reach the rows marked deleted too.
+                ["rows.any"] = () => Rows<TestWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.Where.And("Name", "a"); }),
+                ["rows.any.soft"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; }),
+                ["rows.columns.soft.includedeleted"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["Name"]; q.IncludeDeleted = true; }),
+                ["rows.grouped.total.soft.includedeleted"] = () => Grouped<TestSoftWidget>([], q => q.IncludeDeleted = true, (MeasureKind.Count, null, "Rows")),
 
                 // ---- Terms
                 ["term.equals"] = () => Term(new Parameter("Name", "a")),
@@ -294,6 +312,8 @@ namespace TFM.Nucleus.Tests
                     Tables(typeof(TestDeletableParent), typeof(TestDeletableChild))),
                 ["delete.soft.cascade"] = () => DeleteWhere<TestSoftParent>(p => p.Name == "old",
                     Tables(typeof(TestSoftParent), typeof(TestSoftChild))),
+                // A hard delete first clears the references soft-deleted rows hold to what it deletes.
+                ["delete.clears"] = () => DeleteWhere<FkKeeper>(k => k.Name == "old", t => KeyedTables.GetValueOrDefault(t)),
                 ["delete.where.parent"] = () =>
                 {
                     var id = Guid.NewGuid();

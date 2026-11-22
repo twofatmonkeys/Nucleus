@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
@@ -14,7 +15,7 @@ namespace TFM.Nucleus.Data.SQL
     /// outside any transaction, each on a connection of its own. Every read and write a schema
     /// change makes outside its rebuild transaction comes through here.
     /// </summary>
-    internal sealed class SqlServerCatalogReader(Func<SQLConfiguration> config) : ICatalogReader
+    internal sealed class SqlServerCatalogReader(Func<SQLConfiguration> config, ILogger? logger = null) : ICatalogReader
     {
         private SQLConfiguration Config => config();
 
@@ -46,6 +47,19 @@ namespace TFM.Nucleus.Data.SQL
                 WHERE i.type = 2 AND i.is_primary_key = 0
                   AND ((ic.is_included_column = 0 AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')) OR i.name LIKE 'NIX[_]%')";
 
+        // Every Nucleus-named foreign key (FK_*), one row per key: each is on one column. A key
+        // the engine has not checked the existing rows of is not trusted.
+        private const string ForeignKeyQuery = @"
+                SELECT t.name AS TableName, fk.name AS KeyName, c.name AS ColumnName, rt.name AS ReferencedTableName, rc.name AS ReferencedColumnName,
+                       fk.delete_referential_action, fk.is_not_trusted
+                FROM sys.foreign_keys fk
+                JOIN sys.tables t ON t.object_id = fk.parent_object_id
+                JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
+                JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+                JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+                JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                WHERE fk.name LIKE 'FK[_]%'";
+
         private const string FullTextIndexQuery = @"
                 SELECT t.name AS TableName, fc.name AS FullTextCatalogName, i.name AS UniqueIndexName, c.name AS ColumnName
                 FROM sys.fulltext_indexes fti
@@ -62,14 +76,22 @@ namespace TFM.Nucleus.Data.SQL
                 using var connection = Config.BuildSystemSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
-                command.CommandText = "SELECT database_id FROM sys.databases WHERE name = @dbName";
+                command.CommandText = "SELECT database_id, is_read_committed_snapshot_on FROM sys.databases WHERE name = @dbName";
                 command.Parameters.AddWithValue("@dbName", Config.Database);
-                var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
-                return result != null && (int)result > 0;
+                using var reader = async ? await command.ExecuteReaderAsync(cancellationToken) : command.ExecuteReader();
+                if (!(async ? await reader.ReadAsync(cancellationToken) : reader.Read()) || reader.GetInt32(0) <= 0)
+                    return false;
+                if (!reader.GetBoolean(1))
+                    logger?.LogWarning(
+                        "READ_COMMITTED_SNAPSHOT is off for database {database}, so a read waits behind any save that holds a row it reads, " +
+                        "until that save commits. Nucleus never changes an existing database. To turn it on, with no other connection to the database open: " +
+                        "ALTER DATABASE [{database}] SET READ_COMMITTED_SNAPSHOT ON",
+                        Config.Database, Config.Database);
+                return true;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error checking if database '{Config.Database}' exists. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -85,10 +107,35 @@ namespace TFM.Nucleus.Data.SQL
                     await command.ExecuteNonQueryAsync(cancellationToken);
                 else
                     command.ExecuteNonQuery();
+                if (Config.ReadCommittedSnapshotOnCreate)
+                    await TurnOnReadCommittedSnapshotAsync(command, async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Turns on READ_COMMITTED_SNAPSHOT for the database just created, on the master connection
+        /// that created it. NO_WAIT fails at once rather than waiting when anything else has
+        /// connected since. A failure leaves the database as created, with a warning: it exists, so
+        /// failing initialise would not undo it, and only how long reads wait depends on the setting.
+        /// </summary>
+        private async ValueTask TurnOnReadCommittedSnapshotAsync(SqlCommand command, bool async, CancellationToken cancellationToken)
+        {
+            command.CommandText = $"ALTER DATABASE [{Config.Database}] SET READ_COMMITTED_SNAPSHOT ON WITH NO_WAIT";
+            try
+            {
+                if (async)
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                else
+                    command.ExecuteNonQuery();
+            }
+            catch (SqlException ex)
+            {
+                logger?.LogWarning(ex, "Database {database} was created, but READ_COMMITTED_SNAPSHOT could not be turned on, so a read waits behind any save " +
+                    "that holds a row it reads. {error}", Config.Database, ex.Message);
             }
         }
 
@@ -106,9 +153,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(TableNamesQuery, r => r.GetString(0), async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving table names from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving table names from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -118,9 +165,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(ColumnsSql, ReadColumn, async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving columns from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving columns from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -130,9 +177,51 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll(ColumnIndexQuery, ReadColumnIndex, async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving column indexes from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving column indexes from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        public async ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await ReadAll(ForeignKeyQuery, r => new CatalogForeignKey
+                {
+                    TableName = r.GetString(0),
+                    KeyName = r.GetString(1),
+                    ColumnName = r.GetString(2),
+                    ReferencedTableName = r.GetString(3),
+                    ReferencedColumnName = r.GetString(4),
+                    // 0 is NO ACTION and 2 SET NULL; a cascade or a default, which Nucleus never
+                    // creates, reads as neither, so the key is replaced.
+                    OnDelete = r.GetByte(5) switch { 0 => ForeignKeyAction.NoAction, 2 => ForeignKeyAction.SetNull, _ => (ForeignKeyAction)(-1) },
+                    IsChecked = !r.GetBoolean(6),
+                }, async, cancellationToken);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error retrieving foreign keys from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        public async ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var connection = Config.BuildNewSQLConnection();
+                await Open(connection, async, cancellationToken);
+                using var command = connection.CreateCommand();
+                command.CommandText = statement.Text;
+                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
+                command.Parameters.TryAddRange(statement.Parameters.GetSQLParams());
+                var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
+                return Convert.ToInt64(result);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -140,7 +229,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
@@ -151,9 +240,9 @@ namespace TFM.Nucleus.Data.SQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error executing query in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -165,9 +254,9 @@ namespace TFM.Nucleus.Data.SQL
                     r => new FullTextIndexColumn(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)),
                     async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving full-text indexes from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving full-text indexes from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -177,9 +266,9 @@ namespace TFM.Nucleus.Data.SQL
             {
                 return await ReadAll("SELECT name FROM sys.fulltext_catalogs", r => r.GetString(0), async, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving full-text catalogs from database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving full-text catalogs from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -187,7 +276,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = SqlServerSchemaDialect.CreateFullTextCatalogSql(catalogName);
@@ -197,9 +286,9 @@ namespace TFM.Nucleus.Data.SQL
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating full-text catalog '{catalogName}' in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating full-text catalog '{catalogName}' in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -207,7 +296,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             try
             {
-                using var connection = Config.BuildNewSQLConnection(false);
+                using var connection = Config.BuildNewSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
@@ -219,9 +308,9 @@ namespace TFM.Nucleus.Data.SQL
                 var count = (int)(async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar())!;
                 return count > 0;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error checking full-text index on table '{tableName}' in database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error checking full-text index on table '{tableName}' in database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -253,7 +342,7 @@ namespace TFM.Nucleus.Data.SQL
         private async ValueTask<IReadOnlyList<T>> ReadAll<T>(string query, Func<DbDataReader, T> read, bool async, CancellationToken cancellationToken)
         {
             List<T> rows = [];
-            using var connection = Config.BuildNewSQLConnection(false);
+            using var connection = Config.BuildNewSQLConnection();
             await Open(connection, async, cancellationToken);
             using var command = connection.CreateCommand();
             command.CommandText = query;
@@ -263,12 +352,9 @@ namespace TFM.Nucleus.Data.SQL
             return rows;
         }
 
-        private static async ValueTask Open(SqlConnection connection, bool async, CancellationToken cancellationToken)
-        {
-            if (async)
-                await connection.OpenAsync(cancellationToken);
-            else
-                connection.Open();
-        }
+        // Retried like a context's open: ConnectAttempts times for a transient failure, all within
+        // the connection's own connect timeout.
+        private ValueTask Open(SqlConnection connection, bool async, CancellationToken cancellationToken) =>
+            ConnectionOpener.OpenAsync(connection, async, Math.Max(1, Config.ConnectAttempts), SqlServerErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), cancellationToken);
     }
 }

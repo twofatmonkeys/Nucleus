@@ -46,6 +46,33 @@ namespace TFM.Nucleus.Data.SQLite
             "AND (il.name LIKE 'NCI\\_%' ESCAPE '\\' OR il.name LIKE 'UQ\\_%' ESCAPE '\\' OR il.name LIKE 'NIX\\_%' ESCAPE '\\') " +
             "ORDER BY m.name, il.name, ix.seqno";
 
+        // Every single-column foreign key of every table. SQLite keeps a key unnamed, in its
+        // table's definition, so each is named as Nucleus names one (FK_, the table and the
+        // column) and every key of a Nucleus table counts as one Nucleus keeps. A key written
+        // without its referenced column points at the primary key, which is ID.
+        private const string ForeignKeyQuery =
+            "SELECT m.name, fk.\"from\", fk.\"table\", coalesce(fk.\"to\", 'ID'), fk.on_delete " +
+            "FROM sqlite_schema m JOIN pragma_foreign_key_list(m.name) fk " +
+            "WHERE " + UserTables + " ORDER BY m.name, fk.id, fk.seq";
+
+        public ValueTask<IReadOnlyList<CatalogForeignKey>> ReadForeignKeysAsync(bool async, CancellationToken cancellationToken) =>
+            Read("foreign keys", ForeignKeyQuery, r => new CatalogForeignKey
+            {
+                TableName = r.GetString(0),
+                KeyName = $"{IndexNaming.ForeignKeyPrefix}{r.GetString(0)}_{r.GetString(1)}",
+                ColumnName = r.GetString(1),
+                ReferencedTableName = r.GetString(2),
+                ReferencedColumnName = r.GetString(3),
+                // A cascade, a restrict or a default, which Nucleus never writes, reads as
+                // neither, so the table is rebuilt.
+                OnDelete = r.GetString(4).ToUpperInvariant() switch { "NO ACTION" => ForeignKeyAction.NoAction, "SET NULL" => ForeignKeyAction.SetNull, _ => (ForeignKeyAction)(-1) },
+                // SQLite never checks the rows a key is added over; the update reports them.
+                IsChecked = true,
+            }, async, cancellationToken);
+
+        public async ValueTask<long> ReadCountAsync(SchemaStatement statement, bool async, CancellationToken cancellationToken) =>
+            Convert.ToInt64(await Scalar("a count", statement.Text, async, cancellationToken));
+
         public async ValueTask<bool> DatabaseExistsAsync(bool async, CancellationToken cancellationToken)
         {
             string path;
@@ -73,9 +100,13 @@ namespace TFM.Nucleus.Data.SQLite
                 using var connection = Config.BuildConnection(create: true);
                 await Open(connection, async, cancellationToken);
             }
-            catch (Exception ex) when (ex is DbException or IOException or UnauthorizedAccessException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error creating SQLite database '{path}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error creating SQLite database '{path}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new SqliteDataProviderException($"Error creating SQLite database '{path}'. Error: {ex.Message}", DataProviderErrorKind.Error, ex);
             }
             await PrepareAsync(async, cancellationToken);
         }
@@ -98,7 +129,8 @@ namespace TFM.Nucleus.Data.SQLite
             {
                 var mode = await Scalar("the journal mode", "PRAGMA journal_mode = WAL", async, cancellationToken);
                 if (!string.Equals(mode as string, "wal", StringComparison.OrdinalIgnoreCase))
-                    throw new Exception($"SQLite database '{Config.FilePath}' could not be put in write-ahead log mode; it is in {mode} mode.");
+                    throw new SqliteDataProviderException($"SQLite database '{Config.FilePath}' could not be put in write-ahead log mode; it is in {mode} mode.",
+                        DataProviderErrorKind.Error);
             }
             Volatile.Write(ref _prepared, 1);
         }
@@ -133,7 +165,8 @@ namespace TFM.Nucleus.Data.SQLite
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
                 command.CommandText = statement.Text;
-                command.CommandTimeout = Config.SchemaCommandTimeoutSeconds;
+                // No schema timeout: the driver's command timeout is the wait for the write lock,
+                // which stays BusyTimeoutSeconds, as for every other statement.
                 foreach (var bound in ParameterBinding.Bind(statement.Parameters))
                     command.Parameters.AddWithValue($"@{bound.Key}", SqliteValues.ToDb(bound.Value, null));
                 if (async)
@@ -141,9 +174,9 @@ namespace TFM.Nucleus.Data.SQLite
                 else
                     command.ExecuteNonQuery();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error executing query in SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error executing query in SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -172,9 +205,9 @@ namespace TFM.Nucleus.Data.SQLite
                 command.CommandText = query;
                 return async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error reading {what} of SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error reading {what} of SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
@@ -192,18 +225,15 @@ namespace TFM.Nucleus.Data.SQLite
                     rows.Add(read(reader));
                 return rows;
             }
-            catch (Exception ex) when (ex is DbException or InvalidOperationException)
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
-                throw new Exception($"Error retrieving {what} from SQLite database '{Config.Database}'. Error: {ex.Message}", ex);
+                throw DatabaseFailures.Translate($"Error retrieving {what} from SQLite database '{Config.Database}'. Error: {ex.Message}", ex, SqliteErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 
-        private static async ValueTask Open(SqliteConnection connection, bool async, CancellationToken cancellationToken)
-        {
-            if (async)
-                await connection.OpenAsync(cancellationToken);
-            else
-                connection.Open();
-        }
+        // Retried like a context's open: ConnectAttempts times for a transient failure (a locked
+        // file), all within the connection's own connect timeout.
+        private ValueTask Open(SqliteConnection connection, bool async, CancellationToken cancellationToken) =>
+            ConnectionOpener.OpenAsync(connection, async, Math.Max(1, Config.ConnectAttempts), SqliteErrors.IsTransient, ConnectionOpener.TimeoutOf(connection), cancellationToken);
     }
 }

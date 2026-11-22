@@ -44,6 +44,16 @@ namespace TFM.Nucleus.Data.Queries
             set => WithNoLock = value;
 #pragma warning restore CS0618
         }
+
+        /// <summary>
+        /// The read waits for rows other transactions are writing and then reads them, rather
+        /// than reading the last committed version of each. For a check whose answer must count
+        /// a row another transaction is about to commit, such as a delete's check for linked
+        /// collection members. An engine whose readers always read the last committed version, and
+        /// cannot wait for an uncommitted insert, ignores it.
+        /// </summary>
+        public bool WaitForPendingWrites { get; set; }
+
         public string[] Constraints = [];
         public List<Query> LinkedQueries => _linkedQueries;
         private readonly List<Query> _linkedQueries = [];
@@ -112,6 +122,11 @@ namespace TFM.Nucleus.Data.Queries
                 foreach (var child in q.FlattenLinkedQueries())
                     yield return child;
         }
+        /// <summary>
+        /// The query and every query linked below it, in pre-order (a query, then each linked
+        /// query and what is below it, in the order linked), each detached from its parent. The
+        /// order is the order the statements run in, so rows a save ordered keep that order.
+        /// </summary>
         public List<Query> FlattenAndDetach()
         {
             var all = new List<Query>(CountLinkedQueries());
@@ -120,8 +135,9 @@ namespace TFM.Nucleus.Data.Queries
             while (stack.Count > 0)
             {
                 var q = stack.Pop();
-                foreach (var child in q.LinkedQueries)
-                    stack.Push(child);
+                // Pushed last first, so they come off the stack in the order they were linked.
+                for (var i = q.LinkedQueries.Count - 1; i >= 0; i--)
+                    stack.Push(q.LinkedQueries[i]);
                 q.LinkedQueries.Clear();
                 q.ParentQuery = null;
                 all.Add(q);

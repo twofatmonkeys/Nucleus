@@ -43,10 +43,7 @@ namespace TFM.Nucleus.Data.SQL
             return context;
         }
 
-        protected override DbConnection BuildConnection(bool useTransaction) => SqlConfig.BuildNewSQLConnection(useTransaction);
-
-        protected override Task<SqlDataContext> CreateChildContextAsync(CancellationToken token) =>
-            CreateAsync(_sqlProvider, this, HasTransaction, WatchesForChanges, token);
+        protected override DbConnection BuildConnection(bool useTransaction) => SqlConfig.BuildNewSQLConnection();
 
         // Start the dependency. The login must have SUBSCRIBE QUERY NOTIFICATIONS permission and
         // the database must have Service Broker enabled (ALTER DATABASE [db] SET ENABLE_BROKER).

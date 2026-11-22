@@ -51,10 +51,19 @@ namespace TFM.Nucleus.Data
 
         IAsyncEnumerable<StreamingRow> StreamAsync(IQuery query, CancellationToken ct);
 
+        /// <summary>
+        /// Saves the object, with the graph it reaches, in this context (and its transaction, if
+        /// it has one), validating it first. The object is marked saved as the writes run. If the
+        /// transaction rolls back or its commit fails, the object is put back as it was before its
+        /// first save in that transaction, with any change made since still pending, so it can be
+        /// saved again without being reloaded.
+        /// </summary>
         public void Save(ICoreObject obj);
         public void Delete(ICoreObject obj);
 
+        /// <inheritdoc cref="Save(ICoreObject)"/>
         public Task SaveAsync(ICoreObject obj);
+        /// <inheritdoc cref="Save(ICoreObject)"/>
         public Task SaveAsync(ICoreObject obj, CancellationToken token);
         public Task DeleteAsync(ICoreObject obj);
         public Task DeleteAsync(ICoreObject obj, CancellationToken token);
@@ -77,7 +86,8 @@ namespace TFM.Nucleus.Data
         /// Saves objects of any types this context's provider stores, in this context (and its
         /// transaction, if it has one). Each object is validated first; nulls are skipped. A
         /// batch too large for ordinary statements is written by the provider's bulk engine on
-        /// the asynchronous path; the caller does not choose.
+        /// the asynchronous path; the caller does not choose. The objects are marked saved, and put
+        /// back if the transaction does not commit, as <see cref="Save(ICoreObject)"/> describes.
         /// </summary>
         /// <remarks>An implementation that predates this member is served by its batch save under the old name.</remarks>
         public void Save(IEnumerable<ICoreObject?> objs) =>
@@ -101,21 +111,52 @@ namespace TFM.Nucleus.Data
         [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
         public Task BulkSaveAsync(IEnumerable<ICoreObject?>? objects, CancellationToken token);
 
+        /// <summary>
+        /// Commits the context's transaction. On a root context it commits at once, and throws if
+        /// a failure marked the transaction for rollback, in which case it rolls back instead. On a
+        /// context opened with a parent it marks this part of the work complete, and the root
+        /// commits the whole. A context without a transaction has nothing to commit. Nothing may
+        /// run on a context after it commits.
+        /// </summary>
+        /// <remarks>An implementation that predates this member does not support it.</remarks>
+        public void Commit() =>
+            throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
+
+        /// <inheritdoc cref="Commit"/>
+        public Task CommitAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException($"{GetType().Name} does not support an explicit commit.");
+
+        /// <summary>
+        /// Rolls the transaction back at once: it ends, its locks are released, and nothing more
+        /// runs on it (a commit after it throws). On a context opened with a parent it is the whole
+        /// tree's transaction that ends, the root's work included, since a tree is one transaction.
+        /// Does nothing once the transaction has ended.
+        /// </summary>
         public void Rollback();
 
         /// <summary>
-        /// Rolls the context's transaction back, for a caller on the asynchronous path. A
-        /// rollback sends nothing a caller waits on, so this completes at once.
+        /// <see cref="Rollback"/>, for a caller on the asynchronous path. A cancelled token still
+        /// rolls back, and then throws: a cancellation never leaves the work to be committed.
         /// </summary>
+        /// <remarks>An implementation that predates this member rolls back synchronously.</remarks>
         public Task RollbackAsync(CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             Rollback();
+            cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
+        /// <summary>
+        /// <see cref="Rollback"/> for a catch block: it never throws, so the failure being handled
+        /// propagates. A rollback that fails is logged, and the server rolls back what it left
+        /// when the connection closes.
+        /// </summary>
         public void TryRollback();
 
+        /// <inheritdoc cref="TryRollback"/>
         public Task TryRollbackAsync();
+
+        /// <inheritdoc cref="TryRollback"/>
+        /// <remarks>It does not throw for a cancelled token either.</remarks>
         public Task TryRollbackAsync(CancellationToken token);
 
     }

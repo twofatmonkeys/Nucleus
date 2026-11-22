@@ -16,25 +16,30 @@ is on the [Relationships](relationships.md) page.
 Every entity has two properties it does not declare:
 
 - **`ID`**, a `Guid` primary key, assigned when the object is constructed.
-- **`Timestamp`**, a `DateTimeOffset` the server stamps on every insert and update. The stamped
-  value is not read back. In memory it is the client clock at the object's first save, and a
-  loaded object keeps the value it was loaded with. Reading it back on every write was measured at
-  10% to 65% slower for batched, split and bulk saves.
+- **`Timestamp`**, a `DateTimeOffset` the server stamps on every insert and update. A save
+  updates the object saved and only those rows below it that are new or changed, so a child's
+  `Timestamp` moves when the child changes, not whenever its parent is saved. The stamped
+  value is not read back. In memory, every row a save wrote takes the client clock when the save
+  is committed, and a row it did not write keeps the value it was loaded with, so the value is
+  close to the stored one but not equal to it: the clocks differ, and the engines store it at
+  their own precision. Reading it back on every write was measured at 10% to 65% slower for
+  batched, split and bulk saves.
 
 ## Columns
 
 `[DatabaseColumn]` marks a property as stored. A property without it lives in memory only. The
 column takes the property's name, so `[DatabaseColumn]` on its own is the common case.
 
-The attribute has four constructors, each with an optional trailing column name: `()`,
-`(ColumnDataType)`, `(int? dataLength)` and `(ColumnDataType, int? dataLength)`. Everything else is
-set by name:
+The attribute is written three ways, each with an optional trailing column name: `()`,
+`(ColumnDataType)` and `(ColumnDataType, int dataLength)`. Two more constructors take a nullable
+length, which attribute syntax does not accept, so a length is set together with its type.
+Everything else is set by name:
 
 | Field | Default | Meaning |
 |---|---|---|
 | `ColumnName` | property name | Physical column name, used by every statement, index name and predicate. Set it as `[DatabaseColumn("code")]` or `[DatabaseColumn(ColumnName = "code")]`. See renaming below. |
 | `DataType` | `NotSpecified` | A `ColumnDataType`: one of `NotSpecified`, `Unicode`, `Date`, `Integer`, `Binary`, `LargeBinary`. `NotSpecified` infers the type from the CLR property type. |
-| `DataLength` | inferred | Column length. `-1` maps to `max`. |
+| `DataLength` | inferred | Column length. `-1` maps to `max`. Nullable, so attribute syntax cannot set it by name; give it to the constructor: `[DatabaseColumn(ColumnDataType.Unicode, 200)]`. |
 | `DecimalPlaces` | none | Scale for decimal columns. Nullable, so attribute syntax cannot set it; use `Scale`. |
 | `Scale` | provider default (5) | Sets `DecimalPlaces` from attribute syntax: `[DatabaseColumn(Scale = 6)]`. Precision is the data length (default 20) minus the scale. |
 | `PrimaryKey` | `false` | Reserved for the `ID` column `CoreObject` provides. Exactly one column must carry it, and marking any other property fails at provider initialisation. |
@@ -43,8 +48,8 @@ set by name:
 | `IndexDescending` | `false` | Sorts that index descending. |
 | `FullTextSearch` | `false` | Includes the column in the table's full-text index, which `string.Contains` on the column searches. |
 | `ExternalStorage` | `false` | Stores a `byte[]` column outside the row where the provider supports it (SQL Server FILESTREAM). |
-| `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
-| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
+| `SetValueOverride` | `None` | A `ServerFunctionKind`. Has the server compute the value on every insert and update, for example `ServerFunctionKind.CurrentDateTimeOffset` for a server timestamp; `CurrentDateTime`, `UtcNow` and `NewGuid` are the others. A value the client set for the property is not sent. |
+| `ReturnOutputToProperty` | `false` | Reads the value the server stored back into the property, in the same statement as the write (`OUTPUT` on SQL Server, `RETURNING` on PostgreSQL and SQLite), on every write path including the bulk engine. The property takes it once the save commits (through a caller's context, as its save runs), so a save that fails leaves the object's own value in place for the next one. A write that reads back runs as a reader rather than a non-query, which costs batched and bulk saves measurably (see `Timestamp` above). On SQL Server a table with an enabled trigger refuses `OUTPUT` (error 334), and the write fails with a message saying so. |
 
 ### Renaming a column
 
@@ -207,11 +212,12 @@ The [Relationships](relationships.md) page explains these; this is the list.
 
 | Attribute | Applies to | Effect |
 |---|---|---|
-| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](relationships.md#linked-objects). Overloads take a `linkedIDProperty` name and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
+| `[LinkedObject]` | a property holding another entity | Stores the referenced entity's `ID` in this table. A load reads only the ID; the first read of the property loads the entity, and `Include` loads it with the rows. See [Linked objects](relationships.md#linked-objects). Overloads take a `linkedIDProperty` name, which is accepted and does nothing (see the known limits), and `forceSave`: with `forceSave: true`, saving this entity also inserts or updates the referenced one, in the same transaction, when it is new, changed, or holds changed or removed children; its own forceSave links follow, and a cycle ends. A link that was never read since the load has nothing to write and is not loaded by the save. The referenced type must be stored by the same provider, or the save throws before anything runs. |
 | `[Deletable]` | a `NucleusChildCollection` property | Removing a stored child from the collection and saving the parent deletes the child. See [Deleting](relationships.md#deleting). |
 | `[RetrieveOnDemand]` | a `NucleusChildCollection` property | Makes the collection lazy: loads leave its rows out, and it loads them the first time it is read. See [Lazy collections](relationships.md#lazy-collections). |
 | `[LinkedBy(keyProperty)]` | a `NucleusLinkedCollection` property | Names the many type's key, the property holding the one's ID. See [Linked collections](relationships.md#linked-collections). |
 | `[ParentObject(parentIDProperty)]` | the `Parent` property of a child entity | Identifies the owning entity. `CoreChildObject` already applies it. |
+| `[ForeignKey(typeof(T))]`, `[ForeignKey(false)]`, `[ForeignKey(OnDelete = ...)]` | a stored column | A foreign key from a plain `Guid` column to `T`'s table; or drops, or sets the delete action of, the key a reference gets anyway. See [Foreign keys](schema.md#foreign-keys). Its name is also used by `System.ComponentModel.DataAnnotations.Schema`; a file that imports both namespaces names it `TFM.Nucleus.Data.ForeignKey`. |
 
 ### Logging and auditing
 
@@ -248,7 +254,7 @@ Instance members on every entity:
 | Member | Notes |
 |---|---|
 | `Save()`, `SaveAsync()`, `SaveAsync(CancellationToken)` | Validates as every save does (`Validate()`, which also validates the new and changed children and the forceSave links, then `PreSave()`), then writes only the changed columns, the child collections (deleting removed children) and the forceSave links, in one transaction. |
-| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction, validating first; the caller commits or rolls back. |
+| `SaveAsync(IDataContext, CancellationToken)` | Saves inside a caller-owned context and transaction, validating first; the caller commits or rolls back. The object is marked saved as the writes run, and put back as it was if the transaction does not commit. |
 | `Delete()`, `DeleteAsync(CancellationToken)` | Types with their own `[Deletable]` only. Removes the object's child collection rows at every depth in the same statement batch, whether or not they were loaded. Throws before anything executes if a child type is stored by another provider. |
 | `IsNew`, `IsReadOnly`, `HasChanges`, `DataChanged` | Change-tracking state. |
 | `ToJson()`, `DisplayName` | Serialisation and display helpers. |
@@ -378,6 +384,11 @@ public class MischiefReport : CoreObject<MischiefReport>
     [DatabaseColumn]
     public Severity Severity { get => GetValue<Severity>(); set => SetValue(value); }
 
+    // A keeper's ID, not a [LinkedObject]: [ForeignKey] gives it the key a reference would get.
+    [DatabaseColumn]
+    [ForeignKey(typeof(Keeper))]
+    public Guid? ReportedBy { get => GetValue<Guid?>(); set => SetValue(value); }
+
     // Stamped by the database server on every insert and update, whatever the client sets.
     [DatabaseColumn(SetValueOverride = ServerFunctionKind.CurrentDateTimeOffset)]
     public DateTimeOffset RecordedAt { get => GetValue<DateTimeOffset>(); set => SetValue(value); }
@@ -396,6 +407,7 @@ await data.DeleteAsync(report, ct);            // soft: the row stays, flagged
 var live = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", ct);                                          // empty
 var all = await data.LoadAsync<MischiefReport>(r => r.Culprit == "Brenda", new LoadOptions { IncludeDeleted = true }, ct);
 var viaQuery = await data.Get<MischiefReport>().IncludeDeleted().Where(r => r.Culprit == "Brenda").ToListAsync(ct);
+var ever = await data.Rows<MischiefReport>(r => r.Culprit == "Brenda").IncludeDeleted().CountAsync(ct);    // a row read sees them when asked too
 
 // Delete by predicate: no row is loaded, child rows go too, and the count comes back.
 var removed = await data.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);
@@ -429,14 +441,29 @@ public class BananaVariety : CoreObject<BananaVariety>
 }
 ```
 
-Reads then come from memory, and a save or a delete of the type evicts the cache:
+A read of every row (`LoadAsync<T>()`, `Load<T>()`, `LoadAllAsync`, `LoadStreamAsync<T>()`, and
+`Get<T>()` with no `Where`) and a read by ID come from
+memory, and a save or a delete of the type evicts the cache. The first such read fills it, on the
+asynchronous path when the read is asynchronous, and reads that miss at the same time share that
+one fill. A read with a condition, or with `LoadOptions` that exclude, include or show deleted
+rows, reads the table:
 
 <!-- sample: cacheable -->
 ```csharp
-// The first read fills the cache; the rest answer from memory until a save or a delete evicts it.
-var cavendish = await data.Get<BananaVariety>().FirstOrDefaultAsync(v => v.Name == "Cavendish", ct);
-var again = await data.LoadByIDAsync<BananaVariety>(cavendish!.ID, ct);   // by ID: an index lookup in memory
+// The first read of every row fills the cache; later reads of every row or by ID answer
+// from memory until a save or a delete evicts it.
+var varieties = await data.LoadAsync<BananaVariety>(cancellationToken: ct);   // a list of your own, over the shared objects
+var cavendish = varieties.First(v => v.Name == "Cavendish");
+var again = await data.LoadByIDAsync<BananaVariety>(cavendish.ID, ct);        // by ID: an index lookup in memory
 ```
+
+Each read of every row returns a list of its own, so adding to it or removing from it changes
+nothing for anyone else. The objects in it are shared by every caller, so a change to one is seen
+by every reader of the cache before it is saved.
+Past `refreshInterval` a read still gets the cached rows at once while they are read again in the
+background; past `cacheLifetime` the read waits for them. A background read that fails is logged
+as a warning, the cached rows stay, and the next background read starts one `refreshInterval`
+later.
 
 A `[Cacheable]` type cannot have a lazy (`[RetrieveOnDemand]`) child collection, and cannot be the
 one side of a linked collection: its cached instances are shared by every caller.

@@ -16,7 +16,7 @@ namespace TFM.Nucleus.Data.SQL
         public SqlServerSchemaStore(SQLDataProvider provider, ILogger? logger)
         {
             _provider = provider;
-            _catalog = new SqlServerCatalogReader(() => provider.SqlConfig);
+            _catalog = new SqlServerCatalogReader(() => provider.SqlConfig, logger);
             Dialect = new SqlServerSchemaDialect(new SqlServerFullTextExtras(_catalog, logger));
         }
 
@@ -27,6 +27,8 @@ namespace TFM.Nucleus.Data.SQL
         public TableNamingPolicy TableNaming => _provider.Options.TableNaming;
 
         public bool RenameFullNameTables => _provider.Options.RenameFullNameTables;
+
+        public bool ForeignKeys => _provider.Options.ForeignKeys;
 
         public ISchemaDialect Dialect { get; }
 

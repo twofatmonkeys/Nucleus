@@ -32,7 +32,14 @@ namespace TFM.Nucleus.Data.Schema
         /// True when the table exists, every column exists with the type the schema needs, and a
         /// soft-deletable table has both of its soft-delete system columns.
         /// </summary>
-        public bool IsCurrent => ExistsInDatabase && MissingSoftDeleteColumns.Count == 0 && Columns.All(c => c.IsCurrent);
+        public bool IsCurrent => ExistsInDatabase && MissingSoftDeleteColumns.Count == 0 && !RebuildForKeys && Columns.All(c => c.IsCurrent);
+
+        /// <summary>
+        /// The table's keys differ from what the schema needs on an engine that keeps keys only
+        /// with their table (<see cref="Providers.ISchemaDialect.ForeignKeysInline"/>), so the
+        /// update rebuilds it. Set by the update, never by the check.
+        /// </summary>
+        internal bool RebuildForKeys { get; set; }
 
         /// <summary>The soft-delete system columns the last compare found missing from the table.</summary>
         internal List<string> MissingSoftDeleteColumns { get; } = [];
@@ -143,7 +150,31 @@ namespace TFM.Nucleus.Data.Schema
             IdentityColumn = pkColumns[0];
             EnsureColumnNamesAreUsable(objectSchema);
             TableIndexes = BuildTableIndexes(objectSchema);
+            SelfReferences = objectSchema.HasLinkedObjects
+                ? [.. (objectSchema.LinkedObjectProperties ?? []).Where(l => l.IsDBColumn && l.Type.IsAssignableFrom(objectSchema.Type))]
+                : [];
         }
+
+        /// <summary>
+        /// The foreign keys of this table's columns, built with the schema. Empty when the
+        /// provider creates no keys.
+        /// </summary>
+        public IReadOnlyList<ForeignKeySchema> ForeignKeys { get; internal set; } = [];
+
+        /// <summary>
+        /// The keys of soft-deleted types that point at this table. A soft-deleted row keeps its
+        /// references, so a hard delete of a row of this table first clears them, or the key
+        /// would refuse the delete because of a row nobody sees.
+        /// </summary>
+        internal IReadOnlyList<ForeignKeySchema> SoftReferencesIn { get; set; } = [];
+
+        /// <summary>
+        /// The stored [LinkedObject] properties that can hold a row of this table: typed as the
+        /// type itself or as one it derives from. A batch that inserts rows pointing at each other
+        /// through them is ordered so a row is inserted after the row it points at. Empty for
+        /// most types, which is what the save checks first.
+        /// </summary>
+        internal IReadOnlyList<IPropertySchema> SelfReferences { get; }
 
         /// <summary>
         /// The [LegacyTableNames] of the type, each a usable table name, none repeated and none the
@@ -298,6 +329,17 @@ namespace TFM.Nucleus.Data.Schema
         /// <summary>The logical name a [TableIndex] index has on the table named <paramref name="tableName"/>.</summary>
         public static string TableIndexName(string tableName, TableIndexSchema index) =>
             $"{TableIndexPrefix}{tableName}_{index.Name}";
+
+        /// <summary>The prefix of a foreign key Nucleus manages.</summary>
+        public const string ForeignKeyPrefix = "FK_";
+
+        /// <summary>The logical name of a column's foreign key on the table named <paramref name="tableName"/>.</summary>
+        public static string ForeignKeyName(string tableName, ColumnSchema column) =>
+            $"{ForeignKeyPrefix}{tableName}_{column.ColumnName}";
+
+        /// <summary>True when a stored constraint name is one of the foreign keys Nucleus manages.</summary>
+        public static bool IsForeignKeyName(string? name) =>
+            name != null && name.StartsWith(ForeignKeyPrefix, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>True when a stored index name is one of the [TableIndex] indexes Nucleus manages.</summary>
         public static bool IsTableIndexName(string? indexName) =>

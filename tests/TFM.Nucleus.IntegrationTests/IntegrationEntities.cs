@@ -156,6 +156,13 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
 
+    /// <summary>The table the failure suite locks by hand, so that holding its lock stalls no other suite.</summary>
+    public class IntFailureProbe : CoreObject<IntFailureProbe>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     public class IntUniqueItem : CoreObject<IntUniqueItem>
     {
         [DatabaseColumn(Unique = true)]
@@ -380,6 +387,12 @@ namespace TFM.Nucleus.IntegrationTests
         [LinkedObject(forceSave: true)]
         [DatabaseColumn]
         public IntLinkTarget? Target { get => GetValue<IntLinkTarget>(); set => SetValue(value); }
+
+        /// <summary>A reference with no foreign key: its target can be deleted while it points at it.</summary>
+        [LinkedObject]
+        [DatabaseColumn]
+        [ForeignKey(false)]
+        public IntLinkTarget? Loose { get => GetValue<IntLinkTarget>(); set => SetValue(value); }
     }
 
     /// <summary>The one of two linked collections: its vouchers are roots of their own.</summary>
@@ -520,5 +533,50 @@ namespace TFM.Nucleus.IntegrationTests
             HookRuns++;
             SawParent = Parent != null;
         }
+    }
+
+    // ---- Foreign keys: ForeignKeyIntegrationTests' own tables -----------------------------------
+
+    [Deletable]
+    public class IntKeyKeeper : CoreObject<IntKeyKeeper>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
+    /// <summary>Points at a keeper through a key; not forceSave, so a new keeper is not written with it.</summary>
+    [Deletable]
+    public class IntKeyResident : CoreObject<IntKeyResident>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public IntKeyKeeper? Keeper { get => GetValue<IntKeyKeeper>(); set => SetValue(value); }
+    }
+
+    /// <summary>Soft deleted: a hard delete of its keeper clears its reference first.</summary>
+    [Deletable(DeleteBehavior.Soft)]
+    public class IntKeySoftReport : CoreObject<IntKeySoftReport>
+    {
+        [DatabaseColumn]
+        public string? Text { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public IntKeyKeeper? Keeper { get => GetValue<IntKeyKeeper>(); set => SetValue(value); }
+    }
+
+    /// <summary>Rows of one table that point at each other.</summary>
+    [Deletable]
+    public class IntKeyMentor : CoreObject<IntKeyMentor>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedObject]
+        [DatabaseColumn]
+        public IntKeyMentor? Mentor { get => GetValue<IntKeyMentor>(); set => SetValue(value); }
     }
 }

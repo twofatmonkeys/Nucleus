@@ -69,6 +69,13 @@ The async operators run the query: `ToListAsync`, `ToArrayAsync`, `FirstAsync`,
 count take an optional predicate. `ToPagedResultAsync(skip, take, cancellationToken)` returns one
 page and the total count in a single round trip.
 
+The ones that return one row or a figure read only what they need, in the database:
+`FirstAsync` and `FirstOrDefaultAsync` read one row, and `SingleAsync` and
+`SingleOrDefaultAsync` read two at most (enough to tell one from several), each with the
+query's child collections, `Exclude`, `Include` and `IncludeDeleted`. `AnyAsync` reads one ID,
+and `CountAsync` and `LongCountAsync` count; neither reads a child collection or builds an entity.
+With no `OrderBy`, "first" is whichever matching row the database returns first.
+
 `Where` and the async operators are declared on the query that `Get<T>()` returns, not only as
 extension methods. That query is both an `IQueryable<T>` and an `IAsyncEnumerable<T>`, and from
 .NET 10 `System.Linq.AsyncEnumerable` declares the same names, so without the members each call
@@ -126,9 +133,9 @@ What each part does:
 
 - **Columns:** `Select(...)` names the properties each row returns. `OrderBy`, `OrderByDescending`, `ThenBy` and `ThenByDescending` order the rows in the database.
 - **Groups:** `GroupBy(...)` returns one row per distinct combination of the keys, each named by its property, with the measures asked for: `Count(alias)`, `CountDistinct(property, alias)`, `Min`, `Max` and `Sum`. Measures without `GroupBy` are one row over every match. A grouped read is not ordered or paged (order its groups in memory) and does not `Select` as well. A measure's alias is a plain identifier (letters, digits, underscores, starting with a letter or underscore) and must not repeat a key's name.
-- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; the read must be ordered and not grouped) and `CountAsync` (a real `COUNT` in the database, which the LINQ `CountAsync` is not: that one loads every row).
+- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; the read must be ordered and not grouped) and `CountAsync` (a `COUNT` in the database, as the query's `CountAsync` is too).
 - **Values:** `ResultRow.Get<T>(name)` converts each value: a database null is the type's default, an integer becomes an enum, a number becomes the numeric type asked for. A count is a `long`; a minimum or maximum has the column's type (a date stays a `DateTimeOffset` on every engine); a sum is the number the engine returns. `row[name]` is the value as read.
-- **Rules:** soft-deleted rows are left out as in any read. Child collections are never read. The rows cannot be saved: a partial entity would write nulls over the columns it never read. A predicate that matches nothing returns no rows without a round trip.
+- **Rules:** soft-deleted rows are left out as in any read, unless the read asks for them with `IncludeDeleted()`. Child collections are never read. The rows cannot be saved: a partial entity would write nulls over the columns it never read. A predicate that matches nothing returns no rows without a round trip.
 
 A covering [`[TableIndex]`](entities.md#indexes-over-several-columns) over the filter and the columns a row read needs lets the database answer it from the index alone.
 

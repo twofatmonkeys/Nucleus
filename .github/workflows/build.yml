@@ -2,14 +2,20 @@ name: Build & Test
 
 # Pull request gate. Nothing to configure: it builds and tests whatever solution is in the repo.
 # Deliberately does not pack or publish, so a pull request can never consume a version number.
+# master, beta and alpha are ignored on push because tag-and-release.yml already builds and tests
+# every push to them.
 
 on:
   pull_request:
     branches:
       - master
+      - beta
+      - alpha
   push:
     branches-ignore:
       - master
+      - beta
+      - alpha
       - 'release/**'
   workflow_dispatch:
 

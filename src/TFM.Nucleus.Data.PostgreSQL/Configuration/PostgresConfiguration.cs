@@ -26,13 +26,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
         /// </summary>
         public string? SslMode { get; set; }
 
-        /// <summary>
-        /// How many times opening a connection is attempted when the failure is transient, the
-        /// first attempt included. 1 or less means one attempt and no retry.
-        /// </summary>
-        public int ConnectAttempts { get; set; } = 3;
-
-        /// <summary>The old name of <see cref="ConnectAttempts"/>. It always counted attempts, not retries.</summary>
+        /// <summary>The old name of <see cref="RelationalProviderOptions.ConnectAttempts"/>. It always counted attempts, not retries.</summary>
         [Obsolete("Use ConnectAttempts. The value counts attempts, the first included, not retries.")]
         public int ConnectRetryCount
         {
@@ -40,12 +34,13 @@ namespace TFM.Nucleus.Data.PostgreSQL
             set => ConnectAttempts = value;
         }
 
-        private int _connectTimeoutSeconds = 15;
+        private int _connectTimeoutSeconds = 3;
 
         /// <summary>
-        /// Seconds to wait for a connection to open before failing, 15 by default. 0 waits
-        /// indefinitely. Ignored when <see cref="RelationalProviderOptions.ConnectionString"/> is
-        /// set, which carries its own.
+        /// Seconds to wait for a connection to open before failing, 3 by default, retries
+        /// included: the failure goes back to the caller, who decides whether to wait longer or
+        /// retry. 0 waits indefinitely. Ignored when
+        /// <see cref="RelationalProviderOptions.ConnectionString"/> is set, which carries its own.
         /// </summary>
         public int ConnectTimeoutSeconds
         {
@@ -60,17 +55,32 @@ namespace TFM.Nucleus.Data.PostgreSQL
         /// <summary>The database every server has, used to find and create the configured one.</summary>
         internal const string MaintenanceDatabase = "postgres";
 
-        internal NpgsqlConnection BuildConnection(bool useTransaction) => new(BuildConnectionString(Database, useTransaction));
+        /// <summary>
+        /// A connection to the database. Every one, transactional or not, has the same connection
+        /// string, so the driver keeps one pool of <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>.
+        /// </summary>
+        internal NpgsqlConnection BuildConnection() => new(BuildConnectionString(Database, pooled: true));
 
-        /// <summary>A connection to the maintenance database, for finding and creating the configured one.</summary>
-        internal NpgsqlConnection BuildMaintenanceConnection() => new(BuildConnectionString(MaintenanceDatabase, useTransaction: false));
+        /// <summary>
+        /// A connection to the maintenance database, for finding and creating the configured one.
+        /// Not pooled: it is used at initialise only, and a pooled one would stay open, outside the
+        /// limit, after it.
+        /// </summary>
+        internal NpgsqlConnection BuildMaintenanceConnection() => new(BuildConnectionString(MaintenanceDatabase, pooled: false));
 
-        internal string BuildConnectionString(string? database, bool useTransaction)
+        /// <summary>
+        /// No connection enlists in an ambient transaction (a context runs its own), and the pool
+        /// is <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/>, whatever a raw
+        /// connection string says.
+        /// </summary>
+        internal string BuildConnectionString(string? database, bool pooled)
         {
             var builder = ConnectionString != null ? new NpgsqlConnectionStringBuilder(ConnectionString) : NewBuilder();
             builder.Database = database ?? throw new PostgresDataProviderException("PostgreSQL database name is missing", DataProviderErrorKind.NotConfigured);
-            if (!useTransaction)
-                builder.Enlist = false;
+            builder.Enlist = false;
+            builder.MaxPoolSize = MaxConnectionPoolSize;
+            if (!pooled)
+                builder.Pooling = false;
             return builder.ConnectionString;
         }
 
@@ -90,7 +100,6 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 Username = Username ?? throw new PostgresDataProviderException("PostgreSQL user name is missing", DataProviderErrorKind.NotConfigured),
                 Password = Password ?? throw new PostgresDataProviderException("PostgreSQL password is missing", DataProviderErrorKind.NotConfigured),
                 ApplicationName = AppName ?? throw new PostgresDataProviderException("PostgreSQL application name is missing", DataProviderErrorKind.NotConfigured),
-                MaxPoolSize = MaxConnectionPoolSize,
                 Timeout = ConnectTimeoutSeconds,
                 KeepAlive = 30,
             };

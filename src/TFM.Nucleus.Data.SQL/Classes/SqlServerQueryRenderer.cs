@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 using TFM.Nucleus.Data.Providers;
 using TFM.Nucleus.Data.Queries;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data.SQL
 {
@@ -22,8 +23,24 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>The condition that selects rows which have not been soft deleted.</summary>
         internal const string LiveRowFilter = "[IsDeleted] = 0";
+        private const string DeletedRowFilter = "[IsDeleted] = 1";
 
-        private static string NoLock(Query q) => q.AllowDirtyRead ? " WITH(NOLOCK)" : "";
+        /// <summary>
+        /// Locking read committed whatever the database's setting: under READ_COMMITTED_SNAPSHOT a
+        /// plain read takes the last committed version and passes a row being inserted, where this
+        /// waits for its transaction and then sees it.
+        /// </summary>
+        private const string WaitForWritersHint = " WITH(READCOMMITTEDLOCK)";
+
+        /// <summary>The table hint of a query's main read of its table.</summary>
+        private static string TableHint(Query q) =>
+            q.AllowDirtyRead ? " WITH(NOLOCK)" : q.WaitForPendingWrites ? WaitForWritersHint : "";
+
+        /// <summary>
+        /// The table hint of a read of a parent's keys, which a dirty read has never extended to
+        /// but a read that waits for writers must, or the parents it finds would miss one being written.
+        /// </summary>
+        private static string KeyReadHint(Query q) => q.WaitForPendingWrites ? WaitForWritersHint : "";
 
         // ---- Select
 
@@ -96,7 +113,7 @@ namespace TFM.Nucleus.Data.SQL
                 {
                     var source = owner.IsRoot
                         ? renderer.ParentKeySelect(owner, column)
-                        : $"SELECT [{column}] FROM {owner.TableName} {renderer.SelectWhere(owner, KeysFor(owner))}";
+                        : $"SELECT [{column}] FROM {owner.TableName}{KeyReadHint(owner)} {renderer.SelectWhere(owner, KeysFor(owner))}";
                     // IDs are unique and never null; a reference column is neither.
                     var select = column == "ID"
                         ? source
@@ -130,7 +147,7 @@ namespace TFM.Nucleus.Data.SQL
             if (q.WithTotalCount)
             {
                 // Same filter, unpaged: the count arrives as the second result set of the batch.
-                sb.Append($"; {Environment.NewLine}SELECT COUNT_BIG(*) FROM {q.TableName}{NoLock(q)}");
+                sb.Append($"; {Environment.NewLine}SELECT COUNT_BIG(*) FROM {q.TableName}{TableHint(q)}");
                 var where = SelectWhere(q, keys);
                 if (where != null)
                     sb.Append(' ').Append(where);
@@ -145,7 +162,7 @@ namespace TFM.Nucleus.Data.SQL
         {
             q.EnsureAggregateShape();
             var terms = q.GroupBy.Select(c => $"[{c}]").Concat(q.Measures.Select(MeasureTerm));
-            var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{NoLock(q)}");
+            var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{TableHint(q)}");
             if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
@@ -199,7 +216,7 @@ namespace TFM.Nucleus.Data.SQL
             var sb = new StringBuilder(q.Take == 0 ? $"SELECT " : $"SELECT TOP {q.Take} ");
             for (int i = 0; i < q.Columns.Count; i++)
                 sb.Append($"{(i == 0 ? "" : " ,")}[{q.Columns[i]}]");
-            sb.Append($" FROM {q.TableName}{NoLock(q)}");
+            sb.Append($" FROM {q.TableName}{TableHint(q)}");
             sb.Append(' ').Append(SelectWhere(q, keys));
             if (q.IsRoot && RootOrderBy(q) is { } orderBy)
                 sb.Append(' ').Append(orderBy);
@@ -225,7 +242,7 @@ namespace TFM.Nucleus.Data.SQL
             var orderBy = q.OrderBy.IsEmpty ? "ORDER BY [ID]" : OrderByClause(q.OrderBy) ?? "ORDER BY [ID]";
             var sb = new StringBuilder(
                 $"(SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
-                $"FROM {q.TableName}{NoLock(q)}");
+                $"FROM {q.TableName}{TableHint(q)}");
             var where = SelectWhere(q, null);
             if (where != null)
                 sb.Append(' ').Append(where);
@@ -247,7 +264,7 @@ namespace TFM.Nucleus.Data.SQL
             if (q.IsRoot && q.IsPaged)
                 return $"SELECT [{column}] FROM {PagedWindow(q, $"[{column}]")}";
             var top = q.IsRoot && q.Take > 0;
-            var sb = new StringBuilder(top ? $"SELECT TOP {q.Take} [{column}] FROM {q.TableName}" : $"SELECT [{column}] FROM {q.TableName}");
+            var sb = new StringBuilder(top ? $"SELECT TOP {q.Take} [{column}] FROM {q.TableName}{KeyReadHint(q)}" : $"SELECT [{column}] FROM {q.TableName}{KeyReadHint(q)}");
             if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (top && RootOrderBy(q) is { } orderBy)
@@ -342,7 +359,7 @@ namespace TFM.Nucleus.Data.SQL
             q.EnsureHasCondition();
             var sb = new StringBuilder();
             var children = q.TargetsChildrenFirst().ToList();
-            var keeps = children.Count > 0 && children.Append(q.Root).All(t => t.Table.IdentityColumn?.DataType == typeof(Guid));
+            var keeps = (children.Count > 0 || q.ClearsReferences) && children.Append(q.Root).All(t => t.Table.IdentityColumn?.DataType == typeof(Guid));
             var kept = new Dictionary<DeleteTarget, string>();
 
             // The IDs of a target's rows, kept in a table variable declared on first need.
@@ -380,6 +397,9 @@ namespace TFM.Nucleus.Data.SQL
 
             foreach (var target in children.Append(q.Root))
             {
+                // Soft-deleted rows let go of the rows this level deletes, read from its kept IDs.
+                foreach (var key in target.ClearedReferences)
+                    sb.Append(ClearStatement(key, IdsOf(target))).Append(';').Append(Environment.NewLine);
                 var filter = Filter(target);
                 sb.Append(DeleteStatement(target, filter)).Append(';').Append(Environment.NewLine);
             }
@@ -402,6 +422,10 @@ namespace TFM.Nucleus.Data.SQL
             }
             return target.IsSoft ? $"{condition} AND {LiveRowFilter}" : condition;
         }
+
+        private static string ClearStatement(ForeignKeySchema key, string keptIds) =>
+            $"UPDATE {key.Table.TableName} WITH (ROWLOCK) SET [{key.Column.ColumnName}] = NULL " +
+            $"WHERE {DeletedRowFilter} AND [{key.Column.ColumnName}] IN (SELECT [{key.Referenced.IdentityColumn!.ColumnName}] FROM {keptIds})";
 
         private static string DeleteStatement(DeleteTarget target, string filter) => target.IsSoft
             ? $"UPDATE {target.Table.TableName} WITH (ROWLOCK) SET {string.Join(",", target.SetParameters.Select(SetCondition))} WHERE {filter}"

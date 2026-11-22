@@ -33,10 +33,20 @@ namespace TFM.Nucleus.Data.Providers
             _nucleusOptions = nucleusOptions;
             _logger = logger;
             _schemaLogger = schemaLogger;
+            ConnectionSlots = new ConnectionSlots(this);
         }
 
         /// <summary>The provider's current options.</summary>
         public abstract RelationalProviderOptions Options { get; }
+
+        /// <summary>
+        /// This provider's connection budget, shared by its open root contexts and its live change
+        /// subscriptions. A subscription takes its slot before it opens its connection.
+        /// </summary>
+        public ConnectionSlots ConnectionSlots { get; }
+
+        /// <summary>The provider's logger, which its contexts report through.</summary>
+        internal ILogger? Logger => _logger;
 
         public NucleusOptions NucleusOptions => _nucleusOptions.CurrentValue;
 
@@ -48,6 +58,9 @@ namespace TFM.Nucleus.Data.Providers
 
         /// <summary>The engine, for log and error messages.</summary>
         protected abstract string EngineName { get; }
+
+        /// <summary><see cref="EngineName"/>, for the messages of this provider's contexts.</summary>
+        internal string EngineDisplayName => EngineName;
 
         /// <summary>The dialect and database access the schema manager uses.</summary>
         protected abstract ISchemaStore SchemaStore { get; }
@@ -66,6 +79,26 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         protected abstract bool TryGetUniqueViolation(Exception exception, out string? physicalIndexName);
 
+        /// <summary>
+        /// True when the exception, or one in its inner chain, is the engine's foreign key
+        /// violation; gives the name of the broken key when the engine reports one. The default
+        /// finds none, so a provider that predates foreign keys reports a plain failure.
+        /// </summary>
+        protected virtual bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName)
+        {
+            physicalKeyName = null;
+            return false;
+        }
+
+        /// <summary>
+        /// What the engine's failure is, read from the driver's exception anywhere in the chain:
+        /// its kind, and whether it can pass on another attempt. It also decides which failures
+        /// opening a connection retries (<see cref="RelationalProviderOptions.ConnectAttempts"/>).
+        /// The default knows only timeouts and the driver's own transient flag
+        /// (<see cref="DatabaseFailures.ClassifyDefault"/>); a provider names its engine's errors.
+        /// </summary>
+        protected internal virtual DatabaseErrorClass ClassifyFailure(Exception exception) => DatabaseFailures.ClassifyDefault(exception);
+
         /// <summary>The provider's exception for a failure of the given kind.</summary>
         protected abstract Exception ProviderException(DataProviderErrorKind kind, string? message = null);
 
@@ -73,13 +106,43 @@ namespace TFM.Nucleus.Data.Providers
         protected ILogger<SchemaManager>? SchemaLogger => _schemaLogger;
 
         /// <summary>The tables this provider stores and their state in the database.</summary>
-        public SchemaManager Schema => _schema ??= new SchemaManager(SchemaStore, _objectSchemaProvider, _schemaLogger);
+        public SchemaManager Schema => _schema ??= new SchemaManager(SchemaStore, _objectSchemaProvider, _schemaLogger) { Routes = RoutesHere };
+
+        /// <summary>
+        /// The registry this provider is one of, set when the registry is built. It decides which
+        /// types the provider's rows are read and written for, which can be fewer than the types
+        /// it has tables for.
+        /// </summary>
+        internal IDataProviderRegistry? Registry { get; set; }
+
+        /// <summary>
+        /// True when the registry sends <paramref name="type"/>'s rows to this provider: a key
+        /// between two of its tables holds only then. Without a registry, every type under the
+        /// provider's root.
+        /// </summary>
+        private bool RoutesHere(Type type)
+        {
+            if (Registry is not { } registry)
+                return DataProviderRegistry.IsUnderRoot(type, RootType);
+            try
+            {
+                return registry.IsOwnedBy(type, this);
+            }
+            catch (InvalidOperationException)
+            {
+                // No provider takes the type.
+                return false;
+            }
+        }
 
         public DataProviderStatus Status => MapSchemaStatus(Schema.Status);
 
         public Guid ConnectionIdentifier => Options.ID;
 
         public Type? RootType { get; set; }
+
+        /// <inheritdoc cref="RelationalProviderOptions.RetryAttempts"/>
+        public int RetryAttempts => Math.Max(1, Options.RetryAttempts);
 
         #region Initialisation
 
@@ -218,14 +281,30 @@ namespace TFM.Nucleus.Data.Providers
                 var membersTable = Schema.GetTableSchema(collection.LinkedType!)
                     ?? throw new NotSupportedException(
                         $"{schema.Name}.{collection.Name} holds {collection.LinkedType!.Name}, which this provider does not store, so a delete of {schema.Name} cannot check for its members.");
-                var ones = new SelectQuery(Renderer, delete.TableSchema, Schema.GetTableSchema) { Where = delete.Where };
-                ones.LinkedQueries.Clear();
-                var members = new SelectQuery(Renderer, membersTable, Schema.GetTableSchema);
-                members.LinkedQueries.Clear();
-                members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
-                ones.AddChildQuery(members, membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name);
+                var members = MembersQuery(Renderer, delete.TableSchema, ones => ones.Where = delete.Where, membersTable,
+                    membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name, Schema.GetTableSchema);
                 yield return (collection, members);
             }
+        }
+
+        /// <summary>
+        /// The select of the live members of the rows of <paramref name="oneTable"/> that
+        /// <paramref name="condition"/> matches: the IDs of the <paramref name="membersTable"/> rows
+        /// whose <paramref name="keyColumn"/> holds one of them. Both reads wait for writers, so a
+        /// member another transaction is inserting counts once it commits, on an engine that reads
+        /// the last committed version by default.
+        /// </summary>
+        internal static SelectQuery MembersQuery(IQueryRenderer renderer, IDataTableSchema oneTable, Action<SelectQuery> condition,
+            TableSchema membersTable, string keyColumn, Func<Type, IDataTableSchema?> tables)
+        {
+            var ones = new SelectQuery(renderer, oneTable, tables) { WaitForPendingWrites = true };
+            ones.LinkedQueries.Clear();
+            condition(ones);
+            var members = new SelectQuery(renderer, membersTable, tables) { WaitForPendingWrites = true };
+            members.LinkedQueries.Clear();
+            members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
+            ones.AddChildQuery(members, keyColumn);
+            return members;
         }
 
         public Query? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
@@ -262,9 +341,12 @@ namespace TFM.Nucleus.Data.Providers
         /// <item>the inserts and updates of the linked collection members the save writes, with
         /// their children.</item>
         /// </list>
-        /// A removed child or a link whose type this provider does not store throws before
-        /// anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>, so the context
-        /// runs it on its delete path, never regrouped with the writes.
+        /// The writes of the last three are then put in the order their rows point at each
+        /// other (<see cref="SchemaManager.References"/>): a type is written after the types its
+        /// rows hold the IDs of, so a link that points at a link, or a root at another root, is
+        /// written second. A removed child or a link whose type this provider does not store
+        /// throws before anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>,
+        /// so the context runs it on its delete path, never regrouped with the writes.
         /// </summary>
         private List<Query> CreateSaveQueries(IEnumerable<ICoreObject>? objs, Func<ICoreObject, TableSchema> rootTable, bool separateOperations)
         {
@@ -291,16 +373,18 @@ namespace TFM.Nucleus.Data.Providers
                 if (DeleteWhereQuery.ForIds(Renderer, table, Schema.GetTableSchema, removed.Select(o => o.ID)) is { } delete)
                     queries.Add(delete);
             }
+            var writes = new List<(Type Type, IEnumerable<Query> Queries)>();
             foreach (var links in graph.Links.GroupBy(o => o.GetType()))
             {
                 var table = Schema.GetTableSchema(links.Key)
                     ?? throw new NotSupportedException(
                         $"A [LinkedObject(forceSave: true)] property holds a {links.Key.Name}, which this provider does not store, so the save cannot write it " +
                         "in the same transaction. Save it through its own provider, or drop forceSave.");
-                queries.AddRange(WriteQueries(table, [.. links], separateOperations));
+                writes.Add((links.Key, WriteQueries(table, [.. links], separateOperations)));
             }
             foreach (var group in roots.GroupBy(rootTable))
-                queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations));
+                // The objects the save was asked for are written even with no changes of their own.
+                writes.Add((group.Key.ObjectSchema.Type, WriteQueries(group.Key, [.. group], separateOperations, writeUnchanged: true)));
             // After the roots, so a member is never written before the one its key points at.
             foreach (var members in graph.Members.GroupBy(o => o.GetType()))
             {
@@ -308,31 +392,118 @@ namespace TFM.Nucleus.Data.Providers
                     ?? throw new NotSupportedException(
                         $"A linked collection holds new or changed {members.Key.Name} members, which this provider does not store, so the save cannot write them " +
                         "in the same transaction. Save them through their own provider.");
-                queries.AddRange(WriteQueries(table, [.. members], separateOperations));
+                writes.Add((members.Key, WriteQueries(table, [.. members], separateOperations)));
             }
+            // Each type's rows after the rows they point at, whatever order the save met them in.
+            foreach (var (_, writesOfType) in Schema.References.ForWrites(writes, static w => w.Type))
+                queries.AddRange(writesOfType);
             return queries;
         }
 
         /// <summary>
-        /// The inserts and updates of objects stored in one table: the updates linked from the
-        /// inserts, or as separate chains.
+        /// The inserts and updates of objects stored in one table, then the writes below the
+        /// stored objects that have nothing of their own to write: the updates linked from the
+        /// inserts and those writes linked after them, or each as a separate chain.
         /// </summary>
-        private IEnumerable<Query> WriteQueries(TableSchema table, List<ICoreObject> objs, bool separateOperations)
+        /// <remarks>
+        /// A stored object with no changes of its own (<see cref="SaveGraph.IsChanged"/>) is not
+        /// written unless <paramref name="writeUnchanged"/> says so, which only the objects a save
+        /// was asked for do. Its update would set nothing but the server's columns, so a parent
+        /// save used to stamp the Timestamp of every loaded child. Its child collections are still
+        /// written, so a changed grandchild under a clean child is not lost. Those writes come
+        /// last: they are all below rows that already exist, so no row they reference is unwritten.
+        /// </remarks>
+        private IEnumerable<Query> WriteQueries(TableSchema table, List<ICoreObject> objs, bool separateOperations, bool writeUnchanged = false)
         {
+            var hasChildren = table.ObjectSchema.HasNucleusChildCollections;
+            List<ICoreObject>? inserts = null;
+            List<ICoreObject>? updates = null;
+            List<Query>? below = null;
             foreach (var obj in objs)
-                Bind(obj);
-            var update = UpdateQuery.Create(Renderer, table, objs.Where(x => !x.IsNew));
-            var insert = InsertQuery.Create(Renderer, table, objs.Where(x => x.IsNew));
-            if (separateOperations)
-                return new Query?[] { insert, update }.OfType<Query>();
-            if (insert != null)
             {
-                if (update != null)
-                    insert.LinkedQueries.Add(update);
-                return [insert];
+                Bind(obj);
+                if (obj.IsNew)
+                    (inserts ??= []).Add(obj);
+                else if (writeUnchanged || SaveGraph.IsChanged(obj))
+                    (updates ??= []).Add(obj);
+                else if (hasChildren)
+                    foreach (var collection in obj.NucleusChildCollections)
+                        if (collection.GetInsertUpdateQuery() is Query query)
+                            (below ??= []).Add(query);
             }
-            return update != null ? [update] : [];
+            if (inserts != null && table.SelfReferences.Count > 0)
+                inserts = ReferencedFirst(inserts, table.SelfReferences);
+            var insert = InsertQuery.Create(Renderer, table, inserts);
+            var update = UpdateQuery.Create(Renderer, table, updates);
+            if (separateOperations)
+                return new Query?[] { insert, update }.OfType<Query>().Concat(below ?? []);
+            Query? root = null;
+            foreach (var query in new Query?[] { insert, update }.OfType<Query>().Concat(below ?? []))
+            {
+                if (root is null)
+                    root = query;
+                else
+                    root.LinkedQueries.Add(query);
+            }
+            return root is null ? [] : [root];
         }
+
+        /// <summary>
+        /// New rows of one table in an order that inserts each after the rows of the batch it
+        /// points at through <paramref name="references"/>, and otherwise as given. Rows that
+        /// point at each other in a cycle keep their order. The list itself when no row points at
+        /// another row of the batch. A reference is read as it is held, so nothing loads.
+        /// </summary>
+        internal static List<ICoreObject> ReferencedFirst(List<ICoreObject> inserts, IReadOnlyList<IPropertySchema> references)
+        {
+            if (inserts.Count < 2)
+                return inserts;
+            var index = new Dictionary<Guid, int>(inserts.Count);
+            for (var i = 0; i < inserts.Count; i++)
+                index.TryAdd(inserts[i].ID, i);
+            if (!AnyPointsWithin(inserts, references, index))
+                return inserts;
+            // Depth first, each row placed once the rows it points at are.
+            var state = new byte[inserts.Count]; // 0 not reached, 1 waiting, 2 placed
+            var ordered = new List<ICoreObject>(inserts.Count);
+            var stack = new Stack<(int Row, int Next)>();
+            for (var start = 0; start < inserts.Count; start++)
+            {
+                if (state[start] != 0)
+                    continue;
+                state[start] = 1;
+                stack.Push((start, 0));
+                while (stack.Count > 0)
+                {
+                    var (row, next) = stack.Pop();
+                    if (next < references.Count)
+                    {
+                        stack.Push((row, next + 1));
+                        if (PointsAt(inserts[row], references[next], index) is int target && state[target] == 0)
+                        {
+                            state[target] = 1;
+                            stack.Push((target, 0));
+                        }
+                        continue;
+                    }
+                    state[row] = 2;
+                    ordered.Add(inserts[row]);
+                }
+            }
+            return ordered;
+        }
+
+        private static bool AnyPointsWithin(List<ICoreObject> inserts, IReadOnlyList<IPropertySchema> references, Dictionary<Guid, int> index)
+        {
+            for (var i = 0; i < inserts.Count; i++)
+                foreach (var reference in references)
+                    if (PointsAt(inserts[i], reference, index) is int target && target != i)
+                        return true;
+            return false;
+        }
+
+        private static int? PointsAt(ICoreObject row, IPropertySchema reference, Dictionary<Guid, int> index) =>
+            row.GetPropertyValue(reference.Name) is ICoreObject target && index.TryGetValue(target.ID, out var at) ? at : null;
 
         public TableSchema GetTableSchema(Type type) =>
             Schema.GetTableSchema(type) ?? throw new Exception($"Error retrieving the table schema for type: {type.FullName}, not found.");
@@ -344,23 +515,71 @@ namespace TFM.Nucleus.Data.Providers
         #region Failures
 
         /// <summary>
-        /// Wraps a database failure with a message: a unique violation becomes a
-        /// <see cref="UniqueViolationException"/> naming the entity and the column or [TableIndex]
-        /// of a Nucleus index, anything else a plain exception. The original is the inner exception
-        /// either way.
+        /// The exception for a database failure of an operation not recorded, which may have
+        /// been applied. See <see cref="TranslateFailure(string, Exception, DatabaseOperation, bool, int)"/>.
         /// </summary>
-        public Exception TranslateFailure(string message, Exception exception)
+        public Exception TranslateFailure(string message, Exception exception) =>
+            TranslateFailure(message, exception, DatabaseOperation.Unknown, mayHaveBeenApplied: true);
+
+        /// <summary>
+        /// The exception for a failure of <paramref name="operation"/>, with the original as its
+        /// inner exception: the provider's explanation of an engine failure that needs one, a
+        /// <see cref="UniqueViolationException"/> naming the entity and the column or [TableIndex]
+        /// of a Nucleus index, or else a <see cref="DatabaseException"/> classified by
+        /// <see cref="ClassifyFailure"/>. A failure that is not the database's
+        /// (<see cref="DatabaseFailures.IsDatabaseFailure"/>) is returned as it is, for the caller
+        /// to rethrow. <paramref name="mayHaveBeenApplied"/> says whether the operation may have
+        /// left writes behind; a commit and an open decide it themselves (<see cref="DatabaseFailures.Resolve"/>).
+        /// </summary>
+        public Exception TranslateFailure(string message, Exception exception, DatabaseOperation operation, bool mayHaveBeenApplied, int attempts = 1)
         {
+            ArgumentNullException.ThrowIfNull(exception);
             if (TranslateEngineFailure(message, exception) is { } translated)
                 return translated;
+            if (!DatabaseFailures.IsDatabaseFailure(exception))
+                return exception;
+            if (TryGetForeignKeyViolation(exception, out var physicalKeyName))
+                return ForeignKeyViolation(message, exception, physicalKeyName, operation, mayHaveBeenApplied, attempts);
             if (!TryGetUniqueViolation(exception, out var physicalIndexName))
-                return new Exception(message, exception);
+                return DatabaseFailures.Create(message, exception, ClassifyFailure(exception), operation, mayHaveBeenApplied, attempts);
+            var (_, _, applied) = DatabaseFailures.Resolve(new DatabaseErrorClass(DatabaseErrorKind.UniqueViolation, false), operation, mayHaveBeenApplied);
+            attempts = Math.Max(1, attempts);
             return UniqueIndexResolver.Resolve(Schema.TableCache.Values, SchemaStore.Dialect, physicalIndexName) switch
             {
-                null => new UniqueViolationException(message, physicalIndexName, null, null, null, exception),
+                null => new UniqueViolationException(message, physicalIndexName, null, null, null, exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
                 { DeclaredIndexName: { } declared } index =>
-                    new UniqueViolationException(message, index.IndexName, index.EntityType, declared, index.PropertyNames, index.ColumnNames, exception),
-                var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception),
+                    new UniqueViolationException(message, index.IndexName, index.EntityType, declared, index.PropertyNames, index.ColumnNames, exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
+                var index => new UniqueViolationException(message, index.IndexName, index.EntityType, index.PropertyNames[0], index.ColumnNames[0], exception)
+                    { Operation = operation, MayHaveBeenApplied = applied, Attempts = attempts },
+            };
+        }
+
+        /// <summary>
+        /// The <see cref="ForeignKeyViolationException"/> for a broken key, naming the reference
+        /// when the key is one this provider keeps. Resolved from the tables' keys on the failure
+        /// path only.
+        /// </summary>
+        private ForeignKeyViolationException ForeignKeyViolation(string message, Exception exception, string? physicalKeyName,
+            DatabaseOperation operation, bool mayHaveBeenApplied, int attempts)
+        {
+            var (_, _, applied) = DatabaseFailures.Resolve(new DatabaseErrorClass(DatabaseErrorKind.ForeignKeyViolation, false), operation, mayHaveBeenApplied);
+            ForeignKeySchema? key = null;
+            if (physicalKeyName != null)
+            {
+                var dialect = SchemaStore.Dialect;
+                foreach (var table in Schema.TableCache.Values)
+                    foreach (var candidate in table.ForeignKeys)
+                        if (dialect.IdentifierComparer.Equals(dialect.PhysicalName(candidate.Name), physicalKeyName))
+                            key = candidate;
+            }
+            return new ForeignKeyViolationException(message, key?.Name ?? physicalKeyName, key?.Table.ObjectSchema.Type,
+                key?.Column.PropertyName, key?.Column.ColumnName, key?.Referenced.ObjectSchema.Type, exception)
+            {
+                Operation = operation,
+                MayHaveBeenApplied = applied,
+                Attempts = Math.Max(1, attempts),
             };
         }
 
@@ -383,13 +602,21 @@ namespace TFM.Nucleus.Data.Providers
         IDataContext IDataProvider.CreateContext(ContextOptions? options)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges);
+            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges), options);
         }
 
-        Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
+        async Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
         {
             options ??= ContextOptions.Default;
-            return CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token);
+            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token), options);
+        }
+
+        /// <summary>The options a context takes once it is open: its statement time limit.</summary>
+        private static IDataContext ApplyOptions(IDataContext context, ContextOptions options)
+        {
+            if (options.StatementTimeoutSeconds is { } seconds && context is IStatementTimeout target)
+                target.StatementTimeoutSeconds = seconds;
+            return context;
         }
 
         async Task<DataProviderStatus> IDataProvider.CheckDataContextAsync()

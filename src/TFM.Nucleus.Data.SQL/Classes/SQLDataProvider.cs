@@ -95,6 +95,28 @@ namespace TFM.Nucleus.Data.SQL
             return false;
         }
 
+        // 547 for a key: "The INSERT statement conflicted with the FOREIGN KEY constraint "FK_..."",
+        // or "... the REFERENCE constraint ..." for a delete; the name is quoted.
+        [GeneratedRegex(@"constraint ""(?<name>[^""]+)""", RegexOptions.IgnoreCase)]
+        private static partial Regex KeyNameRegex();
+
+        protected override bool TryGetForeignKeyViolation(Exception exception, out string? physicalKeyName)
+        {
+            for (var e = exception; e != null; e = e.InnerException)
+            {
+                if (e is SqlException sql && SqlServerErrors.Classify(sql).Kind == DatabaseErrorKind.ForeignKeyViolation)
+                {
+                    var match = KeyNameRegex().Match(sql.Message);
+                    physicalKeyName = match.Success ? match.Groups["name"].Value : null;
+                    return true;
+                }
+            }
+            physicalKeyName = null;
+            return false;
+        }
+
+        protected override DatabaseErrorClass ClassifyFailure(Exception exception) => SqlServerErrors.Classify(exception);
+
         // 334: SQL Server refuses an OUTPUT clause without INTO on a table with an enabled
         // trigger. Nucleus writes one for every column marked ReturnOutputToProperty.
         protected override Exception? TranslateEngineFailure(string message, Exception exception)

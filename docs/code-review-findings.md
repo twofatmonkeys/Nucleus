@@ -8,21 +8,69 @@ noted otherwise. Everything under "Open" is still true of the code.
 
 ## Open
 
+### Limits by design that a consumer must allow for (November 2026)
+
+Not defects, but each changes what a consumer writes, so each is in the guide's known limits and
+recorded here so that page's list and this one agree.
+
+- **A child context shares its root's connection.** A tree is one transaction on one connection,
+  so its contexts cannot run commands concurrently.
+- **A deferred read runs outside the caller's transaction.** The first read of a lazy collection,
+  a linked collection or a linked object, and `LoadAsync()`, run on a context of their own
+  (`KeyedRowLoader`), bound to the provider and not to the context that loaded the object, because
+  that context may be gone by then. They do not see the caller's uncommitted rows and take a
+  connection of their own. On SQL Server without READ_COMMITTED_SNAPSHOT, a read of rows the
+  caller's own open transaction wrote waits for it until `StatementTimeoutSeconds`, because the
+  engine sees no deadlock: the caller's session waits on nothing in the database. Cover:
+  `ChildModelIntegrationTests.ALazyRead_RunsOutsideTheCallersTransaction`, on every provider. That
+  a collection's first read is synchronous is not a limit: the caller chooses `Include`,
+  `LoadAsync()` or the implicit read, and a property cannot be awaited.
+- **A transactional context cannot join a `TransactionScope`.** No connection enlists, so it is
+  refused with `AmbientTransaction` (see "A provider held two connection pools" under Fixed).
+- **SQL Server's notification listener is one connection outside `MaxConnectionPoolSize`.** The
+  driver opens it for as long as anything watches for changes. That it is unpooled is the driver's
+  behaviour and was not measured here.
+- **SQLite takes a file path only.** `SqliteConfiguration.FilePath` refuses `:memory:` and every
+  `file:` URI, one naming a file on disk included.
+
+### Found by the documentation review, what is left (November 2026)
+
+A check of the guide against the code before beta was merged to master. The three defects it
+found are fixed (see "Found by the documentation review" under Fixed). Still open:
+
+- **Nucleus throws a bare `Exception` in seven places**, against the rule that a failure is never
+  a bare `Exception`: a type with no table schema (`RelationalDataProvider`, twice) and five
+  context states in `DbDataContext`. Each wants a typed
+  exception with a `Kind`.
+- **A column's length cannot be set without its type.** `DatabaseColumnAttribute(int?)`, the
+  `(ColumnDataType, int?)` constructor and the `DataLength` field are nullable, which attribute
+  syntax does not accept, so `[DatabaseColumn(ColumnDataType.Unicode, 200)]` is the one form that
+  sets a length. Read from the language rule, not compiled. Listed in the guide's known limits.
+- **A failed open that ran out its connect timeout carries the driver's exception two levels
+  down.** `ConnectionOpener` wraps it in a `TimeoutException`, which the `DatabaseException` wraps.
+  Documented in the guide's Failures section.
+- **SQL Server error 334 is a `SqlDataProviderException`, not a `DatabaseException`.** It is
+  deliberate (the message says what to change), and the one database failure that is not one.
+  Documented in the guide's Failures section.
+- **`[LinkWhenLogging]` on a property that is not an entity fails the schema build**, though the
+  attribute does nothing else yet.
+- **Not tested: the retried opens of the catalog readers and the SQL Server subscription.** They
+  go through `ConnectionOpener`, which has its own cover, but no test makes one of those opens fail
+  transiently.
+
 ### API surface review, what is left (November 2026)
 
 A review of the whole public surface against `PublicApiSnapshot.cs`. The traps are fixed (see
 "Fixed"). Still open:
 
 - **`[LinkedObject]`'s `linkedIDProperty` argument is stored and read by nothing.** Found while
-  aligning the relationship attributes.
-- **`ConnectAttempts` is PostgreSQL's alone.** SQL Server and SQLite open once. It was not lifted
-  to the shared options, because that would switch a retry on for engines whose transient
-  failures nobody has classified.
+  aligning the relationship attributes. Listed in the guide's known limits.
 - **A test stack does not publish the ambient runtime.** `NucleusRuntime.Current` is one per
   process and several stacks share a test process, so the static `CoreObject` API under a test
   stack uses whichever runtime was published last, if any. Tests use the stack's manager.
-- **The test stack's start methods take no cancellation token**, because
-  `IDataProvider.InitializeAsync` takes none.
+- **The test stack's start methods do not pass a cancellation token to initialisation**, because
+  `IDataProvider.InitializeAsync` takes none. `StartSharedStackAsync` takes one, which reaches
+  only its wait for the schema lock.
 - **Three SDK members take a nullable cancellation token** (`IDataSchema.InitializeAsync`,
   `SchemaManager.InitializeAsync`, `RelationalDataProvider.InitializeAsync`). They work, no
   consumer calls them, and an overload beside them would make a call without arguments ambiguous.
@@ -37,9 +85,6 @@ A review of the whole public surface against `PublicApiSnapshot.cs`. The traps a
 - **`IDataProvider.Initialize(IEnumerable<IObjectSchema>?)` ignores its argument**, like the
   schema methods that were replaced. It is the only synchronous initialise on the interface, and
   a call without arguments already reads correctly, so it was left.
-- **A load on the manager for every row of a `[Cacheable]` type does not use the cache.**
-  `LoadAsync<T>()` with no predicate reads the table; `Load<T>()` on the concrete manager and
-  `LoadByIDAsync` answer from the cache. The cache has no asynchronous fill.
 
 ### Save, load and schema audit (November 2026)
 
@@ -64,19 +109,18 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
 - **P2. Cache `ObjectSchema.NucleusChildCollectionProperties`.** Verified. It builds a new array on
   every read (`[.. _nucleusChildCollectionProperties.Values]`), and it is read per object on every
   walk, commit, query build, `ClearChanges` and lazy marking. Build it once in the constructor, as
-  `LinkedObjectProperties` already is; the same for the obsolete aliases, `LinkedObjectSchemas`,
-  `ChildCollectionSchemas`, `AllProperties` and `AllDBColumns`.
+  `LinkedObjectProperties` already is; the same for `LinkedObjectSchemas`, `AllProperties` and
+  `AllDBColumns`.
 - **P3. Return early from `NucleusChildCollection.RemovedObjects`.** Verified. It runs a LINQ
   filter and builds a list on every call, even with nothing removed, and every walk calls it per
   collection. Return an empty array when `_removedChildren` is empty.
 - **P4. Guard `LogChanges`.** Verified; fixed with B2. Return before building any text when there
   is no logger, the type is suppressed, or the logger is not enabled for Information, and skip
   objects with nothing to commit.
-- **P5. Stop allocating per streamed row and per added row.** Verified.
-  `ObjectDataManager.LoadStreamAsync` calls `MarkUnloaded([obj], excluded)` per row, allocating an
-  array before `MarkUnloaded`'s own empty check; `NucleusCollection.Add` builds
+- **P5. Stop allocating per added row.** Verified. `NucleusCollection.Add` builds
   `NotifyCollectionChangedEventArgs` per item with no subscriber, and a load's collection
-  expression binds to that `Add`.
+  expression binds to that `Add`. The other half, an array per streamed row in
+  `ObjectDataManager.LoadStreamAsync`, went with the audit bugs.
 - **P6. Bind rows without wrapper objects.** Read. `DataSet.BindRows` builds a `DataSetRow`, a
   `DataSetValue[]` and a `DataSetValue` per column for every row (about 450 B a row at 10 columns);
   `Bind<T>()` in the same file already loops the row array by index. Presize each object's property
@@ -105,7 +149,7 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   per row; parameter lists are rebuilt several times per command; each `Query` allocates about seven
   collections it may never use.
 - **P12. Use the compiled getter in the binder.** Read. `ChildGraphBinder.CollectionOf` and
-  `ObjectDataManager` call `property.Getter.Invoke` (reflection) per object where
+  `LinkedCollectionOf` call `property.Getter.Invoke` (reflection) per object where
   `IPropertySchema.GetValue` has a compiled delegate; `MarkLazy` allocates a closure per lazy
   property per object; `AttachLoaded` builds a set of IDs even when the collection is empty.
 - **P13. Smaller per-call costs.** Read. `SetValue` boxes value types to compare them;
@@ -114,9 +158,6 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   `PropertyChangedEventArgs` per change per level; `AuditLoggerFor` creates a delegate per root;
   `EvictCache` recomputes the same per-type answer per save; `CoerceBoundValue` looks up the
   property for every integer column of every row.
-- **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable load every match and its
-  children.** Read. They stream the whole result through `LoadStreamAsync`, which first runs every
-  child query. First and Any should take one row; Count should count in the database.
 - **P15. The SQLite write path allocates five to eight times what the others do.** Measured: the
   1,000-row split save allocates about 97 MB on SQLite against 13-14 MB elsewhere, the 20,000-row
   bulk save about 2.5 GB against 120-135 MB. SQLite has no bulk engine, so each row is a statement in
@@ -125,15 +166,11 @@ All seven are fixed; see "Audit bugs (November 2026)" under Fixed.
   `VALUES`. The largest change here.
 
 Also open, from before: graph saves allocate 6-17% more than before the child model, accepted in
-the first baselines; P2, P3, P7 and P8 recover part of it. Unchanged loaded children are still
-rewritten with a Timestamp-only update (see "Saving a parent rewrites every loaded child" below).
+the first baselines; P2, P3, P7 and P8 recover part of it. Unchanged loaded children are no longer
+rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
 
 ### Found with the child model (November 2026)
 
-- **A save through a caller-owned context commits in memory before the caller commits.**
-  `CoreObject.SaveAsync(IDataContext, ...)` commits the object, its children and its acknowledged
-  removals as soon as the writes run. A caller who then rolls back keeps objects that say they are
-  saved and have forgotten their removals. Long-standing; listed in the guide's known limits.
 - **`IPropertySchema.Create` and `PropertySchema.PropertyCreator` are what is left of
   `[LinkedChildCollection]`.** The attribute and its schema members were removed in the naming
   clean-up. These two made its v1 collection; `Create` now always throws and both are obsolete.
@@ -149,7 +186,414 @@ rewritten with a Timestamp-only update (see "Saving a parent rewrites every load
   a root, because a parent's cascade deletes children without loading them. Cover:
   `LinkedCollectionTests` and `LinkedCollectionIntegrationTests` on every provider.
 
-### Found with the linked object read, fixed (November 2026)
+### A linked object's first read is synchronous (November 2026)
+
+The first read of a `[LinkedObject]` is synchronous, on a connection of its own, and there is no
+asynchronous form for a reference. A lazy or linked collection's first read is synchronous too,
+but it has `LoadAsync()`, so for a collection that is the caller's choice. Rows
+that read the same reference without `Include` each load their own instance, unless the type is
+`[Cacheable]` and the manager loaded the rows, which answers from the cache. Listed in the guide's
+known limits. Found with the linked object read (see Fixed).
+
+### On SQL Server, reads wait behind saves (November 2026)
+
+Readers still wait (not deadlock) behind saves, because locking read committed scans an
+unindexed predicate's table and waits on any row a save holds. READ_COMMITTED_SNAPSHOT on the
+database removes that wait. Since November 2026 the provider turns it on for a database it creates
+(`SQLConfiguration.ReadCommittedSnapshotOnCreate`, after `CREATE DATABASE`, `WITH NO_WAIT`) and
+logs a warning at initialise when an existing database has it off; it never alters an existing
+database, which would need every other connection closed and would change every application on
+it. Cover: `SqlServer\ReadCommittedSnapshotTests`, whose database-creating tests skip when the test
+login cannot create a database. Listed in the guide's known limits. What is
+left of the deadlocks under concurrent saves (see Fixed).
+
+### `IPropertySchema.SkipOnDbRead` is read by nothing (November 2026)
+
+`IPropertySchema.SkipOnDbRead` is set for a `[ParentObject]` and read by nothing. It is marked
+obsolete; it is public surface, so it stays until a major version. Found with links to child types
+(see Fixed).
+
+### Timestamp in memory is the client clock (decided October 2026)
+
+The server stamps `Timestamp` on every write, and output parameters can now read a stored value
+back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock. Until
+November 2026 that was the clock at the first save, and an update left a loaded object with its
+loaded value. Now every row a save wrote (the object saved, and each dependent that was new or
+changed) takes one boxed clock value per save when it commits, and a rollback puts the old value
+back, which costs one box per saved root and nothing per row. Reading it back was measured with the save
+benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`, 15 interleaved rounds, median
+overhead against the client clock), against a 2% bar:
+
+| Path | SQL Server net10 | SQL Server net8 | PostgreSQL net10 | PostgreSQL net8 |
+|---|---|---|---|---|
+| one object at a time (x20) | +2.3% | -2.0% | +4.7% | +12.6% |
+| batch of 100 | +10.4% | +12.4% | +263.6% | -4.5% |
+| split sync path (1,000) | +13.0% | +14.9% | +16.0% | +15.7% |
+| bulk engine (20,000) | +47.3% | +65.5% | +32.8% | +26.1% |
+
+The PostgreSQL batch figures swing with run-to-run noise at a 15 ms median; every other path is
+consistently 10% or more slower, so Timestamp keeps the client clock. Re-measure before turning it
+on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCLEUS_BENCHMARK=1`.
+
+### Found with the PostgreSQL provider (October 2026)
+
+- **Every PostgreSQL table carries a notification trigger**, created at initialise so a
+  subscription needs no DDL rights at run time. Each statement that writes a table queues one
+  `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
+  but a write-heavy table pays it on every statement.
+
+### Found with the SQLite provider (November 2026)
+
+- **A nullable enum column's `ClrType` is the enum, not `int`.** `ColumnSchema.GetClrType` maps an
+  enum property to `int`, but `Nullable<TEnum>.IsEnum` is false, so a nullable enum falls through
+  to its underlying enum type. SQL Server and PostgreSQL never notice, because their drivers hand
+  back an `int` regardless; the SQLite provider reads each value as the column's `ClrType`, so it
+  narrows an enum target to its integer itself. Left as it is in Data: changing `ClrType` changes
+  what every provider binds for a nullable enum, and that wants its own review.
+- **The parallel write path cannot work on a single-writer engine.** An oversized write without a
+  bulk engine fanned out to child contexts, each on its own connection and transaction; under
+  SQLite each child waits on its parent's write lock until it times out. Data now lets a context
+  say so (`DbDataContext.AllowsConcurrentWriters`), and the parts run in order on its own context.
+  Since the explicit commit the parts run in order on every engine, and the flag is obsolete.
+- **A large multi-statement command is quadratic in Microsoft.Data.Sqlite.** The driver binds each
+  statement by searching every parameter of the command, so a command of N single-row statements
+  over P parameters costs about N x P. At 30000 parameters an oversized save held the write lock for
+  33 s, long enough for the other target framework's run to time out on the shared file; at 2000 it
+  took 0.3 s. `SqliteConfiguration` therefore defaults `MaxParametersPerCommand` to 2000. Raising it
+  is the first thing to measure if SQLite saves look slow.
+- **A lower SQLite limit would write faster still, but deletes stop it.** At 500 parameters a command
+  the oversized saves measured about five times faster again (a late unique violation over 12001
+  rows: 1 s at 2000, 0.2 s at 500). `DeleteWhereQuery.ForIds` puts a fixed 1000 IDs in each
+  statement, and the delete path refuses a chunk over the limit, so any limit under about 1001
+  breaks deleting a list of objects. Chunking the IDs by the provider's limit would lift that; it
+  changes the delete batches every provider sends, so it is left for its own change.
+
+### The parameterless AddNucleus() enables schema migration
+
+`NucleusOptions.ReadOnlySchema` defaults to `true`, but the convenience `AddNucleus()` overload sets
+it to `false`. The shortest registration is therefore the one that allows automatic schema creation
+and migration against the target database.
+
+**Deliberately not changed.** Two production sites already call it and depend on the migration
+behaviour; flipping the default would silently stop their schema updates, which is a worse failure
+than the surprise. Changing it is a product decision, and the safe route is an explicit
+`AddNucleus(o => o.ReadOnlySchema = true)` at the call sites first. The behaviour is called out
+in the registration reference in `docs/guide/getting-started.md` and in the guide's known limits.
+
+### IDE0040, roughly 450 occurrences
+
+Explicit `public` on interface members, which the shared `.editorconfig` asks to be left implicit.
+Suppressed in `Directory.Build.props`. It is a mechanical edit across most files in the repo and was
+kept out of the behavioural fixes so that this diff stayed reviewable.
+
+### xUnit1051 in the test projects
+
+Calls taking a `CancellationToken` should pass `TestContext.Current.CancellationToken`. Suppressed
+in `tests/Directory.Build.props`. Worth doing, but it is a test-wide edit.
+
+### Features that are declared but not implemented
+
+- `[RetrieveOnDemand]` makes a child collection lazy (November 2026). On any other property it still
+  marks lazy per-property loading, which nothing implements; the dead `TryRetrievePropertyFromDB`
+  that pretended to back it has been deleted.
+- `[InitializePriority]` is parsed into `ObjectSchema<T>.Priority`, which nothing reads; the
+  ordering code that consumed it is gone.
+
+Both are listed in the guide's known limits, with `[LinkedObject]`'s `linkedIDProperty`.
+
+### The legacy ChangeCollection is vestigial
+
+`CoreObject.Changes` and the `Change` / `ChangeCollection` types are the v1 change tracking. Nothing
+populates them any more: audit summaries are built from the property dictionaries, and
+`DataChanged` now reports the same state as `HasChanges`. `Changes` is documented as legacy and is
+safe to call, but removing it is a public API change and was left for a major version.
+
+### Commented-out code
+
+Sizeable commented blocks remain in `PropertySchema.cs` and `DBColumn.cs`, and single commented
+lines in `IObjectSchema.cs`.
+
+### A caller-owned context commits on dispose and evicts no cache (November 2026)
+
+A transactional `IDataContext` that the caller opens (`IObjectDataManager.CreateContextAsync<T>`,
+or `IDataProvider.CreateContextAsync`) commits when it is disposed unless something marked it for
+rollback. That is the v1 transaction tree, unchanged since the first SQL Server provider: every
+failure the context caught around a command marked the tree, and the root committed or rolled back
+when disposed. `Dispose` cannot tell that an exception is in flight, so a failure the context does
+not see, such as an exception in the caller's code between two saves, commits the first.
+
+When this was first recorded it said a failed statement does not roll the context back. That was
+wrong: `DbDataContext.Failure` marks it. What did not mark it was a failure before any command ran
+(a validation rule, a query that could not be built, a refused delete).
+
+The staged fix, part one (v2):
+- `Commit` and `CommitAsync` on `IDataContext`, which the manager and the schema update now call;
+- any failure of a context's own operation marks it for rollback;
+- `RequireCommit` on the provider options, under which a context disposed without a commit rolls
+  back; without it, dispose still commits and logs a warning.
+
+Still open until v3 makes `RequireCommit` the only behaviour, which changes every caller-owned
+context and so needs a coordinated release. Until then a consumer commits explicitly and turns
+`RequireCommit` on. A save or delete through such a context also evicts no `[Cacheable]` cache,
+because eviction is the manager's job. Cover: `TransactionCommitIntegrationTests`, on every
+provider.
+
+### An asynchronous execute drops a query without a table schema (November 2026)
+
+`DbDataContext.ExecuteSQLAsync` groups a query chain with `Query.GroupByTableSchema`, which skips
+every query whose `TableSchema` is null, so none of them runs and nothing says so. The synchronous
+`ExecuteSQL` splits the chain without grouping and runs them. Nothing Nucleus builds lacks a table
+schema, so only a hand-built query passed to `ExecuteQueryAsync` is affected. Verified by reading
+the code; no test reaches it.
+
+### Failures and retries, what is left (November 2026)
+
+What the failure contract below ("A database failure was a bare Exception") does not do yet:
+
+- **The retry policy is off by default and does not cover a caller-owned context.** `RetryAttempts`
+  (1 by default) retries the manager's own operations only. A caller-owned context is the caller's
+  transaction, so its unit of work is the caller's to repeat. Either way each attempt multiplies
+  `ConnectAttempts`. Cover: `RetryPolicyTests`, `RetryPolicyIntegrationTests`.
+- **A failed write on a context with no transaction always reports `MayHaveBeenApplied`.** Each
+  statement commits as it runs and a command can hold several, so Nucleus does not know how much
+  ran. That is true even of a lock wait that ran out before the first statement, which therefore
+  is not transient. Cover: `SqliteBusyWaitTests`.
+- **`CommitOutcomeUnknown` leaves the objects unsaved.** The manager marks objects saved only once
+  the commit returns, so after a commit whose outcome is unknown they are new or changed again,
+  though the rows may be there. A blind re-save of a new object then fails on its key. Cover:
+  `PostgresCommitFailureTests`.
+- **SQLite has no statement time limit.** Microsoft.Data.Sqlite's command timeout is the wait for
+  the write lock, not a limit on a running statement, and a cancelled token does not stop a
+  statement under way (measured: a 4 s read with a 1 s timeout and a 1 s cancellation ran to its
+  end). The provider leaves the command timeout at `BusyTimeoutSeconds` and ignores
+  `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
+
+## Fixed
+
+### A broken foreign key did not say which reference (November 2026)
+
+- **A key violation was a plain `DatabaseException`.** A caller could tell it was a key, not which
+  one. It is now a `ForeignKeyViolationException` (Abstractions), resolved like a unique violation
+  on the failure path only: `RelationalDataProvider.TryGetForeignKeyViolation` (virtual, so a
+  provider that predates it still compiles) gives the engine's key name (SQL Server's 547 message,
+  PostgreSQL's `ConstraintName`), and `TranslateFailure` maps it to the `ForeignKeySchema` with that
+  physical name. SQLite's 787 names no key, so its exception names nothing. Cover:
+  `ARefusedDelete_NamesTheReferenceThatStillPointsAtTheRow` and
+  `ARowPointingAtARowThatIsNotThere_IsRefused_AndNothingIsWritten` on each engine, and the
+  `foreign-key-violation` sample.
+
+### Foreign keys on SQLite (November 2026)
+
+- **SQLite keeps keys only in a table's definition**, and checks them only on connections that turn
+  them on, which no transaction may change. `ISchemaDialect.ForeignKeysInline` says so: the dialect
+  writes a key with its column in `CreateTable` and `AddColumns`, and the update marks a table whose
+  keys differ for a rebuild (`TableSchema.RebuildForKeys`, read from the catalog as it stood before
+  the update, an adopted table under its old name) instead of adding or dropping a key on its own.
+  A rebuild copies rows unchecked; the update counts each rebuilt table's orphans and warns.
+  `DbDataContext.PrepareConnectionAsync` runs between open and begin: a SQLite context turns
+  `foreign_keys` on (off under `ForeignKeys = false`), and the schema update's context turns it off
+  and `legacy_alter_table` on, so a rebuild's rename leaves other tables' `REFERENCES` text alone
+  and they point at the new table once it takes the name. Both are set on every open because the
+  connections share one pool. While it was built, an update left `RebuildForKeys` set, so a check
+  after the upgrade still found the tables not current; the compare now clears it. Cover:
+  `SqliteForeignKeyUpgradeTests`, `SqliteForeignKeyIntegrationTests`,
+  `WithInlineKeys_ATableWithoutItsKeys_IsRebuiltWithThem_AndNoKeyIsAddedOnItsOwn` and
+  `WithInlineKeys_KeysThatMatch_RebuildNothing_AndTheCompareClearsAnEarlierRebuildMark`.
+
+### Foreign keys, and an asynchronous save that reversed a table's rows (November 2026)
+
+- **Nucleus created no foreign keys.** The graph rules (a child needs its parent, a one with
+  members is not deleted) were checks in Nucleus, so a member inserted after the delete's check, a
+  write from outside Nucleus, or a Nucleus bug (a parent delete once orphaned the children it had
+  not loaded) left rows pointing at nothing. `SchemaManager.BuildSchema` now derives a key per
+  reference (`ForeignKeySchema`: `[ParentObject]`, stored `[LinkedObject]`, `[LinkedBy]` key,
+  `[ForeignKey(typeof(T))]`), the check compares the `FK_` keys the catalog holds
+  (`SchemaComparer.DiffForeignKeys`) and the update creates the missing ones after the indexes,
+  unchecked over rows that already point at missing rows. A key is kept only where it holds for
+  every row: both types' rows kept by this provider (a provider can hold tables for types another
+  routes elsewhere, and a key to one would refuse every insert), and a referenced type with no
+  stored derived types. Cover: `ForeignKeySchemaTests` and `ForeignKeyIntegrationTests`.
+- **A rebuild would have broken on a key.** A rebuild renames the table and drops it after the
+  copy; a key pointing at it went with the renamed table and stopped the drop. Keys to and from
+  every table the update changes or adopts are dropped in the rebuild's transaction and created
+  again after the commit. Cover: `ATableToRebuild_LosesTheKeysFromAndToIt_InTheTransaction_BeforeItIsRenamed`
+  and `ARebuildOfATableKeysPointAt_KeepsItsRows_AndTheKeys`.
+- **A soft-deleted row would have stopped a hard delete for good.** Soft-deleted rows stay in their
+  table and there is no purge, so a NO ACTION key from one would refuse deleting the row it points
+  at forever. A hard delete now first sets to null, in the soft-deleted rows only, the references
+  to what it deletes (`DeleteTarget.ClearedReferences`), on SQL Server from the level's kept IDs.
+  Moving soft-deleted rows to a table of their own was weighed and left for a separate proposal.
+  Cover: `AHardDelete_ClearsWhatSoftDeletedRowsPointAt_ButALiveRowStillStopsIt` and the
+  `delete.clears` goldens.
+- **An asynchronous save inserted a table's rows last first.** `Query.FlattenAndDetach`, which the
+  asynchronous path regroups a write by table with, pushed each query's linked queries in order and
+  popped the last first, so the rows of a batch ran in reverse, undoing the order the save gave
+  rows that point at each other. It now walks in pre-order. Cover:
+  `GroupingAWriteByTable_KeepsTheOrderTheRowsWereBuiltIn_AndPutsParentsFirst` and
+  `RowsOfABatchThatPointAtEachOther_AreInsertedAfterTheRowsTheyPointAt`.
+
+### Rows written before the rows they point at, and soft children left under a deleted owner (November 2026)
+
+Found while planning foreign keys, which would have turned each of these into a refused statement.
+
+- **A save wrote types in the order it met them.** `SaveGraph.VisitLinks` records a forceSave link
+  before the links below it, so a link that points at another new link was written first; the
+  roots of a mixed-type save were written in input order, so `Save([resident, keeper])` wrote the
+  resident before its new keeper; and members were grouped by type, so a member of a one written
+  in a later group came first. Nothing refused it, because there are no foreign keys, but a reader
+  in between saw a row pointing at nothing. `ReferenceGraph` (Data) now records which types' rows
+  point at which others' (a stored `[LinkedObject]`, a `[LinkedBy]` key, and every child's
+  references folded into its root's chain), and `CreateSaveQueries` puts the link, root and member
+  writes in a stable topological order over it, so only what must move moves. Cover:
+  `ReferenceOrderTests`.
+- **New rows of one table that pointed at each other were inserted in any order.** A batch over
+  100 rows was built in parallel into a `ConcurrentBag`, which keeps no order. The save now orders
+  a batch through `TableSchema.SelfReferences` (a link typed as the entity or a base of it) and
+  `InsertQuery.Create` builds a large batch in parallel into an array, in order. Cover:
+  `RowsOfABatch_AreInsertedAfterTheRowsTheyPointAt`.
+- **A delete of several types ran them in the order it met them.** Only a delete of objects that
+  share a base entity type covers several types; it now removes a type before the types it points
+  at. Its graph is built from the deleted types' own schemas, because every reference between them
+  is declared on one of them, and asking the schema provider for every type would build every
+  entity type in the process to delete two.
+- **A soft child under a hard owner was left pointing at a deleted row.** A child type's own
+  `[Deletable(DeleteBehavior.Soft)]` beats its owner's behaviour, so deleting a hard owner removed
+  its row and flagged its children, which kept the deleted row's ID. `ObjectSchema` now refuses a
+  child whose effective behaviour is soft under an owner that can be deleted and is deleted hard.
+  Cover: `SoftChild_UnderAHardOwner_FailsTheSchema` and
+  `SoftChild_UnderAnOwnerNotDeletable_IsAllowed`.
+- **The golden of the linked-members check copied its builder.** The corpus built the select by
+  hand, so a change to `LinkedMembersOf` would not have moved the golden. Both now call
+  `RelationalDataProvider.MembersQuery`. The check counts live members only, as before: a
+  soft-deleted member points at its one by a key a hard delete of the one will clear, with the
+  foreign keys.
+
+### A failed cache refresh retried on every read, and the cache handed out its list (November 2026)
+
+- **A failed refresh retried on every read, silently.** When a background refresh failed (the
+  database down, say), `NucleusCache.Refresh` reset `RefreshScheduled` and the entry was still past
+  its interval, so the next cached read started another background load, and so did every read
+  after it for as long as the outage lasted; the failure was swallowed, because the cache had no
+  logger. It predates the refresh fix above. The entry now carries `NextRefreshTicks`, set one
+  `refreshInterval` after a failure and written before the flag is reset, and a refresh starts
+  only past it; the failure is logged as a warning through `NucleusCache.Logger`, which the
+  manager sets to its own logger. Cover:
+  `Refresh_ThatFails_WaitsOneIntervalBeforeTheNext_AndKeepsServingTheCachedRows`,
+  `Refresh_ThatFails_LogsOneWarning` and `TheManager_GivesTheCacheItsLogger_UnlessItHasOne`.
+- **The public `NucleusCache.GetOrLoad` handed out the cache's own list.** It is reachable through
+  `ObjectDataManager.Cache`, so a caller that edited it changed it for every reader, and since the
+  cached stream read that list, an edit while a query of every row was enumerated threw
+  "Collection was modified". The cache now keeps its rows as an array it builds at the fill and
+  no caller holds; `GetOrLoad` and `GetOrLoadAsync` return a copy (the one copy rule, moved from
+  the manager into the cache), and the stream reads the array (`RowsAsync`). Cover:
+  `GetOrLoad_ReturnsAListOfTheCallersOwn` and
+  `EditingAListTheCacheHandedOut_DuringAStream_DoesNotBreakTheStream`.
+
+### Queryable operators read every match, and the cache had one fill path (November 2026)
+
+- **P14. `FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on a queryable loaded every match and
+  its children.** They, and `FirstAsync`, `SingleAsync`, `SingleOrDefaultAsync` and
+  `LongCountAsync`, streamed the whole result through `LoadStreamAsync`, which first ran every
+  child query, and worked on the rows in memory. The guide's getting started page shows them as
+  the way to read. They now run in the database, reached from the extensions through an internal
+  interface the adaptor implements (`INucleusQueryOperators<T>`): First reads one row and Single
+  two (`ObjectDataManager.LoadTopCore`, which `LoadFirst` now shares), with the query's
+  exclusions, inclusions and deleted rows; Any reads one ID and Count counts, as row reads with
+  no child query (`AnyCoreAsync`, `CountCoreAsync` over `RowQuery<T>`). Cover:
+  `AdaptorOperatorResolutionTests` (the Take each builds), `ManagerLoadIntegrationTests`
+  `FirstAndSingle_OnAQuery_ReadTheRowsTheyNeed` and `AnyAndCount_OnAQuery_RunInTheDatabase` on
+  every provider, and the `rows.any` goldens.
+- **A row read saw live rows only.** `RowQuery<T>.IncludeDeleted()` now reads the rows marked
+  deleted too, which Count on a query built with `IncludeDeleted()` needs. Cover:
+  `IncludeDeleted_SeesSoftDeletedRows_OnALoadAndOnAQuery` and the
+  `rows.*.soft.includedeleted` goldens.
+- **A load on the manager for every row of a `[Cacheable]` type did not use the cache.**
+  `LoadAsync<T>()` with no predicate read the table, because `NucleusCache` filled only on the
+  synchronous path, and `LoadByIDAsync` and `LoadAllAsync` filled a cold cache synchronously,
+  blocking the caller's thread. The cache now fills on either path, single-flight across both
+  (an asynchronous fill runs on the thread pool, so a synchronous caller can wait for it; it runs
+  without a caller's token, so one caller cancelling does not fail the others). An unfiltered,
+  live, whole load answers from it: `LoadAsync`, `Load`, `LoadAllAsync`, and the stream
+  (`LoadStreamCoreAsync`), which is what `Get<T>()` with no `Where` enumerates for `ToListAsync`
+  and `await foreach`. Cover: `NucleusCacheTests`, among them
+  `AQueryWithNoWhere_OfACacheableType_StreamsFromTheCache`.
+- **A read by ID of a `[Cacheable]` type could miss a stored row.** `FromCache` filled the cache,
+  then looked the ID up with `TryGetById` as a second step, which found no entry when a save
+  evicted the type in between, and returned null. The lookup now reads the entry the fill
+  returned (`NucleusCache.GetOrLoadById`, `GetOrLoadByIdAsync`). Cover:
+  `GetOrLoadByIdAsync_AnEvictionDuringTheFill_StillFindsTheRow`.
+- **Every caller of `Load<T>()` shared one list.** The cached `NucleusCollection` was handed out
+  as it was, so a caller that added to it or removed from it changed it for every reader.
+  Every read of every row now returns a list of its own over the shared objects. Cover:
+  `LoadAll_CacheableType_ChangingTheListLeavesTheCacheAlone`.
+- **The cache's refresh did not run in the background.** Past `refreshInterval` the refresh task
+  only put an unstarted `Lazy` in place of the entry, so the next reader loaded the table in-line
+  and waited for it, and its `catch` could never fire. The stale entry was never served during a
+  refresh, which is what the interval promises. The refresh now loads first and then swaps the
+  new entry in, only over the entry it refreshed, so an eviction by a save meanwhile wins and the
+  refresh cannot bring back rows read before the save. Cover:
+  `Refresh_ServesTheStaleEntry_WhileTheReloadRuns` and
+  `Refresh_ThatFinishesAfterAnEviction_DoesNotBringBackWhatItRead`.
+- **The `cacheable` doc sample said the wrong read filled the cache.** Its first read was
+  `Get<T>().FirstOrDefaultAsync`, which never touched the cache; the `LoadByIDAsync` after it
+  filled it. The sample now fills it with `LoadAsync<T>()`.
+
+### A rollback held its locks until the root was disposed (November 2026)
+
+`IDataContext.Rollback` and `RollbackAsync` only marked the tree (the v1 tree design), so the
+transaction rolled back at dispose or at a commit, and until then its writes kept their locks and
+its objects stayed marked saved. Its XML comment said it rolled back at once. A caller that rolled
+back and went on (to log, or to read through the manager) held every row it had written, and on
+SQL Server under locking read committed any reader of those rows waited. Found with the deferred
+read test, which had to dispose the context to let its read finish. A rollback now ends the
+transaction at once, as a root's commit does; on a child it ends the whole tree's transaction, and
+a commit of any context of the tree after it throws `TransactionDoomed`. `TryRollback` and
+`TryRollbackAsync`, which the manager calls in its catch blocks, roll back the same way and log a
+failed rollback instead of throwing it; the schema rebuild's rollback uses them. The failure
+paths (`Doom`, `Failure`) still only mark, because an exception filter must not run a command.
+A cancelled commit rolls back at once too. Cover:
+`TransactionCommitIntegrationTests.ARootRollback_EndsTheTransactionAtOnce` and
+`AChildRollback_EndsTheWholeTreeAtOnce` (both paths), and
+`ChildModelIntegrationTests.ALazyRead_RunsOutsideTheCallersTransaction`, on every provider.
+
+### The linked-members check read past an uncommitted member under snapshot reads (November 2026)
+
+A delete of a one checks its linked collections for members with a plain select in the delete's
+transaction. Under locking read committed that select waits for a member another transaction is
+inserting, and sees it once it commits. Under READ_COMMITTED_SNAPSHOT (Azure SQL's default, any
+database a DBA set, and now every database the provider creates) it read the last committed rows,
+passed the uncommitted member, and the delete went ahead, leaving the member pointing at a deleted
+row. `RelationalDataProvider.LinkedMembersOf` now marks both of the check's reads
+`Query.WaitForPendingWrites`, which SQL Server renders as `WITH(READCOMMITTEDLOCK)`; PostgreSQL
+cannot wait for an uncommitted insert under read committed, so there the open limit ("a member
+inserted concurrently is not seen") stands. Cover:
+`ReadCommittedSnapshotTests.ADeleteOfAOne_WaitsForAMemberBeingInserted_ThenIsRefused` and
+`ACreatedDatabase_HasReadCommittedSnapshotOn_AndTheCheckStillWaits`, which fails with the hint
+removed, and the `select.linked.members.ofdelete` golden.
+
+### Found by the documentation review (November 2026)
+
+Three places where the code fell short of what the guide said, found by checking the guide against
+the code.
+
+- **A cancelled commit committed on dispose.** `DbDataContext.CommitCore` threw on a cancelled
+  token without marking the transaction, so without `RequireCommit` disposing the context committed
+  what the caller had just cancelled. `IDataContext.RollbackAsync` threw before it rolled back,
+  with the same result. Both now mark the transaction and then throw. Cover:
+  `TransactionCommitIntegrationTests.ACancelledCommit_RollsBack_RatherThanCommitOnDispose` and
+  `ACancelledRollback_StillRollsBack`, on every provider.
+- **Three opens were not retried.** The SQL Server and SQLite catalog readers and the SQL Server
+  change subscription opened their connection once; only contexts, and PostgreSQL's reader and
+  subscription, went through `ConnectionOpener`. All do now, with `ConnectAttempts` and the
+  provider's own classifier (`SqlServerErrors.IsTransient`, `SqliteErrors.IsTransient`). No test
+  of its own (see Open).
+- **A SQLite schema statement waited 15 minutes for the write lock.** Schema statements set
+  `SchemaCommandTimeoutSeconds` as the command timeout, which on SQLite is the wait for another
+  connection's write lock. `DbDataContext` now sets it only where `AppliesStatementTimeout` is
+  true, and `SqliteCatalogReader` not at all, so the wait stays `BusyTimeoutSeconds`. Cover:
+  `SqliteSchemaStatementTests`.
+
+### Found with the linked object read (November 2026)
 
 Found while designing linked collections, by an integration test
 that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, PostgreSQL and SQLite.
@@ -169,10 +613,7 @@ that saved, reloaded and read a `[LinkedObject]`. Both failed on SQL Server, Pos
   `ALoadedObject_WithAForceSaveLinkNobodyRead_SavesItsOwnChange`, confirmed failing on the commit
   before the fix.
 
-Open: the first read of a reference is synchronous, like a lazy collection's, and rows that read the
-same reference without `Include` each load their own instance. Listed in the guide's known limits.
-
-### SQL Server deadlocks under concurrent saves, fixed (November 2026)
+### SQL Server deadlocks under concurrent saves (November 2026)
 
 Seen once as a deadlocked cleanup delete in `ChildModelIntegrationTests` (the net8.0 and net10.0
 runs share the database), then reproduced with `SqlServer\DeadlockStressTests`: 16 workers each
@@ -208,11 +649,7 @@ per 480 cycles on the SQL Server 2008 R2 test server and on SQL Server 2025 (Loc
   does not retry a first open, so the README now says so. Whether the server or the client's thread
   pool was the bottleneck was not isolated.
 
-Open: readers still wait (not deadlock) behind saves, because locking read committed scans an
-unindexed predicate's table and waits on any row a save holds. READ_COMMITTED_SNAPSHOT on the
-database removes that wait; Nucleus does not set it.
-
-### Found with links to child types, fixed (November 2026)
+### Found with links to child types (November 2026)
 
 Raised by a consumer that needed a root to refer to another root's child, a child type.
 Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
@@ -231,143 +668,158 @@ Nothing refused a `[LinkedObject]` typed as a child, and nothing tested one.
   `CreateSaveQueries` wrote it outside its parent. `SchemaManager.BuildSchema` now refuses it.
   Cover: `LinkedObjectReadTests.AForceSaveLinkToAChild_FailsAtSchemaBuild`.
 
-Open: `IPropertySchema.SkipOnDbRead` is set for a `[ParentObject]` and read by nothing. It is public
-surface, so it stays until a major version.
+### A failed save kept the values the server returned (November 2026)
 
-### Timestamp in memory is the client clock (decided October 2026)
+Found while designing the retry policy, which replays a save that failed. `CoreObject.AcceptServerValue`,
+which every `ReturnOutputToProperty` read-back calls as the write returns, dropped the object's
+pending value and stored the server's as committed straight away, before the transaction
+committed. A save that failed after a read-back, at a later statement or at the commit, rolled
+back in the database but not in memory: the object held a value from a rolled-back write, its own
+change was gone, and the next save, a caller's retry included, wrote that value instead of letting
+the server produce a new one. A caller-owned context's undo log did
+not cover it either, because the value never went through a commit.
 
-The server stamps `Timestamp` on every write, and output parameters can now read a stored value
-back, but `CoreObject.Timestamp` deliberately does not: in memory it is the client clock at the
-first save, and an update does not refresh it. Reading it back was measured with the save
-benchmarks (`tests/TFM.Nucleus.IntegrationTests/Benchmarks`, 15 interleaved rounds, median
-overhead against the client clock), against a 2% bar:
+Now the value is held on the object until its changes are committed (`CommitChanges`, which the
+manager runs once its transaction commits and a caller-owned context runs as its save does), where
+it replaces the pending value. Under a transaction the undo log records the property's stored and
+pending values first and puts both back on a rollback, keeping any edit made since. The next save's
+`PrepareForSave` drops what a save that did not commit left. Cover: `ServerValueTests`, and
+`ServerValueIntegrationTests` on every provider for the paths that read back.
 
-| Path | SQL Server net10 | SQL Server net8 | PostgreSQL net10 | PostgreSQL net8 |
-|---|---|---|---|---|
-| one object at a time (x20) | +2.3% | -2.0% | +4.7% | +12.6% |
-| batch of 100 | +10.4% | +12.4% | +263.6% | -4.5% |
-| split sync path (1,000) | +13.0% | +14.9% | +16.0% | +15.7% |
-| bulk engine (20,000) | +47.3% | +65.5% | +32.8% | +26.1% |
+### A database failure was a bare Exception (November 2026)
 
-The PostgreSQL batch figures swing with run-to-run noise at a 15 ms median; every other path is
-consistently 10% or more slower, so Timestamp keeps the client clock. Re-measure before turning it
-on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCLEUS_BENCHMARK=1`.
+Found while writing the same operations with a time limit, a transient retry and translated
+exceptions against Nucleus and three other data libraries. Hardening a Nucleus save or read took as
+much code as it did over raw ADO.NET, and the Nucleus version did not work:
 
-### Found with the PostgreSQL provider (October 2026)
+- `RelationalDataProvider.TranslateFailure` returned `new Exception(message, exception)` for every
+  failure but a unique violation, so `catch (NucleusException)` missed almost every database
+  failure, contrary to `NucleusException`'s own documentation.
+- The manager's `Save` and `SaveAsync` wrapped that again in `Exception("Error saving objects")`,
+  which put the driver's exception two levels down.
+- A connection that failed to open threw the driver's exception, or `ConnectionOpener`'s
+  `TimeoutException`, untranslated; a failed commit or rollback threw the driver's exception; a
+  failure reading a streamed row reached the caller as the driver's exception.
+- Catalog reads, schema statements and change subscriptions threw bare `Exception`s, and the
+  PostgreSQL subscription wrapped the caller's own cancellation in one.
+- `DataProviderErrorKind.DatabaseUnavailable` was never thrown, so a check for it never matched.
+- SqlClient and Microsoft.Data.Sqlite do not override `DbException.IsTransient`, which is always
+  false for them (checked by reflection on SqlClient 6.0.1 and Microsoft.Data.Sqlite 10.0.15), so a
+  caller's check of the driver's flag never retried on SQL Server or SQLite. Nothing classified
+  their errors, which is also why `ConnectAttempts` was PostgreSQL's alone.
+- Ordinary statements had no time limit of Nucleus's own, only the driver's default. The bulk
+  engines and schema statements set their timeouts on the context's shared command and left them
+  there, so later statements on that context ran with 60 or 900 seconds.
 
-- **Every PostgreSQL table carries a notification trigger**, created at initialise so a
-  subscription needs no DDL rights at run time. Each statement that writes a table queues one
-  `pg_notify`, whether or not anything listens. NOTIFY is cheap and coalesces within a transaction,
-  but a write-heavy table pays it on every statement.
+Now a database failure is a `DatabaseException` (Abstractions) one level over the driver's, with
+`Kind`, `IsTransient`, `MayHaveBeenApplied`, `Operation` and `Attempts`, and
+`UniqueViolationException` derives from it. Each provider classifies its engine's errors in one
+place (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, through
+`RelationalDataProvider.ClassifyFailure`); `DatabaseFailures` (Data) decides from what Nucleus was
+doing what a failed commit and a failed open are and whether the operation may have been applied.
+Anything that is not a database failure propagates as it was thrown, and the manager's save no
+longer wraps. `ConnectAttempts` is a shared option, retried by the provider's classification.
+`StatementTimeoutSeconds` (30, the drivers' default) limits every statement, set as each one is
+prepared, and a context can take its own. Cover: `DatabaseFailureTests` and the classifier tests,
+`SaveFailureTests`, and `DatabaseFailureIntegrationTests` on every provider.
 
-### Found with the SQLite provider (November 2026)
+### A provider held two connection pools of MaxConnectionPoolSize each (November 2026)
 
-- **A nullable enum column's `ClrType` is the enum, not `int`.** `ColumnSchema.GetClrType` maps an
-  enum property to `int`, but `Nullable<TEnum>.IsEnum` is false, so a nullable enum falls through
-  to its underlying enum type. SQL Server and PostgreSQL never notice, because their drivers hand
-  back an `int` regardless; the SQLite provider reads each value as the column's `ClrType`, so it
-  narrows an enum target to its integer itself. Left as it is in Data: changing `ClrType` changes
-  what every provider binds for a nullable enum, and that wants its own review.
-- **The parallel write path cannot work on a single-writer engine.** An oversized write without a
-  bulk engine fanned out to child contexts, each on its own connection and transaction; under
-  SQLite each child waits on its parent's write lock until it times out. Data now lets a context
-  say so (`DbDataContext.AllowsConcurrentWriters`), and the parts run in order on its own context.
-- **A large multi-statement command is quadratic in Microsoft.Data.Sqlite.** The driver binds each
-  statement by searching every parameter of the command, so a command of N single-row statements
-  over P parameters costs about N x P. At 30000 parameters an oversized save held the write lock for
-  33 s, long enough for the other target framework's run to time out on the shared file; at 2000 it
-  took 0.3 s. `SqliteConfiguration` therefore defaults `MaxParametersPerQuery` to 2000. Raising it
-  is the first thing to measure if SQLite saves look slow.
-- **A lower SQLite limit would write faster still, but deletes stop it.** At 500 parameters a command
-  the oversized saves measured about five times faster again (a late unique violation over 12001
-  rows: 1 s at 2000, 0.2 s at 500). `DeleteWhereQuery.ForIds` puts a fixed 1000 IDs in each
-  statement, and the delete path refuses a chunk over the limit, so any limit under about 1001
-  breaks deleting a list of objects. Chunking the IDs by the provider's limit would lift that; it
-  changes the delete batches every provider sends, so it is left for its own change.
-
-### The parameterless AddNucleus() enables schema migration
-
-`NucleusOptions.ReadOnlySchema` defaults to `true`, but the convenience `AddNucleus()` overload sets
-it to `false`. The shortest registration is therefore the one that allows automatic schema creation
-and migration against the target database.
-
-**Deliberately not changed.** Two production sites already call it and depend on the migration
-behaviour; flipping the default would silently stop their schema updates, which is a worse failure
-than the surprise. Changing it is a product decision, and the safe route is an explicit
-`AddNucleus(o => o.ReadOnlySchema = true)` at the call sites first. The behaviour is now called out
-in the registration reference in `README.md`.
-
-### IDE0040, roughly 450 occurrences
-
-Explicit `public` on interface members, which the shared `.editorconfig` asks to be left implicit.
-Suppressed in `Directory.Build.props`. It is a mechanical edit across most files in the repo and was
-kept out of the behavioural fixes so that this diff stayed reviewable.
-
-### xUnit1051 in the test projects
-
-Calls taking a `CancellationToken` should pass `TestContext.Current.CancellationToken`. Suppressed
-in `tests/Directory.Build.props`. Worth doing, but it is a test-wide edit.
-
-### Features that are declared but not implemented
-
-- `[RetrieveOnDemand]` makes a child collection lazy (November 2026). On any other property it still
-  marks lazy per-property loading, which nothing implements; the dead `TryRetrievePropertyFromDB`
-  that pretended to back it has been deleted.
-- `[InitializePriority]` is parsed into `ObjectSchema<T>.Priority`, but the ordering code that
-  consumed it is still commented out.
-
-### The legacy ChangeCollection is vestigial
-
-`CoreObject.Changes` and the `Change` / `ChangeCollection` types are the v1 change tracking. Nothing
-populates them any more: audit summaries are built from the property dictionaries, and
-`DataChanged` now reports the same state as `HasChanges`. `Changes` is documented as legacy and is
-safe to call, but removing it is a public API change and was left for a major version.
-
-### Commented-out code
-
-Sizeable commented blocks remain in `PropertySchema.cs`, `IObjectSchema.cs` and `DBColumn.cs`.
-
-### Saving a parent rewrites every loaded child
-
-`UpdateQuery` links an update for every child in each loaded collection, and an update always sets
-`Timestamp`, so saving a parent touches every child row even when none changed. Skipping unchanged
-children is not safe as things stand: `HasChanges` covers an object's own columns only, and a
-grandchild's update is linked from its child's, so a clean child with a changed grandchild would
-lose the grandchild's write. The fix needs a recursive dirty check first. Loaded children are no
-longer dirty themselves (see "Loaded children were dirty" below), so the only write is the
-timestamp. `SaveGraph` now works out whether anything below an object is new, changed or removed
-(it decides whether a forceSave link is written), which is the recursive check this needs.
-
-### A caller-owned context commits on dispose and evicts no cache (November 2026)
-
-A transactional `IDataContext` that the caller opens (`IObjectDataManager.CreateContextAsync<T>`,
-or `IDataProvider.CreateContextAsync`) commits when it is disposed unless `Rollback()` or
-`TryRollback()` was called first (`DbDataContext.FinallyDispose`). A statement that fails does not
-mark the context for rollback, so `await using var context = ...` followed by an exception between
-two writes commits the first. The manager's own operations catch, roll back and rethrow, so they
-are not affected. A save or delete through such a context also evicts no `[Cacheable]` cache,
-because eviction is the manager's job, and it marks the objects saved before the commit (the
-README known limit). The fix is an explicit commit (a context that rolls back on dispose unless
-committed), which changes every caller-owned context and so needs a coordinated release. Until
-then, callers wrap the work in a try/catch that rolls back and rethrows. Verified by reading the
-code.
-
-### A provider holds two connection pools of MaxConnectionPoolSize each (November 2026)
-
-The SQL Server and PostgreSQL configurations build a transactional connection string and a
+The SQL Server and PostgreSQL configurations built a transactional connection string and a
 non-transactional one with `Enlist=false`. The drivers pool by connection string, so a provider
-keeps two pools, each up to `MaxConnectionPoolSize`, and the setting the README called the
-connection pool ceiling allows twice that many server connections per process. The slot limit in
-`DbDataContext` counts open contexts, not pooled connections, so it does not bound them either;
-idle pooled connections stay open until the driver prunes them. Measured on a store's PostgreSQL
-contract suite: up to 99 idle connections across the net8.0 and net10.0 runs, against a
-`max_connections` of 100, which failed with 53300 "too many clients". The test package now caps
-its PostgreSQL stacks at 20 (`PostgresTestDatabase.TestPoolSize`, peak 84 over six runs, every
-run passing). The provider is unchanged: one pool, or the setting split across the two, changes
-how many connections a production site opens and needs a decision. The README documents the
-doubling in the option tables and the known limits.
+kept two pools, each up to `MaxConnectionPoolSize`, and the server could see twice the setting
+from one process. Measured on a store's PostgreSQL contract suite: up to 99 idle connections
+across the net8.0 and net10.0 runs, against a `max_connections` of 100, which failed with 53300
+"too many clients". Three more gaps sat beside it:
 
-## Fixed
+- A raw `ConnectionString` never got `MaxConnectionPoolSize`, so the driver's default of 100 was
+  the real cap.
+- A change subscription held a pooled connection but no context slot. Once there was one pool, a
+  context could pass the slot check and then time out in the driver's pool.
+- The slot count was static for each context type, so every provider of one engine in a process
+  shared one budget.
+
+Now:
+
+- Every connection to the database has one connection string, with `Enlist=false` and the pool
+  sized to the setting, raw strings included.
+- The startup connections (`master`, and the PostgreSQL maintenance database) are not pooled.
+- Each provider has its own `ConnectionSlots`, which its root contexts and change subscriptions
+  share.
+- With no connection enlisting, a transactional context inside an ambient `TransactionScope`
+  would commit outside it, so it is refused (`DataContextErrorKind.AmbientTransaction`).
+
+`PostgresConnectionLimitTests` counts the server's connections from one provider, and
+`ConnectionLimitIntegrationTests` holds every engine to the limit and the refusal. The test
+package's PostgreSQL cap of 20 stays.
+
+### A context save did not follow its transaction in memory (November 2026)
+
+Two defects with one cause: what an object saved through a caller-owned `IDataContext` held in
+memory did not follow that context's transaction.
+
+- **`CoreObject.SaveAsync(IDataContext, ...)` committed in memory before the caller committed.** It
+  called `CommitChanges` as soon as the writes ran, so a caller who then rolled back kept objects
+  that said they were saved and had forgotten their removals, and had to reload them.
+- **`IDataContext.Save` and `SaveAsync` never committed in memory at all**, for one object or a
+  batch. After the transaction committed, a new object was still new, so its next save inserted it
+  again and failed on the primary key. The guide's store sample saved this way, and the integration
+  tests hid it by calling `CommitChanges()` by hand after the context save.
+
+Now the context commits each object it saves as the writes run, so the objects match the open
+transaction (a second save of a new object updates it), and records what the commit changed in
+the root's `CommitUndoLog`. `DbDataContext.EndTransaction`, the one place a root's transaction
+ends, clears the log when the commit returns and reverts it otherwise: after a rollback, a doomed
+commit or a failed commit, each object is as it was before its first save in the transaction,
+with every change made since still pending, and its removals are pending again. Committing first
+and reverting on failure was chosen over holding the commit back until the transaction commits,
+because held back, a new object saved twice in one context would be inserted twice. The
+manager's batch save of mixed types, its one save through a context's own save, turns this off
+(`ISaveAcceptance`) and keeps marking its objects saved after the commit, with the audit logger.
+Cover: `CommitUndoTests` (in memory) and `ContextSaveIntegrationTests` (every context save path,
+on every provider).
+
+### Found with the explicit commit (November 2026)
+
+- **A read ended a transactional context's transaction.** `GetDataSet` read with
+  `CommandBehavior.CloseConnection`, so the connection closed with the reader and took the
+  transaction with it. A save after a load on the same transactional context failed, and
+  disposing the context threw "This SqlTransaction has completed" (or the Npgsql equivalent).
+  Reads now leave the connection open; the context closes it when disposed. Confirmed failing on
+  all three engines before the fix. Cover: `AReadInATransaction_LeavesItOpenForTheWritesAfterIt`.
+- **A context tree was not atomic.** A child context (`ContextOptions.Parent`, and the parallel
+  write path) opened a connection and a transaction of its own, and the root committed each child's
+  in turn before its own, so a failure between two commits left part of the tree committed. A
+  child also could not see its root's uncommitted rows. A child now runs on its root's connection
+  and transaction. Cover: `AChild_RunsInItsRootsTransaction`, `ATree_CommitsWhole_WhenItsRootCommits`.
+- **The parallel write path is gone.** An oversized write the bulk engine could not take fanned out
+  to child contexts. No write Nucleus builds reached it: `GroupByTableSchema` keeps only queries with
+  a table schema, every save groups by insert or update, and those go to the bulk engine on SQL
+  Server and PostgreSQL, while SQLite never fanned out. Its parts now run in order on the context,
+  as SQLite's did. Checked by making the old branch throw: the whole integration suite and every
+  provider's save benchmarks ran on it without reaching it. Timed back to back against the code
+  before the change on one machine, reads (SQLite) and saves (PostgreSQL) were within run-to-run
+  spread, and every benchmark passed its allocation gate.
+- **A failure before any command left the transaction unmarked.** See the open entry on
+  caller-owned contexts. Cover: `AFailedValidation_DoomsTheTransaction_SoTheEarlierWriteIsRolledBack`,
+  `AFailureInAChild_DoomsTheWholeTree`.
+
+### Saving a parent rewrote every loaded child (November 2026)
+
+`UpdateQuery` linked an update for every child in each loaded collection, and an update always sets
+`Timestamp`, so saving a parent touched every child row even when none changed: a parent with 500
+loaded children wrote 501 rows to change one, and a child's `Timestamp` no longer said when the
+child last changed. Skipping a clean child was not safe on its own, because a grandchild's write is
+linked under its child's update.
+
+`RelationalDataProvider.WriteQueries`, which every save path and every child collection's writes
+go through, now writes a stored object only when it has changes of its own
+(`SaveGraph.IsChanged`). A clean object's child collections are still written, after the object's
+level, so a changed grandchild under a clean child is kept at any depth. The same applies to a
+forceSave link or a linked collection member that is written only for what is below it. The objects
+a save was asked for are always written, so saving an unchanged object still stamps it. Because the
+fix is in the query builder, both write paths and every provider's bulk engine follow. Cover in
+`ChildSaveIntegrationTests` (the three-level roster on every save path).
 
 ### Names that could only be changed by breaking (November 2026)
 
@@ -657,6 +1109,10 @@ itself, on every provider.
 Left as it is on purpose: any other failure is still wrapped. That includes the plain
 `Exception(message, inner)` the context throws for a database error it does not translate, which a
 manager save therefore wraps a second time.
+
+Superseded by "A database failure was a bare Exception" (November 2026): the context translates
+every database error into a `DatabaseException`, and a manager save no longer wraps anything, so
+`PassesThrough` is gone.
 
 ### Found by the benchmarks, fixed (November 2026)
 
