@@ -73,12 +73,6 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   same reference this way each load their own instance, unless the referenced type is `[Cacheable]`
   and the rows were loaded through the manager, which answers from the cache; included references
   share one.
-- **`FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on `Get<T>()` load every match**, with its
-  children, and work on the rows in memory. For one row use a paged load (`LoadPagedAsync`), and
-  to count use `Rows<T>(...).CountAsync()`, which counts in the database.
-- **`LoadAsync<T>()` for every row of a `[Cacheable]` type reads the table.** `LoadByIDAsync`
-  answers from the cache; the cache has no asynchronous fill for a load of every row.
-- **A row read sees live rows only.** `Rows<T>()` has no counterpart to `IncludeDeleted`.
 - **On SQL Server, reads wait behind saves.** Under the default locking read committed, a load
   whose condition has no index scans its table and waits for any row a concurrent save holds,
   until that save commits. It no longer deadlocks, but it waits. Index the columns you filter by,

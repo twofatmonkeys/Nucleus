@@ -1821,6 +1821,7 @@
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> Count(System.String)",
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> CountDistinct(System.Linq.Expressions.Expression<System.Func<T, System.Object>>, System.String)",
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> GroupBy(System.Linq.Expressions.Expression<System.Func<T, System.Object>>[])",
+                "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> IncludeDeleted()",
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> Max(System.Linq.Expressions.Expression<System.Func<T, System.Object>>, System.String)",
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> Min(System.Linq.Expressions.Expression<System.Func<T, System.Object>>, System.String)",
                 "  TFM.Nucleus.Data.RowQuery<T>::public TFM.Nucleus.Data.RowQuery<T> OrderBy(System.Linq.Expressions.Expression<System.Func<T, System.Object>>)",

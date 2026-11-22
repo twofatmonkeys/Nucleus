@@ -110,6 +110,49 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Empty(await data.Get<IntSoftItem>().Where(x => x.ID == id).ToListAsync(Ct));
             Assert.Single(await data.Get<IntSoftItem>().IncludeDeleted().Where(x => x.ID == id).ToListAsync(Ct));
             Assert.Single(await data.Get<IntSoftItem>().Where(x => x.ID == id).IncludeDeleted().ToListAsync(Ct));
+
+            // The operators that run in the database, and a row read, see them only when asked.
+            Assert.Equal(0, await data.Get<IntSoftItem>().CountAsync(x => x.ID == id, Ct));
+            Assert.Equal(1, await data.Get<IntSoftItem>().IncludeDeleted().CountAsync(x => x.ID == id, Ct));
+            Assert.False(await data.Get<IntSoftItem>().AnyAsync(x => x.ID == id, Ct));
+            Assert.True(await data.Get<IntSoftItem>().IncludeDeleted().AnyAsync(x => x.ID == id, Ct));
+            Assert.Null(await data.Get<IntSoftItem>().FirstOrDefaultAsync(x => x.ID == id, Ct));
+            Assert.NotNull(await data.Get<IntSoftItem>().IncludeDeleted().FirstOrDefaultAsync(x => x.ID == id, Ct));
+            Assert.Equal(0, await data.Rows<IntSoftItem>(x => x.ID == id).CountAsync(Ct));
+            Assert.Equal(1, await data.Rows<IntSoftItem>(x => x.ID == id).IncludeDeleted().CountAsync(Ct));
+            Assert.Single(await data.Rows<IntSoftItem>(x => x.ID == id).IncludeDeleted().Select(x => x.Name).ToListAsync(Ct));
+        }
+
+        [Fact]
+        public async Task FirstAndSingle_OnAQuery_ReadTheRowsTheyNeed()
+        {
+            var (data, prefix, widgets) = await SeedAsync(3);
+            var mine = data.Get<IntWidget>().Where(w => w.Name!.StartsWith(prefix));
+
+            Assert.StartsWith(prefix, (await mine.FirstOrDefaultAsync(Ct))!.Name);
+            Assert.StartsWith(prefix, (await mine.FirstAsync(Ct)).Name);
+            Assert.Null(await data.Get<IntWidget>().FirstOrDefaultAsync(w => w.Name == prefix + "nobody", Ct));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => data.Get<IntWidget>().FirstAsync(w => w.Name == prefix + "nobody", Ct));
+
+            Assert.Equal(widgets[1].ID, (await data.Get<IntWidget>().SingleAsync(w => w.Name == widgets[1].Name, Ct)).ID);
+            Assert.Null(await data.Get<IntWidget>().SingleOrDefaultAsync(w => w.Name == prefix + "nobody", Ct));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => mine.SingleAsync(Ct));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => mine.SingleOrDefaultAsync(Ct));
+        }
+
+        [Fact]
+        public async Task AnyAndCount_OnAQuery_RunInTheDatabase()
+        {
+            var (data, prefix, _) = await SeedAsync(3);
+            var mine = data.Get<IntWidget>().Where(w => w.Name!.StartsWith(prefix));
+
+            Assert.True(await mine.AnyAsync(Ct));
+            Assert.True(await data.Get<IntWidget>().AnyAsync(w => w.Name!.StartsWith(prefix) && w.Quantity == 2, Ct));
+            Assert.False(await data.Get<IntWidget>().AnyAsync(w => w.Name == prefix + "nobody", Ct));
+            Assert.Equal(3, await mine.CountAsync(Ct));
+            Assert.Equal(3L, await mine.LongCountAsync(Ct));
+            Assert.Equal(2, await mine.CountAsync(w => w.Quantity > 0, Ct));
+            Assert.Equal(0, await data.Get<IntWidget>().CountAsync(w => w.Name == prefix + "nobody", Ct));
         }
 
         [Fact]
