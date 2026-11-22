@@ -9,7 +9,9 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   default, but that overload sets it `false`, so the shortest registration creates and updates
   tables. Use `AddNucleus(o => o.ReadOnlySchema = true)` where the schema must not change.
 - **`Timestamp` in memory is the client's clock.** The server stamps the column on every write, and
-  the stamped value is not read back. See [Entities](entities.md).
+  the stamped value is not read back. A save gives each row it wrote the client clock when it
+  commits, so the value in memory is close to the stored one but not equal to it. Reload the
+  object where the stored value matters. See [Entities](entities.md).
 - **A column's length cannot be set without its type.** `[DatabaseColumn(ColumnDataType.Unicode, 200)]`
   is the one form that sets a length: the length-only constructor and the `DataLength` field are
   nullable, which attribute syntax does not accept.
