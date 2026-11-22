@@ -207,8 +207,18 @@ Every load of the parent leaves its rows out. The collection loads them the firs
 however many threads read it together.
 
 That first read goes through the manager or data context that loaded the parent, on a connection
-of its own and outside any transaction the caller holds. Adding to an unread lazy collection does
-not load it, and the added children save with the parent.
+of its own and outside any transaction the caller holds (see
+[Known limits](known-limits.md#reading) for what that means inside a transaction). Adding to an
+unread lazy collection does not load it, and the added children save with the parent.
+
+You choose what the rows cost:
+
+- `Include(r => r.Naps)` on the parent's read loads them in the same round trip, for every
+  parent it returns. A listing that reads the collection on every row does this.
+- `await collection.LoadAsync()` loads them in one round trip of their own, without blocking a
+  thread, when you decide to.
+- Reading the collection loads them in one round trip of their own, synchronously, on the thread
+  that reads it. A property cannot be awaited, so the implicit read cannot be asynchronous.
 
 <!-- sample: entity-resident -->
 ```csharp
@@ -314,7 +324,8 @@ exists reads as `null`.
 
 That first read goes through whatever loaded the object, as a lazy collection's does. A manager
 loads it by ID from the provider that stores its type, or from the cache for a `[Cacheable]` type.
-A data context loads it from its own provider, on a connection of its own.
+A data context loads it from its own provider, on a connection of its own, outside the context's
+transaction (see [Known limits](known-limits.md#reading)).
 
 `Resident.Keeper` above is one. The property carries `[DatabaseColumn]` as well as `[LinkedObject]`:
 without it the reference has no column and is not stored. The keeper is an ordinary root:
@@ -394,7 +405,8 @@ each. A one can hold several collections, two of them over one many type when ea
 **Loading.** Reading the property loads nothing. The whole collection loads, in one query, the
 first time a member is read (enumerating, `Count`, the indexer, `Contains`, `IndexOf`, `Remove`,
 `Clear`, `Insert`, `CopyTo`). It loads once however many threads read it, on the synchronous path,
-through the manager or data context that loaded the one.
+through the manager or data context that loaded the one, outside any transaction the caller holds
+(see [Known limits](known-limits.md#reading)).
 
 - `await collection.LoadAsync()` loads it without blocking a thread.
 - Adding does not load it, and the collection of a new one starts loaded and empty.

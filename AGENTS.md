@@ -106,8 +106,13 @@ statements set their own on it; SQLite's command timeout is its busy wait, so it
 catalog reader sets none. A transactional context is
 committed by `Commit`/`CommitAsync`, which on a root commits at once; any failure of its own
 operations (a statement, a validation rule, a query it cannot build) marks the tree for rollback
-through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A commit or
-rollback given a cancelled token marks it too, before it throws. A context
+through `DbDataContext.Doom`, an exception filter, so the success path pays nothing. A root's
+`Rollback`/`RollbackAsync` rolls back at once, as its commit commits at once: the transaction
+ends, its locks are released and the undo log is reverted, with the context still open. A child's
+rollback ends the whole tree's transaction the same way, and a commit of any context of the tree
+after it throws `TransactionDoomed`. `TryRollback` is the catch block's form and never throws. The failure paths
+only mark (`MarkForRollback`), because an exception filter must not run a command. A commit or
+rollback given a cancelled token rolls back, before it throws. A context
 disposed without a commit rolls back under `RelationalProviderOptions.RequireCommit` and
 otherwise still commits with a warning (until v3, which makes rolling back the only behaviour).
 Every Nucleus caller commits explicitly. A child (`ContextOptions.Parent`) runs on its root's
@@ -259,7 +264,13 @@ a subquery, SQL Server ran small tables from the child side, held another parent
 while it read that parent, and deadlocked against a save of the parent, at every level of a
 graph. `SqlServerKeptIdsTests` holds every statement to one table; the opt-in
 `SqlServer\DeadlockStressTests` (`NUCLEUS_DEADLOCK_STRESS=1`, or a worker count) reproduces the
-deadlock if the shape regresses.
+deadlock if the shape regresses. A database the provider creates gets READ_COMMITTED_SNAPSHOT
+(`SQLConfiguration.ReadCommittedSnapshotOnCreate`, set right after `CREATE DATABASE` with
+`NO_WAIT`); an existing one is never altered, and initialise logs a warning when it has the
+setting off. A query marked `Query.WaitForPendingWrites` (the delete's linked-members check, both
+reads) is rendered `WITH(READCOMMITTEDLOCK)`, so it waits for a member being inserted whatever the
+database's setting; the other providers ignore the flag. `SqlServer\ReadCommittedSnapshotTests`
+covers both, and its database-creating tests skip when the test login cannot create a database.
 
 `TFM.Nucleus.Data.PostgreSQL` is PostgreSQL's dialect over the same SDK: `PostgresQueryRenderer`,
 `PostgresSchemaDialect` with `PostgresTypes`, `PostgresCatalogReader` (information_schema and

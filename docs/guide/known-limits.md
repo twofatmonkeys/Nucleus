@@ -59,14 +59,20 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Reading
 
-- **A lazy collection's first read is a synchronous round trip**, on a connection of its own. Use
-  `Include` or `LoadAsync()` where that matters.
-- **A linked collection's first read is a synchronous round trip**, like a lazy collection's. Use
-  `Include` or `LoadAsync()` where that matters.
-- **A `[LinkedObject]`'s first read is a synchronous round trip** too, with no asynchronous form.
-  Use `Include` where that matters. Rows that read the same reference this way each load their own
-  instance, unless the referenced type is `[Cacheable]` and the rows were loaded through the
-  manager, which answers from the cache; included references share one.
+- **A deferred read runs outside the caller's transaction.** The first read of a lazy collection,
+  a linked collection or a `[LinkedObject]`, and a collection's `LoadAsync()`, run on a context of
+  their own, even for an object a transactional context loaded. They do not see rows the caller's
+  transaction has written and not committed, and each takes a connection of its own within
+  `MaxConnectionPoolSize` while the caller holds one. On SQL Server without
+  `READ_COMMITTED_SNAPSHOT`, a read of rows the caller's own transaction has written waits for that
+  transaction, which cannot commit while the thread waits, so the read fails with a `Timeout` after
+  `StatementTimeoutSeconds`. Read the collection before writing to it in the transaction, or after
+  the commit.
+- **A `[LinkedObject]` has no asynchronous load.** Its first read is synchronous, and unlike a
+  collection there is no `LoadAsync()` for it. Use `Include` where that matters. Rows that read the
+  same reference this way each load their own instance, unless the referenced type is `[Cacheable]`
+  and the rows were loaded through the manager, which answers from the cache; included references
+  share one.
 - **`FirstOrDefaultAsync`, `AnyAsync` and `CountAsync` on `Get<T>()` load every match**, with its
   children, and work on the rows in memory. For one row use a paged load (`LoadPagedAsync`), and
   to count use `Rows<T>(...).CountAsync()`, which counts in the database.
@@ -76,13 +82,18 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 - **On SQL Server, reads wait behind saves.** Under the default locking read committed, a load
   whose condition has no index scans its table and waits for any row a concurrent save holds,
   until that save commits. It no longer deadlocks, but it waits. Index the columns you filter by,
-  or turn on `READ_COMMITTED_SNAPSHOT` for the database; Nucleus does not set it.
+  or turn on `READ_COMMITTED_SNAPSHOT` for the database. The provider turns it on for a database it
+  creates (`ReadCommittedSnapshotOnCreate`), and logs a warning at initialise when an existing
+  database has it off; it never changes an existing database, because the setting needs every
+  other connection to it closed and applies to every application that uses it.
 
 ## Linked collections
 
 - **A refused delete of a one is a check, not a constraint.** Nucleus creates no foreign keys, so a
-  member another transaction inserts while the one is being deleted is not seen, and is left
-  pointing at a deleted row.
+  member another transaction inserts after the check has run is not seen, and is left pointing at
+  a deleted row. On SQL Server the check waits for a member being inserted when it runs and counts
+  it once it commits, whatever the database's `READ_COMMITTED_SNAPSHOT` setting. On PostgreSQL it
+  reads the last committed rows, so a member inserted but not yet committed is not seen either.
 - **The one side of a linked collection is a root.** A child type cannot hold one, because its
   parent's cascade deletes it without loading it, where members could not be checked for.
 

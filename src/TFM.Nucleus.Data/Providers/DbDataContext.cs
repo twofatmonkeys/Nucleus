@@ -504,9 +504,11 @@ namespace TFM.Nucleus.Data.Providers
         void IDataContext.Commit() => Commit();
         Task IDataContext.CommitAsync(CancellationToken cancellationToken) => CommitAsync(cancellationToken);
         void IDataContext.Rollback() => Rollback();
+        Task IDataContext.RollbackAsync(CancellationToken cancellationToken) => RollbackAsync(cancellationToken);
         void IDataContext.TryRollback() => TryRollback();
-        Task IDataContext.TryRollbackAsync() { TryRollback(); return Task.CompletedTask; }
-        Task IDataContext.TryRollbackAsync(CancellationToken token) { TryRollback(); return Task.CompletedTask; }
+        Task IDataContext.TryRollbackAsync() => TryRollbackAsync();
+        // A catch block's rollback: it never throws, a cancelled token included.
+        Task IDataContext.TryRollbackAsync(CancellationToken token) => TryRollbackAsync();
 
         void IDataContext.Save(IEnumerable<ICoreObject?> objs) => SaveBatch(objs);
         Task IDataContext.SaveAsync(IEnumerable<ICoreObject?> objs, CancellationToken cancellationToken) => SaveBatchAsync(objs, cancellationToken);
@@ -788,6 +790,10 @@ namespace TFM.Nucleus.Data.Providers
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (!HasTransaction)
                 return;
+            if (Root._completed && Root._needsRollback)
+                throw new DataContextException(
+                    "The transaction was rolled back, so there is nothing to commit.",
+                    DataContextErrorKind.TransactionDoomed);
             EnsureActive();
             if (_root != null)
             {
@@ -806,24 +812,72 @@ namespace TFM.Nucleus.Data.Providers
                     DataContextErrorKind.TransactionDoomed);
             }
             // A commit is not abandoned half way, so the token is honoured only before it starts.
-            // A cancelled commit marks the tree like any other failure of the context's own
-            // operations, or disposing the context would commit what the caller just cancelled.
+            // A cancelled commit rolls back, or disposing the context could commit what the caller
+            // just cancelled.
             if (cancellationToken.IsCancellationRequested)
             {
-                Rollback();
+                await RollbackCore(async).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
             }
             _committed = true;
             await EndTransaction(commit: true, async).ConfigureAwait(false);
         }
 
-        public void TryRollback() => Rollback();
+        /// <summary>
+        /// Rolls the tree's transaction back at once, from the root or from any child: there is
+        /// nothing left to do in it, so it ends, its locks are released and the objects its saves
+        /// marked saved are put back. Every context of the tree, the root included, then finds the
+        /// transaction ended, and a commit of any of them throws. Does nothing once the
+        /// transaction has ended.
+        /// </summary>
+        public void Rollback() => RollbackCore(async: false).GetAwaiter().GetResult();
+
+        /// <inheritdoc cref="Rollback"/>
+        /// <remarks>A cancelled token still rolls back, and then throws.</remarks>
+        public async Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            await RollbackCore(async: true).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
 
         /// <summary>
-        /// Marks the transaction tree for rollback; it rolls back when the root is disposed, or
-        /// when it is asked to commit. Does nothing once the transaction has ended.
+        /// <see cref="Rollback"/> for a catch block: a rollback that fails is logged, not thrown, so
+        /// the failure being handled propagates. The server rolls back what the failed rollback
+        /// left when the connection closes.
         /// </summary>
-        public void Rollback()
+        public void TryRollback() => TryRollbackCore(async: false).GetAwaiter().GetResult();
+
+        /// <inheritdoc cref="TryRollback"/>
+        public Task TryRollbackAsync() => TryRollbackCore(async: true).AsTask();
+
+        private async ValueTask TryRollbackCore(bool async)
+        {
+            try
+            {
+                await RollbackCore(async).ConfigureAwait(false);
+            }
+            catch (DatabaseException ex)
+            {
+                _provider.Logger?.LogWarning(ex, "A rollback failed; the transaction was not committed. {error}", ex.Message);
+            }
+        }
+
+        private async ValueTask RollbackCore(bool async)
+        {
+            if (Root._completed)
+                return;
+            MarkForRollback();
+            // A child runs on its root's transaction, which the root holds and ends.
+            if (HasTransaction)
+                await Root.EndTransaction(commit: false, async).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Marks the transaction tree for rollback without ending it: the root rolls back when it
+        /// is committed or disposed. The failure paths use this, because an exception filter must
+        /// not run a command.
+        /// </summary>
+        private void MarkForRollback()
         {
             var root = Root;
             if (root._completed)
@@ -839,7 +893,7 @@ namespace TFM.Nucleus.Data.Providers
         private bool Doom()
         {
             if (HasTransaction)
-                Rollback();
+                MarkForRollback();
             return false;
         }
 
@@ -922,7 +976,7 @@ namespace TFM.Nucleus.Data.Providers
         protected Exception Failure(string message, Exception exception, DatabaseOperation operation, CancellationToken token)
         {
             if (HasTransaction)
-                Rollback();
+                MarkForRollback();
             if (exception is OperationCanceledException || !DatabaseFailures.IsDatabaseFailure(exception))
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
             if (token.IsCancellationRequested)
@@ -1400,7 +1454,8 @@ namespace TFM.Nucleus.Data.Providers
             }
         }
 
-        public void Rollback() => context.Rollback();
+        // Called from a catch block: a failed rollback must not hide the failure being handled.
+        public void Rollback() => context.TryRollback();
 
         public async ValueTask CommitAsync(bool async, CancellationToken cancellationToken)
         {

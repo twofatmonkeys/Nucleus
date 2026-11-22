@@ -16,8 +16,16 @@ recorded here so that page's list and this one agree.
 - **A child context shares its root's connection.** A tree is one transaction on one connection,
   so its contexts cannot run commands concurrently.
 - **A row read sees live rows only.** `Rows<T>()` has no counterpart to `LoadOptions.IncludeDeleted`.
-- **A lazy collection's first read is a synchronous round trip**, on a connection of its own, as a
-  linked collection's is. Both have `LoadAsync()`.
+- **A deferred read runs outside the caller's transaction.** The first read of a lazy collection,
+  a linked collection or a linked object, and `LoadAsync()`, run on a context of their own
+  (`KeyedRowLoader`), bound to the provider and not to the context that loaded the object, because
+  that context may be gone by then. They do not see the caller's uncommitted rows and take a
+  connection of their own. On SQL Server without READ_COMMITTED_SNAPSHOT, a read of rows the
+  caller's own open transaction wrote waits for it until `StatementTimeoutSeconds`, because the
+  engine sees no deadlock: the caller's session waits on nothing in the database. Cover:
+  `ChildModelIntegrationTests.ALazyRead_RunsOutsideTheCallersTransaction`, on every provider. That
+  a collection's first read is synchronous is not a limit: the caller chooses `Include`,
+  `LoadAsync()` or the implicit read, and a property cannot be awaited.
 - **A transactional context cannot join a `TransactionScope`.** No connection enlists, so it is
   refused with `AmbientTransaction` (see "A provider held two connection pools" under Fixed).
 - **SQL Server's notification listener is one connection outside `MaxConnectionPoolSize`.** The
@@ -189,8 +197,9 @@ rewritten (see "Saving a parent rewrote every loaded child" under Fixed).
 
 ### A linked object's first read is synchronous (November 2026)
 
-The first read of a `[LinkedObject]` is synchronous, like a lazy collection's and a linked
-collection's, on a connection of its own, and there is no asynchronous form for a reference. Rows
+The first read of a `[LinkedObject]` is synchronous, on a connection of its own, and there is no
+asynchronous form for a reference. A lazy or linked collection's first read is synchronous too,
+but it has `LoadAsync()`, so for a collection that is the caller's choice. Rows
 that read the same reference without `Include` each load their own instance, unless the type is
 `[Cacheable]` and the manager loaded the rows, which answers from the cache. Listed in the guide's
 known limits. Found with the linked object read (see Fixed).
@@ -199,7 +208,12 @@ known limits. Found with the linked object read (see Fixed).
 
 Readers still wait (not deadlock) behind saves, because locking read committed scans an
 unindexed predicate's table and waits on any row a save holds. READ_COMMITTED_SNAPSHOT on the
-database removes that wait; Nucleus does not set it. Listed in the guide's known limits. What is
+database removes that wait. Since November 2026 the provider turns it on for a database it creates
+(`SQLConfiguration.ReadCommittedSnapshotOnCreate`, after `CREATE DATABASE`, `WITH NO_WAIT`) and
+logs a warning at initialise when an existing database has it off; it never alters an existing
+database, which would need every other connection closed and would change every application on
+it. Cover: `SqlServer\ReadCommittedSnapshotTests`, whose database-creating tests skip when the test
+login cannot create a database. Listed in the guide's known limits. What is
 left of the deadlocks under concurrent saves (see Fixed).
 
 ### `IPropertySchema.SkipOnDbRead` is read by nothing (November 2026)
@@ -364,6 +378,39 @@ What the failure contract below ("A database failure was a bare Exception") does
   `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
 
 ## Fixed
+
+### A rollback held its locks until the root was disposed (November 2026)
+
+`IDataContext.Rollback` and `RollbackAsync` only marked the tree (the v1 tree design), so the
+transaction rolled back at dispose or at a commit, and until then its writes kept their locks and
+its objects stayed marked saved. Its XML comment said it rolled back at once. A caller that rolled
+back and went on (to log, or to read through the manager) held every row it had written, and on
+SQL Server under locking read committed any reader of those rows waited. Found with the deferred
+read test, which had to dispose the context to let its read finish. A rollback now ends the
+transaction at once, as a root's commit does; on a child it ends the whole tree's transaction, and
+a commit of any context of the tree after it throws `TransactionDoomed`. `TryRollback` and
+`TryRollbackAsync`, which the manager calls in its catch blocks, roll back the same way and log a
+failed rollback instead of throwing it; the schema rebuild's rollback uses them. The failure
+paths (`Doom`, `Failure`) still only mark, because an exception filter must not run a command.
+A cancelled commit rolls back at once too. Cover:
+`TransactionCommitIntegrationTests.ARootRollback_EndsTheTransactionAtOnce` and
+`AChildRollback_EndsTheWholeTreeAtOnce` (both paths), and
+`ChildModelIntegrationTests.ALazyRead_RunsOutsideTheCallersTransaction`, on every provider.
+
+### The linked-members check read past an uncommitted member under snapshot reads (November 2026)
+
+A delete of a one checks its linked collections for members with a plain select in the delete's
+transaction. Under locking read committed that select waits for a member another transaction is
+inserting, and sees it once it commits. Under READ_COMMITTED_SNAPSHOT (Azure SQL's default, any
+database a DBA set, and now every database the provider creates) it read the last committed rows,
+passed the uncommitted member, and the delete went ahead, leaving the member pointing at a deleted
+row. `RelationalDataProvider.LinkedMembersOf` now marks both of the check's reads
+`Query.WaitForPendingWrites`, which SQL Server renders as `WITH(READCOMMITTEDLOCK)`; PostgreSQL
+cannot wait for an uncommitted insert under read committed, so there the open limit ("a member
+inserted concurrently is not seen") stands. Cover:
+`ReadCommittedSnapshotTests.ADeleteOfAOne_WaitsForAMemberBeingInserted_ThenIsRefused` and
+`ACreatedDatabase_HasReadCommittedSnapshotOn_AndTheCheckStillWaits`, which fails with the hint
+removed, and the `select.linked.members.ofdelete` golden.
 
 ### Found by the documentation review (November 2026)
 

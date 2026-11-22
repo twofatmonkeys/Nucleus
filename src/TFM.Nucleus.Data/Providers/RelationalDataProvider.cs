@@ -243,9 +243,11 @@ namespace TFM.Nucleus.Data.Providers
                 var membersTable = Schema.GetTableSchema(collection.LinkedType!)
                     ?? throw new NotSupportedException(
                         $"{schema.Name}.{collection.Name} holds {collection.LinkedType!.Name}, which this provider does not store, so a delete of {schema.Name} cannot check for its members.");
-                var ones = new SelectQuery(Renderer, delete.TableSchema, Schema.GetTableSchema) { Where = delete.Where };
+                // Both reads wait for writers, so a member another transaction is inserting counts
+                // once it commits, on an engine that reads the last committed version by default.
+                var ones = new SelectQuery(Renderer, delete.TableSchema, Schema.GetTableSchema) { Where = delete.Where, WaitForPendingWrites = true };
                 ones.LinkedQueries.Clear();
-                var members = new SelectQuery(Renderer, membersTable, Schema.GetTableSchema);
+                var members = new SelectQuery(Renderer, membersTable, Schema.GetTableSchema) { WaitForPendingWrites = true };
                 members.LinkedQueries.Clear();
                 members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
                 ones.AddChildQuery(members, membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name);

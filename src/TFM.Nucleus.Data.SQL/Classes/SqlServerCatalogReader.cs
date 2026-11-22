@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
@@ -14,7 +15,7 @@ namespace TFM.Nucleus.Data.SQL
     /// outside any transaction, each on a connection of its own. Every read and write a schema
     /// change makes outside its rebuild transaction comes through here.
     /// </summary>
-    internal sealed class SqlServerCatalogReader(Func<SQLConfiguration> config) : ICatalogReader
+    internal sealed class SqlServerCatalogReader(Func<SQLConfiguration> config, ILogger? logger = null) : ICatalogReader
     {
         private SQLConfiguration Config => config();
 
@@ -62,10 +63,18 @@ namespace TFM.Nucleus.Data.SQL
                 using var connection = Config.BuildSystemSQLConnection();
                 await Open(connection, async, cancellationToken);
                 using var command = connection.CreateCommand();
-                command.CommandText = "SELECT database_id FROM sys.databases WHERE name = @dbName";
+                command.CommandText = "SELECT database_id, is_read_committed_snapshot_on FROM sys.databases WHERE name = @dbName";
                 command.Parameters.AddWithValue("@dbName", Config.Database);
-                var result = async ? await command.ExecuteScalarAsync(cancellationToken) : command.ExecuteScalar();
-                return result != null && (int)result > 0;
+                using var reader = async ? await command.ExecuteReaderAsync(cancellationToken) : command.ExecuteReader();
+                if (!(async ? await reader.ReadAsync(cancellationToken) : reader.Read()) || reader.GetInt32(0) <= 0)
+                    return false;
+                if (!reader.GetBoolean(1))
+                    logger?.LogWarning(
+                        "READ_COMMITTED_SNAPSHOT is off for database {database}, so a read waits behind any save that holds a row it reads, " +
+                        "until that save commits. Nucleus never changes an existing database. To turn it on, with no other connection to the database open: " +
+                        "ALTER DATABASE [{database}] SET READ_COMMITTED_SNAPSHOT ON",
+                        Config.Database, Config.Database);
+                return true;
             }
             catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
@@ -85,10 +94,35 @@ namespace TFM.Nucleus.Data.SQL
                     await command.ExecuteNonQueryAsync(cancellationToken);
                 else
                     command.ExecuteNonQuery();
+                if (Config.ReadCommittedSnapshotOnCreate)
+                    await TurnOnReadCommittedSnapshotAsync(command, async, cancellationToken);
             }
             catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
                 throw DatabaseFailures.Translate($"Error creating database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Turns on READ_COMMITTED_SNAPSHOT for the database just created, on the master connection
+        /// that created it. NO_WAIT fails at once rather than waiting when anything else has
+        /// connected since. A failure leaves the database as created, with a warning: it exists, so
+        /// failing initialise would not undo it, and only how long reads wait depends on the setting.
+        /// </summary>
+        private async ValueTask TurnOnReadCommittedSnapshotAsync(SqlCommand command, bool async, CancellationToken cancellationToken)
+        {
+            command.CommandText = $"ALTER DATABASE [{Config.Database}] SET READ_COMMITTED_SNAPSHOT ON WITH NO_WAIT";
+            try
+            {
+                if (async)
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                else
+                    command.ExecuteNonQuery();
+            }
+            catch (SqlException ex)
+            {
+                logger?.LogWarning(ex, "Database {database} was created, but READ_COMMITTED_SNAPSHOT could not be turned on, so a read waits behind any save " +
+                    "that holds a row it reads. {error}", Config.Database, ex.Message);
             }
         }
 
