@@ -81,14 +81,7 @@ namespace TFM.Nucleus.Tests
         private string LinkedMembersOfDelete<TOne, TMany>(string keyColumn, Action<SelectQuery> condition)
             where TOne : ICoreObject where TMany : ICoreObject
         {
-            // As RelationalDataProvider.LinkedMembersOf builds it: both reads wait for writers.
-            var ones = new SelectQuery(renderer, Table<TOne>(), AnyTable) { WaitForPendingWrites = true };
-            ones.LinkedQueries.Clear();
-            condition(ones);
-            var members = new SelectQuery(renderer, Table<TMany>(), AnyTable) { WaitForPendingWrites = true };
-            members.LinkedQueries.Clear();
-            members.Columns = ["ID"];
-            ones.AddChildQuery(members, keyColumn);
+            var members = RelationalDataProvider.MembersQuery(renderer, Table<TOne>(), condition, Table<TMany>(), keyColumn, AnyTable);
             return members.BuildQuery(includeChildQueries: false);
         }
 

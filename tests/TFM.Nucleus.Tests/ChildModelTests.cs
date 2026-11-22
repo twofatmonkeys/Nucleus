@@ -105,6 +105,30 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn] public int Sequence { get => GetValue<int>(); set => SetValue(value); }
     }
 
+    /// <summary>
+    /// A soft child under a hard owner: the owner's delete would remove the row the flagged
+    /// children point at. Refused.
+    /// </summary>
+    [Deletable]
+    public class CmHardOwner : CoreObject<CmHardOwner>
+    {
+        [DatabaseColumn] public string? Name { get => GetValue<string>(); set => SetValue(value); }
+        public NucleusChildCollection<CmSoftUnderHardLine, CmHardOwner> Lines => GetChildCollection<CmSoftUnderHardLine, CmHardOwner>();
+        [Deletable(DeleteBehavior.Soft)]
+        public NucleusChildCollection<CmSoftByPropertyLine, CmHardOwner> Notes => GetChildCollection<CmSoftByPropertyLine, CmHardOwner>();
+    }
+
+    [Deletable(DeleteBehavior.Soft)]
+    public class CmSoftUnderHardLine : CoreChildObject<CmSoftUnderHardLine, CmHardOwner>
+    {
+        [DatabaseColumn] public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+    }
+
+    public class CmSoftByPropertyLine : CoreChildObject<CmSoftByPropertyLine, CmHardOwner>
+    {
+        [DatabaseColumn] public int Sequence { get => GetValue<int>(); set => SetValue(value); }
+    }
+
     /// <summary>Nothing declared: nothing is deletable.</summary>
     public class CmPlainOwner : CoreObject<CmPlainOwner>
     {
@@ -273,6 +297,28 @@ namespace TFM.Nucleus.Tests
             Assert.Contains("CmConflictOwner", ex.Message);
             Assert.Throws<ObjectSchemaException>(() => line.Check());
             Assert.Throws<ObjectSchemaException>(() => new TableSchema(line));
+        }
+
+        [Theory]
+        [InlineData(typeof(CmSoftUnderHardLine))]
+        [InlineData(typeof(CmSoftByPropertyLine))]
+        public void SoftChild_UnderAHardOwner_FailsTheSchema(Type lineType)
+        {
+            IObjectSchema line = ObjectSchema.Get(lineType);
+
+            var ex = Assert.Throws<ObjectSchemaException>(() => line.EffectiveDeleteBehavior);
+            Assert.Contains("CmHardOwner", ex.Message);
+            Assert.Contains("hard deleted", ex.Message);
+            Assert.Throws<ObjectSchemaException>(() => line.Check());
+        }
+
+        [Fact]
+        public void SoftChild_UnderAnOwnerNotDeletable_IsAllowed()
+        {
+            // CmPropertySoftOwner is not deletable, so no delete removes the row its lines point at.
+            IObjectSchema line = ObjectSchema<CmPropertySoftLine>.Get();
+
+            Assert.Equal(DeleteBehavior.Soft, line.EffectiveDeleteBehavior);
         }
 
         [Fact]

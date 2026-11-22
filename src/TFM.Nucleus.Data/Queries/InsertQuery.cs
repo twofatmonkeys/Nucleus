@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -48,7 +47,11 @@ namespace TFM.Nucleus.Data.Queries
         public static InsertQuery? Create<T>(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<T>? objs) where T : ICoreObject<T>, new() =>
             Create(renderer, tableSchema, objs?.Cast<ICoreObject>());
 
-        /// <summary>One insert per object, the rest linked from the first. Null when there are none.</summary>
+        /// <summary>
+        /// One insert per object, the rest linked from the first, in the order given: a save
+        /// orders a batch whose rows point at each other, and the order holds through the build.
+        /// Null when there are none.
+        /// </summary>
         public static InsertQuery? Create(IQueryRenderer renderer, IDataTableSchema tableSchema, IEnumerable<ICoreObject>? objs)
         {
             if (objs == null || !objs.Any())
@@ -57,15 +60,12 @@ namespace TFM.Nucleus.Data.Queries
             InsertQuery? rootQuery = null;
             if (objs.Count() > 100)
             {
-                var l = new ConcurrentBag<InsertQuery>();
-                Parallel.ForEach(objs, iCoreObj =>
-                {
-                    var iq = new InsertQuery(renderer, tableSchema, iCoreObj);
-                    l.Add(iq);
-                });
-                rootQuery = l.First();
-                foreach (var iq in l.Skip(1))
-                    rootQuery.LinkedQueries.Add(iq);
+                var list = objs as IReadOnlyList<ICoreObject> ?? [.. objs];
+                var built = new InsertQuery[list.Count];
+                Parallel.For(0, list.Count, i => built[i] = new InsertQuery(renderer, tableSchema, list[i]));
+                rootQuery = built[0];
+                for (var i = 1; i < built.Length; i++)
+                    rootQuery.LinkedQueries.Add(built[i]);
                 return rootQuery;
             }
             else

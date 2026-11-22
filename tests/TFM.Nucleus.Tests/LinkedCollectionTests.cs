@@ -1,4 +1,5 @@
 using TFM.Nucleus.Abstractions.Interfaces;
+using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.Tests
 {
@@ -37,6 +38,22 @@ namespace TFM.Nucleus.Tests
         [DatabaseColumn] public string? Code { get => GetValue<string>(); set => SetValue(value); }
 
         [DatabaseColumn(Indexed = true)] public Guid? CampaignId { get => GetValue<Guid?>(); set => SetValue(value); }
+    }
+
+    /// <summary>A hard-deleted one whose members are soft deleted.</summary>
+    [Deletable]
+    public class LcHardCampaign : CoreObject<LcHardCampaign>
+    {
+        [DatabaseColumn] public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        [LinkedBy(nameof(LcSoftVoucher.HardCampaignId))]
+        public NucleusLinkedCollection<LcSoftVoucher, LcHardCampaign> Vouchers => GetLinkedCollection<LcSoftVoucher, LcHardCampaign>();
+    }
+
+    [Deletable(DeleteBehavior.Soft)]
+    public class LcSoftVoucher : CoreObject<LcSoftVoucher>
+    {
+        [DatabaseColumn(Indexed = true)] public Guid? HardCampaignId { get => GetValue<Guid?>(); set => SetValue(value); }
     }
 
     // ---- Declarations refused at schema build ----------------------------------------------------
@@ -427,6 +444,17 @@ namespace TFM.Nucleus.Tests
             Assert.False(query.IncludeLinkedCollection(nameof(LcCampaign.Name)));
             var ex = Assert.Throws<InvalidQueryException>(() => query.IncludeLinkedCollection(nameof(LcCampaign.Vouchers)));
             Assert.Contains(nameof(LcVoucher), ex.Message);
+        }
+
+        [Fact]
+        public void TheMembersCheck_CountsLiveMembersOnly()
+        {
+            // A soft-deleted member is not a member: it does not stop its one being deleted.
+            var tables = Tables(typeof(LcHardCampaign), typeof(LcSoftVoucher));
+            var members = RelationalDataProvider.MembersQuery(SqlServerQueryRenderer.Instance, tables(typeof(LcHardCampaign))!, _ => { },
+                tables(typeof(LcSoftVoucher))!, nameof(LcSoftVoucher.HardCampaignId), tables);
+
+            Assert.True(members.AppliesLiveRowFilter);
         }
 
         [Fact]

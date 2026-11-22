@@ -15,6 +15,7 @@ using System.Threading.Tasks;
 using TFM.Nucleus;
 using TFM.Nucleus.Abstractions.Interfaces;
 using TFM.Nucleus.Data.Providers;
+using TFM.Nucleus.Data.Schema;
 
 namespace TFM.Nucleus.Data
 {
@@ -511,7 +512,12 @@ namespace TFM.Nucleus.Data
         /// </summary>
         private List<(IDataProvider Provider, IQuery[] Queries, Type[] Types)> BuildDeleteQueriesByProvider<T>(IEnumerable<T> objs) where T : ICoreObject<T>, new()
         {
-            var groups = GroupDeleteRoots(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
+            var byType = GroupDeleteRoots(objs?.Where(o => o != null).Cast<ICoreObject>() ?? []);
+            // A type is deleted before the types its rows point at, so no row is left pointing
+            // at one the delete removed. Every reference between them is declared on one of the
+            // types or a child of one, so their own schemas are the graph.
+            IEnumerable<KeyValuePair<Type, List<ICoreObject>>> groups = byType.Count < 2 ? byType
+                : new ReferenceGraph(byType.Values.Select(v => v[0].ObjectSchema)).ForDeletes([.. byType], static g => g.Key);
             return [.. groups
                 .GroupBy(g => _registry.GetProvider(g.Key))
                 .Select(providerGroup => (providerGroup.Key,

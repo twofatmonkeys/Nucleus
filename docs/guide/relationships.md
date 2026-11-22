@@ -160,6 +160,10 @@ How the declarations combine:
 of the nearest declaration above it that enables deleting it (the collection's when it names one,
 then the parent's, and so on up), so the lines of a soft-deleted order can be restored with it. A
 child type made soft this way gets the soft-delete columns, added in place like any new column.
+A child cannot be soft under an owner that is deleted hard: deleting the owner would remove its
+row and keep the flagged children, pointing at a row that no longer exists. The schema fails to
+build and names both types; make the owner soft too, or the child hard. A soft child under an
+owner that cannot be deleted at all is fine.
 
 **Removing without a declaration.** Removing a stored child from a collection whose children are
 not deletable throws `InvalidOperationException` from `Remove`, `RemoveAt`, `Clear` or the indexer,

@@ -230,7 +230,11 @@ Validation (`CoreObject.Validate`), the writes and the commit all read it, so th
 `RelationalDataProvider.CreateSaveQueries` is the one save builder every save path uses (the
 manager and `IDataContext.Save`/`SaveAsync`, for one object or a batch): removal deletes first, as top-level
 `DeleteWhereQuery`s so the context runs them on its delete path, then the link writes, then the
-roots. A row the save reaches (a child, a link or a member) with no changes of its own is not
+roots, then the linked collection members, with those writes put in a stable topological order by
+`ReferenceGraph` (Data, internal: which types' rows point at which others', a child's references
+folded into its root's chain), so a type is written after the types its rows point at. New rows
+of one table that point at each other are ordered through `TableSchema.SelfReferences`. A delete
+of several types removes each before the types it points at. A row the save reaches (a child, a link or a member) with no changes of its own is not
 written, only the changed rows below it, because its update would only stamp `Timestamp`; the roots
 are always written (`RelationalDataProvider.WriteQueries`). Every save path validates before it builds anything, once per object: the manager's `Save`
 and `SaveAsync` through `SaveChecks` (Data), ahead of their failure wrapping so a rule's exception
@@ -252,7 +256,9 @@ transaction with later changes still pending. The manager's mixed-type batch sav
 through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
 the audit logger, stays the one place its objects are marked. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
-the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour.
+the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour. A
+child whose effective behaviour is soft under an owner that is deleted hard fails the schema
+build, because the owner's delete would leave the flagged children pointing at a deleted row.
 
 `TFM.Nucleus.Data.SQL` is SQL Server's dialect over that SDK: `SqlServerQueryRenderer` (every
 T-SQL query string), `SqlServerSchemaDialect` and `SqlServerTypeMapper` (every DDL string),

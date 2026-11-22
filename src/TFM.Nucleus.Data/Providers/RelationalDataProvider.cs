@@ -243,16 +243,30 @@ namespace TFM.Nucleus.Data.Providers
                 var membersTable = Schema.GetTableSchema(collection.LinkedType!)
                     ?? throw new NotSupportedException(
                         $"{schema.Name}.{collection.Name} holds {collection.LinkedType!.Name}, which this provider does not store, so a delete of {schema.Name} cannot check for its members.");
-                // Both reads wait for writers, so a member another transaction is inserting counts
-                // once it commits, on an engine that reads the last committed version by default.
-                var ones = new SelectQuery(Renderer, delete.TableSchema, Schema.GetTableSchema) { Where = delete.Where, WaitForPendingWrites = true };
-                ones.LinkedQueries.Clear();
-                var members = new SelectQuery(Renderer, membersTable, Schema.GetTableSchema) { WaitForPendingWrites = true };
-                members.LinkedQueries.Clear();
-                members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
-                ones.AddChildQuery(members, membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name);
+                var members = MembersQuery(Renderer, delete.TableSchema, ones => ones.Where = delete.Where, membersTable,
+                    membersTable.FindByPropertyName(key.Name)?.ColumnName ?? key.Name, Schema.GetTableSchema);
                 yield return (collection, members);
             }
+        }
+
+        /// <summary>
+        /// The select of the live members of the rows of <paramref name="oneTable"/> that
+        /// <paramref name="condition"/> matches: the IDs of the <paramref name="membersTable"/> rows
+        /// whose <paramref name="keyColumn"/> holds one of them. Both reads wait for writers, so a
+        /// member another transaction is inserting counts once it commits, on an engine that reads
+        /// the last committed version by default.
+        /// </summary>
+        internal static SelectQuery MembersQuery(IQueryRenderer renderer, IDataTableSchema oneTable, Action<SelectQuery> condition,
+            TableSchema membersTable, string keyColumn, Func<Type, IDataTableSchema?> tables)
+        {
+            var ones = new SelectQuery(renderer, oneTable, tables) { WaitForPendingWrites = true };
+            ones.LinkedQueries.Clear();
+            condition(ones);
+            var members = new SelectQuery(renderer, membersTable, tables) { WaitForPendingWrites = true };
+            members.LinkedQueries.Clear();
+            members.Columns = [membersTable.IdentityColumn?.ColumnName ?? nameof(ICoreObject.ID)];
+            ones.AddChildQuery(members, keyColumn);
+            return members;
         }
 
         public Query? CreateInsertAndUpdateQuery<T>(IEnumerable<T>? objs) where T : ICoreObject<T>, new()
@@ -289,9 +303,12 @@ namespace TFM.Nucleus.Data.Providers
         /// <item>the inserts and updates of the linked collection members the save writes, with
         /// their children.</item>
         /// </list>
-        /// A removed child or a link whose type this provider does not store throws before
-        /// anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>, so the context
-        /// runs it on its delete path, never regrouped with the writes.
+        /// The writes of the last three are then put in the order their rows point at each
+        /// other (<see cref="SchemaManager.References"/>): a type is written after the types its
+        /// rows hold the IDs of, so a link that points at a link, or a root at another root, is
+        /// written second. A removed child or a link whose type this provider does not store
+        /// throws before anything runs. Each delete is a top-level <see cref="DeleteWhereQuery"/>,
+        /// so the context runs it on its delete path, never regrouped with the writes.
         /// </summary>
         private List<Query> CreateSaveQueries(IEnumerable<ICoreObject>? objs, Func<ICoreObject, TableSchema> rootTable, bool separateOperations)
         {
@@ -318,17 +335,18 @@ namespace TFM.Nucleus.Data.Providers
                 if (DeleteWhereQuery.ForIds(Renderer, table, Schema.GetTableSchema, removed.Select(o => o.ID)) is { } delete)
                     queries.Add(delete);
             }
+            var writes = new List<(Type Type, IEnumerable<Query> Queries)>();
             foreach (var links in graph.Links.GroupBy(o => o.GetType()))
             {
                 var table = Schema.GetTableSchema(links.Key)
                     ?? throw new NotSupportedException(
                         $"A [LinkedObject(forceSave: true)] property holds a {links.Key.Name}, which this provider does not store, so the save cannot write it " +
                         "in the same transaction. Save it through its own provider, or drop forceSave.");
-                queries.AddRange(WriteQueries(table, [.. links], separateOperations));
+                writes.Add((links.Key, WriteQueries(table, [.. links], separateOperations)));
             }
             foreach (var group in roots.GroupBy(rootTable))
                 // The objects the save was asked for are written even with no changes of their own.
-                queries.AddRange(WriteQueries(group.Key, [.. group], separateOperations, writeUnchanged: true));
+                writes.Add((group.Key.ObjectSchema.Type, WriteQueries(group.Key, [.. group], separateOperations, writeUnchanged: true)));
             // After the roots, so a member is never written before the one its key points at.
             foreach (var members in graph.Members.GroupBy(o => o.GetType()))
             {
@@ -336,8 +354,11 @@ namespace TFM.Nucleus.Data.Providers
                     ?? throw new NotSupportedException(
                         $"A linked collection holds new or changed {members.Key.Name} members, which this provider does not store, so the save cannot write them " +
                         "in the same transaction. Save them through their own provider.");
-                queries.AddRange(WriteQueries(table, [.. members], separateOperations));
+                writes.Add((members.Key, WriteQueries(table, [.. members], separateOperations)));
             }
+            // Each type's rows after the rows they point at, whatever order the save met them in.
+            foreach (var (_, writesOfType) in Schema.References.ForWrites(writes, static w => w.Type))
+                queries.AddRange(writesOfType);
             return queries;
         }
 
@@ -372,6 +393,8 @@ namespace TFM.Nucleus.Data.Providers
                         if (collection.GetInsertUpdateQuery() is Query query)
                             (below ??= []).Add(query);
             }
+            if (inserts != null && table.SelfReferences.Count > 0)
+                inserts = ReferencedFirst(inserts, table.SelfReferences);
             var insert = InsertQuery.Create(Renderer, table, inserts);
             var update = UpdateQuery.Create(Renderer, table, updates);
             if (separateOperations)
@@ -386,6 +409,63 @@ namespace TFM.Nucleus.Data.Providers
             }
             return root is null ? [] : [root];
         }
+
+        /// <summary>
+        /// New rows of one table in an order that inserts each after the rows of the batch it
+        /// points at through <paramref name="references"/>, and otherwise as given. Rows that
+        /// point at each other in a cycle keep their order. The list itself when no row points at
+        /// another row of the batch. A reference is read as it is held, so nothing loads.
+        /// </summary>
+        internal static List<ICoreObject> ReferencedFirst(List<ICoreObject> inserts, IReadOnlyList<IPropertySchema> references)
+        {
+            if (inserts.Count < 2)
+                return inserts;
+            var index = new Dictionary<Guid, int>(inserts.Count);
+            for (var i = 0; i < inserts.Count; i++)
+                index.TryAdd(inserts[i].ID, i);
+            if (!AnyPointsWithin(inserts, references, index))
+                return inserts;
+            // Depth first, each row placed once the rows it points at are.
+            var state = new byte[inserts.Count]; // 0 not reached, 1 waiting, 2 placed
+            var ordered = new List<ICoreObject>(inserts.Count);
+            var stack = new Stack<(int Row, int Next)>();
+            for (var start = 0; start < inserts.Count; start++)
+            {
+                if (state[start] != 0)
+                    continue;
+                state[start] = 1;
+                stack.Push((start, 0));
+                while (stack.Count > 0)
+                {
+                    var (row, next) = stack.Pop();
+                    if (next < references.Count)
+                    {
+                        stack.Push((row, next + 1));
+                        if (PointsAt(inserts[row], references[next], index) is int target && state[target] == 0)
+                        {
+                            state[target] = 1;
+                            stack.Push((target, 0));
+                        }
+                        continue;
+                    }
+                    state[row] = 2;
+                    ordered.Add(inserts[row]);
+                }
+            }
+            return ordered;
+        }
+
+        private static bool AnyPointsWithin(List<ICoreObject> inserts, IReadOnlyList<IPropertySchema> references, Dictionary<Guid, int> index)
+        {
+            for (var i = 0; i < inserts.Count; i++)
+                foreach (var reference in references)
+                    if (PointsAt(inserts[i], reference, index) is int target && target != i)
+                        return true;
+            return false;
+        }
+
+        private static int? PointsAt(ICoreObject row, IPropertySchema reference, Dictionary<Guid, int> index) =>
+            row.GetPropertyValue(reference.Name) is ICoreObject target && index.TryGetValue(target.ID, out var at) ? at : null;
 
         public TableSchema GetTableSchema(Type type) =>
             Schema.GetTableSchema(type) ?? throw new Exception($"Error retrieving the table schema for type: {type.FullName}, not found.");

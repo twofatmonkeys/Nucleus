@@ -370,6 +370,42 @@ What the failure contract below ("A database failure was a bare Exception") does
 
 ## Fixed
 
+### Rows written before the rows they point at, and soft children left under a deleted owner (November 2026)
+
+Found while planning foreign keys, which would have turned each of these into a refused statement.
+
+- **A save wrote types in the order it met them.** `SaveGraph.VisitLinks` records a forceSave link
+  before the links below it, so a link that points at another new link was written first; the
+  roots of a mixed-type save were written in input order, so `Save([resident, keeper])` wrote the
+  resident before its new keeper; and members were grouped by type, so a member of a one written
+  in a later group came first. Nothing refused it, because there are no foreign keys, but a reader
+  in between saw a row pointing at nothing. `ReferenceGraph` (Data) now records which types' rows
+  point at which others' (a stored `[LinkedObject]`, a `[LinkedBy]` key, and every child's
+  references folded into its root's chain), and `CreateSaveQueries` puts the link, root and member
+  writes in a stable topological order over it, so only what must move moves. Cover:
+  `ReferenceOrderTests`.
+- **New rows of one table that pointed at each other were inserted in any order.** A batch over
+  100 rows was built in parallel into a `ConcurrentBag`, which keeps no order. The save now orders
+  a batch through `TableSchema.SelfReferences` (a link typed as the entity or a base of it) and
+  `InsertQuery.Create` builds a large batch in parallel into an array, in order. Cover:
+  `RowsOfABatch_AreInsertedAfterTheRowsTheyPointAt`.
+- **A delete of several types ran them in the order it met them.** Only a delete of objects that
+  share a base entity type covers several types; it now removes a type before the types it points
+  at. Its graph is built from the deleted types' own schemas, because every reference between them
+  is declared on one of them, and asking the schema provider for every type would build every
+  entity type in the process to delete two.
+- **A soft child under a hard owner was left pointing at a deleted row.** A child type's own
+  `[Deletable(DeleteBehavior.Soft)]` beats its owner's behaviour, so deleting a hard owner removed
+  its row and flagged its children, which kept the deleted row's ID. `ObjectSchema` now refuses a
+  child whose effective behaviour is soft under an owner that can be deleted and is deleted hard.
+  Cover: `SoftChild_UnderAHardOwner_FailsTheSchema` and
+  `SoftChild_UnderAnOwnerNotDeletable_IsAllowed`.
+- **The golden of the linked-members check copied its builder.** The corpus built the select by
+  hand, so a change to `LinkedMembersOf` would not have moved the golden. Both now call
+  `RelationalDataProvider.MembersQuery`. The check counts live members only, as before: a
+  soft-deleted member points at its one by a key a hard delete of the one will clear, with the
+  foreign keys.
+
 ### A failed cache refresh retried on every read, and the cache handed out its list (November 2026)
 
 - **A failed refresh retried on every read, silently.** When a background refresh failed (the
