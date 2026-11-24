@@ -32,7 +32,14 @@ namespace TFM.Nucleus.Data.Schema
         /// True when the table exists, every column exists with the type the schema needs, and a
         /// soft-deletable table has both of its soft-delete system columns.
         /// </summary>
-        public bool IsCurrent => ExistsInDatabase && MissingSoftDeleteColumns.Count == 0 && !RebuildForKeys && Columns.All(c => c.IsCurrent);
+        public bool IsCurrent => ExistsInDatabase && MissingSoftDeleteColumns.Count == 0 && !RebuildForKeys && !MissingClusterId && Columns.All(c => c.IsCurrent);
+
+        /// <summary>
+        /// The table lacks the <see cref="ClusterIdColumn"/> its engine keeps
+        /// (<see cref="Providers.ISchemaDialect.HasClusterIdColumn"/>), so the update rebuilds it
+        /// with one. Set by the compare.
+        /// </summary>
+        internal bool MissingClusterId { get; set; }
 
         /// <summary>
         /// The table's keys differ from what the schema needs on an engine that keeps keys only

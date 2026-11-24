@@ -33,6 +33,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
     public sealed class PostgresManagerLoadIntegrationTests(PostgresFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
+    public sealed class PostgresOrderAndPageIntegrationTests(PostgresFixture fixture) : OrderAndPageIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
     public sealed class PostgresChildCollectionLoadIntegrationTests(PostgresFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]

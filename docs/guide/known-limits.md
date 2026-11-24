@@ -59,6 +59,11 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Reading
 
+- **Text sorts by each engine's own rules.** An `OrderBy` on a text column is written as the
+  engine's plain `ORDER BY`, so the order follows the column's collation: case-insensitive under
+  SQL Server's usual collations, the database's locale on PostgreSQL, and by code point on SQLite,
+  where `"Banana"` sorts before `"apple"`. NULL sorts below every value on every engine. Where
+  the same order matters on several engines, order by a column that holds a normalised form.
 - **A deferred read runs outside the caller's transaction.** The first read of a lazy collection,
   a linked collection or a `[LinkedObject]`, and a collection's `LoadAsync()`, run on a context of
   their own, even for an object a transactional context loaded. They do not see rows the caller's

@@ -33,6 +33,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerManagerLoadIntegrationTests(SqlServerFixture fixture) : ManagerLoadIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerOrderAndPageIntegrationTests(SqlServerFixture fixture) : OrderAndPageIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerChildCollectionLoadIntegrationTests(SqlServerFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]

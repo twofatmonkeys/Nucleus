@@ -4,14 +4,14 @@ There are three ways to read, and each suits a different need:
 
 | To read | Use |
 |---|---|
-| Entities by a filter, a few at a time or all of them | [A query](#queries), `Get<T>()` |
+| Entities by a filter, ordered and paged or all of them | [A query](#queries), `Get<T>()` |
 | Entities with control over what comes with them | [A load with options](#loading-with-options) |
 | Chosen columns, ordered, paged or grouped in the database | [A row read](#row-reads), `Rows<T>()` |
 
 ## Queries
 
-`Get<T>()` on the manager is a LINQ query over an entity type. `Where` filters it in the database,
-and an async operator runs it:
+`Get<T>()` on the manager is a LINQ query over an entity type. `Where` filters it, `OrderBy` and
+`ThenBy` order it and `Skip` and `Take` cut it, all in the database, and an async operator runs it:
 
 <!-- sample: queries -->
 ```csharp
@@ -22,12 +22,16 @@ var gerald = await monkeys.FirstOrDefaultAsync(m => m.Name == "Gerald", ct);
 var anyHangry = await monkeys.AnyAsync(m => m.Mood == Mood.Hangry, ct);
 var heavy = await monkeys.CountAsync(m => m.WeightKg > 20, ct);
 
-// One page and the unpaged total, in a single round trip.
-var page = await monkeys.Where(m => m.WeightKg > 10).ToPagedResultAsync(skip: 0, take: 20, ct);
+// Ordered and cut in the database.
+var heaviest = await monkeys.OrderByDescending(m => m.WeightKg).ThenBy(m => m.Name).Take(5).ToListAsync(ct);
+
+// One page and the unpaged total, in a single round trip. With no OrderBy, a page
+// follows the order the rows were written in.
+var page = await monkeys.Where(m => m.WeightKg > 10).OrderBy(m => m.Name).ToPagedResultAsync(skip: 0, take: 20, ct);
 Console.WriteLine($"{page.Count} of {page.TotalCount}, more to come: {page.HasMore}");
 
-// Only Where translates. Order and project in memory, or use a row read.
-var names = smug.OrderBy(m => m.Name).Select(m => m.Name).ToList();
+// Select is not translated: project in memory, or use a row read.
+var names = heaviest.Select(m => m.Name).ToList();
 ```
 
 ## Loading with options
@@ -55,32 +59,48 @@ await firstOrder.Lines.LoadAsync(ct);
 
 ## What a query translates
 
-`Where` is the only operator that is translated to the database.
+`Where`, `OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` are
+translated to the database. Nothing is dropped: an operator is either translated or refused.
 
-- Every `Where` in a chain applies, combined with AND.
-- Any other operator before a `Where` (`OrderBy`, `Select` and so on) throws
-  `NotSupportedException` rather than being ignored.
-- To choose columns, order, page or group in the database, use a [row read](#row-reads).
-  Otherwise order, page and project in memory, or use `ToPagedResultAsync`.
+- Every `Where` in a chain applies, combined with AND, wherever it sits before a `Skip` or `Take`.
+- An order key is a stored property of the entity (`m => m.Name`). Anything else, such as
+  `m => m.Name.Length`, throws `NotSupportedException`.
+- A later `OrderBy` sorts first, and the earlier keys still order the rows it ties, as LINQ's
+  sorts do.
+- `Skip` and `Take` combine as in LINQ: `Skip(20).Take(10)` is the third page of ten.
+  `Take(0)` returns nothing without a round trip.
+- A `Where` or an order after a `Skip` or `Take` would act on the page rather than the rows, so it
+  throws `NotSupportedException`. Put it first. The predicate an async operator takes is a `Where`
+  too, so `FirstAsync(m => ...)` on a query that skips or takes throws the same way.
+- Any other operator (`Select`, `Distinct`, `GroupBy` and so on) throws `NotSupportedException`.
+  Project in memory, or choose columns and group in the database with a [row read](#row-reads).
+
+A skipped or limited query with no `OrderBy` is ordered by the order the rows were written in, so
+the first page and the next never share or miss a row. An `OrderBy` on a skipped or limited query
+is followed by the same order to break its ties. NULL sorts below every value on every engine:
+first in ascending order, last in descending. Text sorts by each engine's own rules, which differ
+(see [known limits](known-limits.md)).
 
 The async operators run the query: `ToListAsync`, `ToArrayAsync`, `FirstAsync`,
 `FirstOrDefaultAsync`, `SingleAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync` and
 `LongCountAsync`. Each takes a cancellation token, and all but the list, the array and the long
 count take an optional predicate. `ToPagedResultAsync(skip, take, cancellationToken)` returns one
-page and the total count in a single round trip.
+page of the query's order and the total count in a single round trip; the query itself must not
+`Skip` or `Take`.
 
 The ones that return one row or a figure read only what they need, in the database:
 `FirstAsync` and `FirstOrDefaultAsync` read one row, and `SingleAsync` and
 `SingleOrDefaultAsync` read two at most (enough to tell one from several), each with the
 query's child collections, `Exclude`, `Include` and `IncludeDeleted`. `AnyAsync` reads one ID,
 and `CountAsync` and `LongCountAsync` count; neither reads a child collection or builds an entity.
-With no `OrderBy`, "first" is whichever matching row the database returns first.
+With no `OrderBy`, "first" is the first matching row written. Each keeps the query's order, `Skip`
+and `Take`: `CountAsync` of `Skip(20).Take(10)` counts at most ten rows.
 
-`Where` and the async operators are declared on the query that `Get<T>()` returns, not only as
-extension methods. That query is both an `IQueryable<T>` and an `IAsyncEnumerable<T>`, and from
-.NET 10 `System.Linq.AsyncEnumerable` declares the same names, so without the members each call
-straight on `Get<T>()` would be ambiguous and not compile. After a `Where` the same operators come
-from the extensions in `TFM.Nucleus.Data`.
+`Where`, `OrderBy`, `OrderByDescending`, `Skip`, `Take` and the async operators are declared on the
+query that `Get<T>()` returns, not only as extension methods. That query is both an `IQueryable<T>`
+and an `IAsyncEnumerable<T>`, and from .NET 10 `System.Linq.AsyncEnumerable` declares the same
+names, so without the members each call straight on `Get<T>()` would be ambiguous and not compile.
+After the first operator the rest come from `Queryable` and the extensions in `TFM.Nucleus.Data`.
 
 ### What a predicate can say
 
@@ -133,7 +153,7 @@ What each part does:
 
 - **Columns:** `Select(...)` names the properties each row returns. `OrderBy`, `OrderByDescending`, `ThenBy` and `ThenByDescending` order the rows in the database.
 - **Groups:** `GroupBy(...)` returns one row per distinct combination of the keys, each named by its property, with the measures asked for: `Count(alias)`, `CountDistinct(property, alias)`, `Min`, `Max` and `Sum`. Measures without `GroupBy` are one row over every match. A grouped read is not ordered or paged (order its groups in memory) and does not `Select` as well. A measure's alias is a plain identifier (letters, digits, underscores, starting with a letter or underscore) and must not repeat a key's name.
-- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; the read must be ordered and not grouped) and `CountAsync` (a `COUNT` in the database, as the query's `CountAsync` is too).
+- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; not for a grouped read; a read with no order is paged in the order the rows were written in) and `CountAsync` (a `COUNT` in the database, as the query's `CountAsync` is too).
 - **Values:** `ResultRow.Get<T>(name)` converts each value: a database null is the type's default, an integer becomes an enum, a number becomes the numeric type asked for. A count is a `long`; a minimum or maximum has the column's type (a date stays a `DateTimeOffset` on every engine); a sum is the number the engine returns. `row[name]` is the value as read.
 - **Rules:** soft-deleted rows are left out as in any read, unless the read asks for them with `IncludeDeleted()`. Child collections are never read. The rows cannot be saved: a partial entity would write nulls over the columns it never read. A predicate that matches nothing returns no rows without a round trip.
 

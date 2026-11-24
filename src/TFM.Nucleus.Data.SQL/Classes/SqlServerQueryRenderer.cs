@@ -9,7 +9,7 @@ namespace TFM.Nucleus.Data.SQL
 {
     /// <summary>
     /// The single home of SQL Server rendering. The neutral query model decides what a query
-    /// means (<see cref="SelectQuery.IsPaged"/>, <see cref="SelectQuery.NeedsIdentityOrder"/>,
+    /// means (<see cref="SelectQuery.IsPaged"/>, <see cref="SelectQuery.OrdersByInsertion"/>,
     /// <see cref="DeleteWhereQuery.TargetsChildrenFirst"/> and the rest); this class only writes
     /// it as T-SQL. The output is pinned byte for byte by the raw SQL Server goldens.
     /// </summary>
@@ -203,12 +203,18 @@ namespace TFM.Nucleus.Data.SQL
             return column.IsDescending ? $"[{column.Column}] DESC" : $"[{column.Column}] ASC";
         }
 
-        /// <summary>The order of the root rows: the one asked for, or [ID] when the query needs one.</summary>
+        /// <summary>Insertion order: the ClusterID every table carries, under its clustered index.</summary>
+        private static readonly string InsertionOrder = $"[{TableSchema.ClusterIdColumn}] ASC";
+
+        /// <summary>
+        /// The order of the root rows: the one asked for, with insertion order after it to break
+        /// its ties when the rows are cut, or insertion order alone when a cut needs an order.
+        /// </summary>
         private static string? RootOrderBy(SelectQuery q)
         {
             if (!q.OrderBy.IsEmpty)
-                return OrderByClause(q.OrderBy);
-            return q.NeedsIdentityOrder ? "ORDER BY [ID]" : null;
+                return q.BreaksTiesByInsertion ? $"{OrderByClause(q.OrderBy)} ,{InsertionOrder}" : OrderByClause(q.OrderBy);
+            return q.OrdersByInsertion ? $"ORDER BY {InsertionOrder}" : null;
         }
 
         private StringBuilder PlainSelect(SelectQuery q, string? keys)
@@ -225,7 +231,7 @@ namespace TFM.Nucleus.Data.SQL
 
         /// <summary>
         /// Skip paging via a ROW_NUMBER window, valid at every supported SQL Server compatibility
-        /// level, unlike OFFSET/FETCH (110+). Unordered queries page by [ID].
+        /// level, unlike OFFSET/FETCH (110+). Unordered queries page by [ClusterID].
         /// </summary>
         private StringBuilder PagedSelect(SelectQuery q)
         {
@@ -239,7 +245,8 @@ namespace TFM.Nucleus.Data.SQL
         /// <summary>The ROW_NUMBER window over a query's rows, cut to the requested page.</summary>
         private StringBuilder PagedWindow(SelectQuery q, string columnList)
         {
-            var orderBy = q.OrderBy.IsEmpty ? "ORDER BY [ID]" : OrderByClause(q.OrderBy) ?? "ORDER BY [ID]";
+            // A paged root always has an order: its own, or insertion order.
+            var orderBy = RootOrderBy(q) ?? $"ORDER BY {InsertionOrder}";
             var sb = new StringBuilder(
                 $"(SELECT {columnList}, ROW_NUMBER() OVER ({orderBy}) AS [__RowNumber] " +
                 $"FROM {q.TableName}{TableHint(q)}");

@@ -203,12 +203,16 @@ namespace PortlyPrimate
             var anyHangry = await monkeys.AnyAsync(m => m.Mood == Mood.Hangry, ct);
             var heavy = await monkeys.CountAsync(m => m.WeightKg > 20, ct);
 
-            // One page and the unpaged total, in a single round trip.
-            var page = await monkeys.Where(m => m.WeightKg > 10).ToPagedResultAsync(skip: 0, take: 20, ct);
+            // Ordered and cut in the database.
+            var heaviest = await monkeys.OrderByDescending(m => m.WeightKg).ThenBy(m => m.Name).Take(5).ToListAsync(ct);
+
+            // One page and the unpaged total, in a single round trip. With no OrderBy, a page
+            // follows the order the rows were written in.
+            var page = await monkeys.Where(m => m.WeightKg > 10).OrderBy(m => m.Name).ToPagedResultAsync(skip: 0, take: 20, ct);
             Console.WriteLine($"{page.Count} of {page.TotalCount}, more to come: {page.HasMore}");
 
-            // Only Where translates. Order and project in memory, or use a row read.
-            var names = smug.OrderBy(m => m.Name).Select(m => m.Name).ToList();
+            // Select is not translated: project in memory, or use a row read.
+            var names = heaviest.Select(m => m.Name).ToList();
             #endregion
             Assert.NotNull(gerald);
             Assert.False(anyHangry);

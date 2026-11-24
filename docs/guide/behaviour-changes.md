@@ -3,6 +3,37 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Queries order and page in the database, and pages follow ClusterID
+
+- **`OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` on a query
+  run in the database** (see [What a query translates](querying.md#what-a-query-translates)). They
+  threw `NotSupportedException` before, so code that ordered or paged in memory after `ToListAsync`
+  still works, but now reads every row only because it asks to; move the operators before the
+  async operator to read one page. `Select`, `Distinct` and the other operators still throw.
+- **`Get<T>().Take(n)` reads n rows.** A `Skip` or `Take` written straight on `Get<T>()`, or before
+  a `Where`, was evaluated away before translation, so the query read every matching row.
+- **A page with no order is ordered by ClusterID, the order the rows were written in, not by ID.**
+  This covers `ToPagedResultAsync`, `LoadPagedAsync`, `Skip`, `Take`, `FirstAsync`, `SingleAsync`
+  and a limited read with child queries. A Guid order was stable but meant nothing, and the first
+  page of an unordered query had no order at all, so it could share rows with the second. "First"
+  with no `OrderBy` is now the first matching row written.
+- **An ordered page is followed by ClusterID to break its ties**, so rows with equal keys no
+  longer move between pages, and the children of a limited read always belong to the parents it
+  returned.
+- **`Rows<T>().ToPageAsync` pages a read with no order** in the order the rows were written in. It
+  threw `InvalidOperationException` before.
+- **On PostgreSQL, NULL sorts below every value**, first ascending and last descending, as on SQL
+  Server and SQLite, in a query and in a row read alike. PostgreSQL's own order is the reverse.
+- **Every PostgreSQL table gets a unique index on ClusterID** (`CIX_<table>_ClusterID`), so a page
+  does not sort every row it matches. The first start builds it on each existing table and logs
+  how long each took.
+- **A SQL Server or PostgreSQL table without a ClusterID column is rebuilt with one at the next
+  start**, through the usual rebuild, which copies its rows and logs a warning first. A table
+  Nucleus created always has one, so only a table made some other way is affected.
+- **A Where or an order after Skip or Take throws `NotSupportedException`**, because it would act
+  on the page rather than the rows. **`ToPagedResultAsync` on a query that already skips or takes
+  throws `InvalidOperationException`.** A delete by predicate still takes a filter alone.
+
 ## The test database drops key columns, and adoption no longer stalls on SQL Server
 
 - **A start that adopts an old table after dropping a key no longer times out on SQL Server.** The

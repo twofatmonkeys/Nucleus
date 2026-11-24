@@ -94,10 +94,10 @@ namespace TFM.Nucleus.Data.SQLite
         }
 
         /// <summary>
-        /// The order of the root rows, then the page. A page is ordered by ID when no order was
-        /// asked for, as is a limit on a root with child queries, so the rows and the children's
-        /// subquery see the same parents. SQLite takes OFFSET only after a LIMIT, and a negative
-        /// limit means none.
+        /// The order of the root rows, then the page. A cut root is ordered by insertion (rowid:
+        /// SQLite keeps no ClusterID) when no order was asked for, and after the order asked for to
+        /// break its ties, so pages never overlap and the rows and the children's subquery see the
+        /// same parents. SQLite takes OFFSET only after a LIMIT, and a negative limit means none.
         /// </summary>
         private static void AppendOrderAndPage(StringBuilder sb, SelectQuery q)
         {
@@ -111,11 +111,17 @@ namespace TFM.Nucleus.Data.SQLite
                 sb.Append($" OFFSET {q.Skip}");
         }
 
+        /// <summary>Insertion order: the rowid, which is every table's own key.</summary>
+        private const string InsertionOrder = "rowid ASC";
+
         private static string? OrderBy(SelectQuery q)
         {
             if (!q.OrderBy.IsEmpty)
-                return "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(o => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}"));
-            return q.IsPaged || q.NeedsIdentityOrder ? "ORDER BY \"ID\"" : null;
+            {
+                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(o => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}"));
+                return q.BreaksTiesByInsertion ? $"{order}, {InsertionOrder}" : order;
+            }
+            return q.OrdersByInsertion ? $"ORDER BY {InsertionOrder}" : null;
         }
 
         /// <summary>

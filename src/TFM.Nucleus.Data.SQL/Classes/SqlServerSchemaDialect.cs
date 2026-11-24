@@ -77,6 +77,9 @@ namespace TFM.Nucleus.Data.SQL
         // SQL Server error 1505: CREATE UNIQUE INDEX terminated because a duplicate key was found.
         public bool SupportsForeignKeys => true;
 
+        /// <summary>Every table carries ClusterID, which an unordered page is ordered by.</summary>
+        public bool HasClusterIdColumn => true;
+
         /// <summary>
         /// The key as a named constraint. WITH CHECK makes SQL Server check the existing rows and
         /// trust the key; WITH NOCHECK leaves the rows that were there unchecked, and the key
