@@ -116,6 +116,43 @@ namespace TFM.Nucleus.Tests
         }
 
         [Theory]
+        [InlineData("sqlserver")]
+        [InlineData("postgres")]
+        public void AMissingClusterId_Rebuilds(string provider)
+        {
+            // A page with no order of its own is ordered by ClusterID, so a legacy table without
+            // the column would fail its first page; the rebuild gives it one.
+            var table = Growing();
+            var catalog = SchemaCatalog.Current(provider, table).Without(table.TableName, TableSchema.ClusterIdColumn);
+
+            Assert.False(Compare(provider, table, catalog));
+            Assert.False(table.IsCurrent);
+
+            Assert.Equal(TableUpdateKind.Rebuild, SchemaComparer.PlanUpdate(table).Kind);
+        }
+
+        [Fact]
+        public void Sqlite_KeepsNoClusterId_AndIsCurrentWithoutOne()
+        {
+            var table = Growing();
+
+            Assert.True(Compare("sqlite", table, SchemaCatalog.Current("sqlite", table)));
+            Assert.DoesNotContain(SchemaCatalog.Current("sqlite", table).Columns, c => c.Name == TableSchema.ClusterIdColumn);
+        }
+
+        [Theory]
+        [InlineData("sqlserver")]
+        [InlineData("postgres")]
+        public void ACompareAfterTheRebuild_ForgetsTheMissingClusterId(string provider)
+        {
+            var table = Growing();
+            Compare(provider, table, SchemaCatalog.Current(provider, table).Without(table.TableName, TableSchema.ClusterIdColumn));
+
+            Assert.True(Compare(provider, table, SchemaCatalog.Current(provider, table)));
+            Assert.True(table.IsCurrent);
+        }
+
+        [Theory]
         [MemberData(nameof(Providers))]
         public void AMissingTable_IsCreated(string provider)
         {
@@ -235,6 +272,21 @@ namespace TFM.Nucleus.Tests
             Assert.StartsWith("EXEC sp_rename 'tbl_TFM_Nucleus_Tests_TestGrowingWidget'", store.InTransaction[0], StringComparison.Ordinal);
             Assert.DoesNotContain(store.InTransaction, s => s.StartsWith("ALTER TABLE [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget] ADD [", StringComparison.Ordinal));
             Assert.Contains(store.InTransaction, s => s.StartsWith("INSERT INTO [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget](", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AMissingClusterId_RebuildsTheTableWithOne()
+        {
+            var table = Growing();
+            var store = new RecordingSchemaStore(SchemaCatalog.Current("sqlserver", table).Without(table.TableName, TableSchema.ClusterIdColumn));
+
+            Assert.Equal(DataSchemaStatus.Ok, store.Manager().Initialize());
+
+            Assert.StartsWith("EXEC sp_rename 'tbl_TFM_Nucleus_Tests_TestGrowingWidget'", store.InTransaction[0], StringComparison.Ordinal);
+            Assert.Contains(store.InTransaction, s => s.Contains("[ClusterID] [int] IDENTITY(1,1)", StringComparison.Ordinal));
+            // The old table has no ClusterID to copy or order by.
+            var copy = Assert.Single(store.InTransaction, s => s.StartsWith("INSERT INTO [dbo].[tbl_TFM_Nucleus_Tests_TestGrowingWidget](", StringComparison.Ordinal));
+            Assert.DoesNotContain("ClusterID", copy, StringComparison.Ordinal);
         }
 
         [Fact]

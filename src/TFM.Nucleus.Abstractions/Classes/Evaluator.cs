@@ -44,6 +44,18 @@ namespace TFM.Nucleus
             if (expression.Type.IsByRefLike)
                 return false;
 
+            // A query operator over a query source (source.Take(5)) has no parameter, so it looked
+            // like a closure value: it was run and replaced by the queryable it returned, and the
+            // operator vanished before the parser saw it. A query is translated, never evaluated.
+            // A queryable built from a value (ids.AsQueryable()) is still folded: its source is not a query.
+            // The type is tested first and the arguments read through IArgumentProvider: reading
+            // Arguments builds a collection on every call node, a predicate's Contains included.
+            if (expression is MethodCallExpression call
+                && typeof(System.Linq.IQueryable).IsAssignableFrom(call.Type)
+                && ((IArgumentProvider)call).ArgumentCount > 0
+                && typeof(System.Linq.IQueryable).IsAssignableFrom(((IArgumentProvider)call).GetArgument(0).Type))
+                return false;
+
             return true;
         }
 

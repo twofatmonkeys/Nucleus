@@ -32,6 +32,12 @@ recorded here so that page's list and this one agree.
   behaviour and was not measured here.
 - **SQLite takes a file path only.** `SqliteConfiguration.FilePath` refuses `:memory:` and every
   `file:` URI, one naming a file on disk included.
+- **Text sorts by each engine's own collation.** An order on a text column is the engine's plain
+  `ORDER BY`: SQL Server's collation (usually case-insensitive), PostgreSQL's database locale and
+  SQLite's code point order differ, so the same rows can come back in different orders on
+  different engines. NULL placement is the same everywhere (the PostgreSQL renderer writes
+  `NULLS FIRST`/`NULLS LAST`); text is not, because matching it would need a collation of Nucleus's
+  own on every engine.
 
 ### Found by the documentation review, what is left (November 2026)
 
@@ -369,6 +375,40 @@ What the failure contract below ("A database failure was a bare Exception") does
   `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
 
 ## Fixed
+
+### A query could not order or page in the database, and Take was evaluated away (November 2026)
+
+- **Only `Where` translated.** `Get<T>()` refused every other operator, so a listing ordered and
+  paged in memory over every matching row, or used a row read and lost its entities. `OrderBy`,
+  `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` now translate:
+  `ExpressionParser.Split` takes a load's expression apart into its filter and a `QueryShape`
+  (order, skip, limit), which the manager's load cores apply to the select. A filter alone is
+  carried as it came, so it translates as before and allocates nothing more. The delete path still
+  parses its expression whole and refuses an order or a limit, because a delete that ignored a
+  `Take` would remove every match.
+- **A `Take` straight on `Get<T>()` vanished.** `Evaluator.PartialEval` folds any subtree with no
+  parameter into a constant, and `source.Take(5)` has none, so it ran the operator and replaced it
+  with the queryable it returned: `Get<T>().Take(5)` read every row, and `Take(5).Where(..)`
+  silently dropped the Take. The evaluator now leaves an operator over a query source alone.
+- **A page with no order was ordered by ID, and the first page by nothing.** The rows were paged
+  by a Guid, which is stable but meaningless, and only a skipped page had any order, so the first
+  page of an unordered listing could share rows with the second. Every skipped or limited root
+  with no order is now ordered by ClusterID (SQLite: rowid), and a caller's order on one is
+  followed by it to break ties, which also keeps the rows and the children's parent keys (separate
+  statements on SQL Server) on the same parents (`SelectQuery.OrdersByInsertion`,
+  `BreaksTiesByInsertion`). The existence probe behind `AnyAsync` stays unordered
+  (`ReadsExistenceOnly`).
+- **PostgreSQL had no index on ClusterID, and nothing required the column.** PostgreSQL now
+  creates `CIX_<table>_ClusterID` with each table and adds it to existing tables in its extras
+  sync. The schema check rebuilds a SQL Server or PostgreSQL table that lacks the column
+  (`ISchemaDialect.HasClusterIdColumn`, `TableSchema.MissingClusterId`).
+- **PostgreSQL sorted NULL above every value**, the other engines below. Its renderer now writes
+  `NULLS FIRST` ascending and `NULLS LAST` descending.
+
+Cover: `OrderAndPageTests` (split, evaluator, shape, manager), the order and page cases in the
+three goldens, `SchemaUpdatePlanTests.AMissingClusterId_Rebuilds`, and on every engine
+`OrderAndPageIntegrationTests` (tied keys across pages, children of a cut over ties, null order)
+and `PostgresClusterIdIndexTests`.
 
 ### On SQL Server, adopting an old table timed out after a key drop (November 2026)
 

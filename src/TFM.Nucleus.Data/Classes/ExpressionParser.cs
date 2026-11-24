@@ -114,7 +114,8 @@ namespace TFM.Nucleus.Data
             {
                 if (call.Method.Name != "Where" || call.Arguments.Count != 2)
                     throw new NotSupportedException(
-                        $"Query operator {call.Method.Name} is not supported. Only Where translates; order, page and project in memory.");
+                        $"Query operator {call.Method.Name} is not supported here: a filter, and a delete, take Where only. " +
+                        "A load orders and pages with OrderBy, ThenBy, Skip and Take on the query.");
                 var body = ((LambdaExpression)StripQuotes(call.Arguments[1])).Body;
                 predicate = predicate == null ? body : Expression.AndAlso(body, predicate);
                 node = call.Arguments[0];
@@ -135,6 +136,150 @@ namespace TFM.Nucleus.Data
 
             return predicate == null ? null : FoldBooleanConstants(predicate);
         }
+
+        /// <summary>
+        /// Takes a load's query expression apart into its filter and the operators that order and
+        /// cut the rows: <c>OrderBy</c>, <c>OrderByDescending</c>, <c>ThenBy</c>,
+        /// <c>ThenByDescending</c>, <c>Skip</c> and <c>Take</c>. A plain filter comes back as it
+        /// was given, so it translates exactly as before. Every operator is kept or refused, never
+        /// dropped: a later <c>OrderBy</c> sorts first and the earlier keys still break its ties,
+        /// as LINQ's stable sort does; Skip and Take compose as LINQ's do; and a Where or an order
+        /// after a Skip or Take, which would act on the page rather than the rows, throws, as does
+        /// any other operator. Only a load splits: a delete parses its expression whole, so an
+        /// order or a limit on a delete is refused rather than deleting every match.
+        /// </summary>
+        internal static Queries.QueryShape Split(Expression expression)
+        {
+            ArgumentNullException.ThrowIfNull(expression);
+            if (!HasOperators(expression))
+                return Queries.QueryShape.Plain(expression);
+
+            var calls = new List<MethodCallExpression>();
+            var node = expression;
+            while (node is MethodCallExpression call && typeof(IQueryable).IsAssignableFrom(call.Type))
+            {
+                calls.Add(call);
+                node = call.Arguments[0];
+            }
+            if (node is not ConstantExpression { Value: IQueryable })
+                throw new NotSupportedException($"Query source {node.NodeType} is not supported.");
+
+            Expression? predicate = null;
+            List<(string Property, bool Descending)>? order = null;
+            var skip = 0;
+            int? take = null;
+            // The innermost operator applies first.
+            for (var i = calls.Count - 1; i >= 0; i--)
+            {
+                var call = calls[i];
+                if (call.Method.DeclaringType != typeof(Queryable) || call.Arguments.Count != 2)
+                    throw UnsupportedOperator(call);
+                switch (call.Method.Name)
+                {
+                    case "Where" when OperatorLambda(call).Parameters.Count == 1:
+                        if (skip > 0 || take != null)
+                            throw new NotSupportedException(
+                                "A Where after Skip or Take would filter the page rather than the rows, which does not translate. Put the Where first.");
+                        var body = OperatorLambda(call).Body;
+                        predicate = predicate == null ? body : Expression.AndAlso(predicate, body);
+                        break;
+                    case "OrderBy" or "OrderByDescending":
+                    {
+                        EnsureBeforeCut(call, skip, take);
+                        var key = (Property: OrderKey(call), Descending: call.Method.Name == "OrderByDescending");
+                        // The new order sorts first; the earlier keys still decide its ties, as LINQ's
+                        // stable sort leaves them. A repeated key adds nothing after its first use.
+                        var reordered = new List<(string Property, bool Descending)> { key };
+                        if (order != null)
+                            foreach (var earlier in order)
+                                if (earlier.Property != key.Property)
+                                    reordered.Add(earlier);
+                        order = reordered;
+                        break;
+                    }
+                    case "ThenBy" or "ThenByDescending":
+                    {
+                        EnsureBeforeCut(call, skip, take);
+                        var key = (Property: OrderKey(call), Descending: call.Method.Name == "ThenByDescending");
+                        order ??= [];
+                        if (!order.Exists(k => k.Property == key.Property))
+                            order.Add(key);
+                        break;
+                    }
+                    case "Skip" when call.Arguments[1].Type == typeof(int):
+                    {
+                        var n = Math.Max(0, RowCount(call));
+                        skip = checked(skip + n);
+                        if (take is { } limit)
+                            take = Math.Max(0, limit - n);
+                        break;
+                    }
+                    case "Take" when call.Arguments[1].Type == typeof(int):
+                    {
+                        var n = Math.Max(0, RowCount(call));
+                        take = take is { } limit ? Math.Min(limit, n) : n;
+                        break;
+                    }
+                    default:
+                        throw UnsupportedOperator(call);
+                }
+            }
+            return Queries.QueryShape.WithOperators(predicate ?? True, order, skip, take);
+        }
+
+        /// <summary>
+        /// True when a query expression has an operator other than a plain Where (one argument,
+        /// the row), which the split then translates or refuses. Allocates nothing.
+        /// </summary>
+        private static bool HasOperators(Expression expression)
+        {
+            var node = expression;
+            while (node is MethodCallExpression call && typeof(IQueryable).IsAssignableFrom(call.Type))
+            {
+                if (call.Method.Name != "Where" || call.Arguments.Count != 2
+                    || StripQuotes(call.Arguments[1]) is not LambdaExpression { Parameters.Count: 1 })
+                    return true;
+                node = call.Arguments[0];
+            }
+            return false;
+        }
+
+        private static LambdaExpression OperatorLambda(MethodCallExpression call) =>
+            StripQuotes(call.Arguments[1]) as LambdaExpression ?? throw UnsupportedOperator(call);
+
+        private static void EnsureBeforeCut(MethodCallExpression call, int skip, int? take)
+        {
+            if (skip > 0 || take != null)
+                throw new NotSupportedException(
+                    $"{call.Method.Name} after Skip or Take would order the page rather than the rows, which does not translate. Order first.");
+        }
+
+        /// <summary>The property an order key names: <c>x =&gt; x.Name</c>, boxed or not.</summary>
+        private static string OrderKey(MethodCallExpression call)
+        {
+            var lambda = OperatorLambda(call);
+            var body = lambda.Body;
+            while (body is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert)
+                body = convert.Operand;
+            if (lambda.Parameters.Count == 1 && body is MemberExpression { Expression: ParameterExpression parameter } member
+                && parameter == lambda.Parameters[0])
+                return member.Member.Name;
+            throw new NotSupportedException(
+                $"{call.Method.Name}({lambda}) does not translate: order by a stored property of the entity, as in x => x.Name.");
+        }
+
+        /// <summary>The number a Skip or Take is given, worked out now when it is a variable.</summary>
+        private static int RowCount(MethodCallExpression call)
+        {
+            var argument = Evaluator.PartialEval(call.Arguments[1]) ?? call.Arguments[1];
+            return argument is ConstantExpression { Value: int n }
+                ? n
+                : throw new NotSupportedException($"{call.Method.Name} needs a number that does not depend on the row.");
+        }
+
+        private static NotSupportedException UnsupportedOperator(MethodCallExpression call) =>
+            new($"Query operator {call.Method.Name} is not supported. A load translates Where, OrderBy, OrderByDescending, " +
+                "ThenBy, ThenByDescending, Skip and Take; project and group in memory, or use a row read.");
 
         private static readonly ConstantExpression True = Expression.Constant(true);
         private static readonly ConstantExpression False = Expression.Constant(false);

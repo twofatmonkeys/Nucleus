@@ -143,6 +143,12 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 $"SELECT tablename, indexname FROM pg_indexes WHERE schemaname = {Literal(Config.Schema)} AND indexname LIKE {Literal(PostgresSchemaDialect.FullTextIndexPrefix.Replace("_", @"\_") + "%")}",
                 r => (r.GetString(0), r.GetString(1)), async, cancellationToken);
 
+        /// <summary>The (table, index) names of every ClusterID index in the schema.</summary>
+        internal ValueTask<IReadOnlyList<(string Table, string Index)>> ReadClusterIdIndexesAsync(bool async, CancellationToken cancellationToken) =>
+            Read("ClusterID indexes",
+                $"SELECT tablename, indexname FROM pg_indexes WHERE schemaname = {Literal(Config.Schema)} AND indexname LIKE {Literal(PostgresSchemaDialect.ClusterIdIndexPrefix.Replace("_", @"\_") + "%")}",
+                r => (r.GetString(0), r.GetString(1)), async, cancellationToken);
+
         /// <summary>The (table, trigger) names of every notification trigger in the schema.</summary>
         internal ValueTask<IReadOnlyList<(string Table, string Trigger)>> ReadNotifyTriggersAsync(bool async, CancellationToken cancellationToken) =>
             Read("notification triggers",

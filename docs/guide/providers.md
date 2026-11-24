@@ -71,11 +71,14 @@ differences an application can see:
   COPY BINARY and written with one statement; an update applies each row's own changed columns.
 - **Values the server sets use `clock_timestamp()`**, so each statement stamps its own time rather
   than the transaction's start.
-- **Paging is `LIMIT`/`OFFSET`**, ordered by ID when the query asks for no order.
+- **Paging is `LIMIT`/`OFFSET`**, ordered by `ClusterID` when the query asks for no order and
+  after the query's own order to break its ties. NULL is placed explicitly (`NULLS FIRST`
+  ascending, `NULLS LAST` descending), so it sorts below every value as on the other engines.
 
 The schema is `public` unless `PostgresConfiguration.Schema` says otherwise, and is created when
 missing. Each table carries the Guid `ID` primary key, an identity `ClusterID` that keeps a
-rebuild's copy in insertion order, and a column per `[DatabaseColumn]` property. A table that only
+rebuild's copy in insertion order and orders an unordered page, with a unique index
+(`CIX_<table>_ClusterID`) that the first start adds to a table without one, and a column per `[DatabaseColumn]` property. A table that only
 lacks columns has them added in place, and one whose column types change is rebuilt, as on SQL
 Server, in one transaction: PostgreSQL's DDL is transactional, so a failed update leaves nothing
 behind. Adding a column, `IsDeleted` with its constant default included, is a catalog-only change.
@@ -137,8 +140,8 @@ differences an application can see:
 - **Unique violations name columns, not indexes.** SQLite reports the columns a write broke, and the
   provider maps them back to the column's `UQ_` index or the unique `[TableIndex]` with those keys,
   so `UniqueViolationException` reads the same as on the other engines.
-- **Paging is `LIMIT`/`OFFSET`** (`LIMIT -1` when only a skip is given), ordered by ID when the query
-  asks for no order.
+- **Paging is `LIMIT`/`OFFSET`** (`LIMIT -1` when only a skip is given), ordered by `rowid` when the
+  query asks for no order and after the query's own order to break its ties.
 
 Each table carries the Guid `ID` primary key and a column per `[DatabaseColumn]` property, with no
 `ClusterID`: the table's rowid keeps its insertion order, which a rebuild's copy orders by. SQLite

@@ -38,6 +38,13 @@ namespace TFM.Nucleus.Data.Schema
                 }
                 table.ExistsInDatabase = true;
                 var tableColumns = snapshot.Columns.Where(c => comparer.Equals(c.TableName, physical)).ToList();
+                // A page with no order is ordered by ClusterID, so a table the engine should give
+                // one and that lacks it (a legacy table) is rebuilt with it.
+                table.MissingClusterId = dialect.HasClusterIdColumn &&
+                    !tableColumns.Any(c => comparer.Equals(c.Name, dialect.PhysicalName(TableSchema.ClusterIdColumn)));
+                if (table.MissingClusterId)
+                    logger?.LogWarning("Database table schema is not current. '{tablename}' has no {column} column; it will be rebuilt with one.",
+                        table.TableName, TableSchema.ClusterIdColumn);
                 if (table.IsSoftDeletable)
                     table.MissingSoftDeleteColumns.AddRange(SoftDeleteColumnNames.Where(name => !tableColumns.Any(c => comparer.Equals(c.Name, dialect.PhysicalName(name)))));
                 if (table.MissingSoftDeleteColumns.Count > 0)
@@ -77,7 +84,8 @@ namespace TFM.Nucleus.Data.Schema
         {
             if (!table.ExistsInDatabase)
                 return new TableUpdatePlan(TableUpdateKind.Create, [], []);
-            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase || table.RebuildForKeys)
+            if (table.Columns.Any(c => c.ExistsInDatabase && !c.SchemaMatched) || !table.IdentityColumn.ExistsInDatabase || table.RebuildForKeys
+                || table.MissingClusterId)
                 return new TableUpdatePlan(TableUpdateKind.Rebuild, [], []);
             return new TableUpdatePlan(TableUpdateKind.AddColumns,
                 [.. table.Columns.Where(c => !c.ExistsInDatabase)],

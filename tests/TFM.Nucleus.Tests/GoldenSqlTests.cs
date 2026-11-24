@@ -52,7 +52,7 @@ namespace TFM.Nucleus.Tests
             var sql = SqlSnapshot.Normalize(query.BuildQuery());
 
             Assert.Equal(
-                "SELECT [ID] ,[Name] FROM (SELECT [ID] ,[Name], ROW_NUMBER() OVER (ORDER BY [ID]) AS [__RowNumber] FROM [dbo].[tbl_TestWidget] WHERE [Name]=@p0) AS [__paged] WHERE [__paged].[__RowNumber] > 10 AND [__paged].[__RowNumber] <= 15 ORDER BY [__paged].[__RowNumber]; SELECT COUNT_BIG(*) FROM [dbo].[tbl_TestWidget] WHERE [Name]=@p0",
+                "SELECT [ID] ,[Name] FROM (SELECT [ID] ,[Name], ROW_NUMBER() OVER (ORDER BY [ClusterID] ASC) AS [__RowNumber] FROM [dbo].[tbl_TestWidget] WHERE [Name]=@p0) AS [__paged] WHERE [__paged].[__RowNumber] > 10 AND [__paged].[__RowNumber] <= 15 ORDER BY [__paged].[__RowNumber]; SELECT COUNT_BIG(*) FROM [dbo].[tbl_TestWidget] WHERE [Name]=@p0",
                 sql);
         }
 

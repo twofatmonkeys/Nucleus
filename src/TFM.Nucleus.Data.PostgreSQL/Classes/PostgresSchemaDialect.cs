@@ -22,6 +22,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
     internal sealed class PostgresSchemaDialect(string schema, ISchemaExtras? extras) : ISchemaDialect
     {
         internal const string FullTextIndexPrefix = "FTS_";
+        internal const string ClusterIdIndexPrefix = "CIX_";
         internal const string NotifyTriggerPrefix = "NTF_";
         internal const string NotifyFunction = "nucleus_notify";
         private const string NotifyChannelPrefix = "nucleus_";
@@ -51,7 +52,7 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 sb.Append($"{SoftDeleteColumnDefinition(SoftDelete.IsDeletedColumn)}, {SoftDeleteColumnDefinition(SoftDelete.DeletedAtColumn)}, ");
             sb.Append($"CONSTRAINT {Quote($"PK_{table.TableName}")} PRIMARY KEY ({Quote(idColumn)}))");
 
-            List<SchemaStatement> statements = [$"CREATE SCHEMA IF NOT EXISTS {Quote(Schema)}", sb.ToString()];
+            List<SchemaStatement> statements = [$"CREATE SCHEMA IF NOT EXISTS {Quote(Schema)}", sb.ToString(), CreateClusterIdIndex(table.TableName)];
             foreach (var col in table.IndexedColumns)
                 statements.Add(CreateIndex(table, col));
             return statements;
@@ -143,6 +144,7 @@ $nucleus$",
                 Rename(IndexNaming.TableIndexName(legacyTableName, index), IndexNaming.TableIndexName(newName, index));
             foreach (var column in table.Columns.Where(c => c.FullTextSearch))
                 Rename(FullTextIndexName(legacyTableName, column), FullTextIndexName(newName, column));
+            Rename(ClusterIdIndexName(legacyTableName), ClusterIdIndexName(newName));
             return statements;
         }
 
@@ -196,6 +198,9 @@ $nucleus$",
 
         public bool SupportsForeignKeys => true;
 
+        /// <summary>Every table carries ClusterID, which an unordered page is ordered by.</summary>
+        public bool HasClusterIdColumn => true;
+
         /// <summary>
         /// The key as a named constraint. NOT VALID leaves the rows that were there unchecked;
         /// every row written after it is checked.
@@ -213,7 +218,19 @@ $nucleus$",
             $"SELECT count(*) FROM {TableName(key.Table.TableName)} c WHERE c.{Quote(key.Column.ColumnName)} IS NOT NULL " +
             $"AND NOT EXISTS (SELECT 1 FROM {TableName(key.Referenced.TableName)} r WHERE r.{Quote(key.Referenced.IdentityColumn!.ColumnName)} = c.{Quote(key.Column.ColumnName)})";
 
-        // ---- Full-text search and change notification objects.
+        // ---- The ClusterID index, full-text search and change notification objects.
+
+        internal static string ClusterIdIndexName(string tableName) => Physical($"{ClusterIdIndexPrefix}{tableName}_{TableSchema.ClusterIdColumn}");
+
+        /// <summary>
+        /// The unique index on ClusterID, which a page with no order of its own is ordered by:
+        /// without it each page would sort every matching row. SQL Server's ClusterID is its
+        /// clustered index; PostgreSQL's must be created.
+        /// </summary>
+        internal string CreateClusterIdIndex(string tableName) =>
+            $"CREATE UNIQUE INDEX {Quote(ClusterIdIndexName(tableName))} ON {TableName(tableName)} ({Quote(TableSchema.ClusterIdColumn)})";
+
+        internal string DropClusterIdIndex(string physicalIndexName) => $"DROP INDEX {Quote(Schema)}.{Quote(physicalIndexName)}";
 
         internal static string FullTextIndexName(TableSchema table, ColumnSchema column) => FullTextIndexName(table.TableName, column);
 
@@ -259,6 +276,11 @@ $nucleus$";
     {
         public async ValueTask<bool> AreCurrentAsync(IReadOnlyCollection<TableSchema> tables, bool async, CancellationToken cancellationToken)
         {
+            var (missingClusterId, staleClusterId) = await DiffClusterIdIndexes(tables, async, cancellationToken);
+            foreach (var table in missingClusterId)
+                logger?.LogWarning("The {column} index is missing for table {tablename}", TableSchema.ClusterIdColumn, table.TableName);
+            foreach (var (table, index) in staleClusterId)
+                logger?.LogWarning("{column} index {index} on table {tablename} has another table's name", TableSchema.ClusterIdColumn, index, table);
             var (missingFullText, staleFullText) = await DiffFullText(tables, async, cancellationToken);
             var missingTriggers = await MissingTriggers(tables, async, cancellationToken);
             var functionExists = await catalog.NotifyFunctionExistsAsync(async, cancellationToken);
@@ -270,12 +292,26 @@ $nucleus$";
                 logger?.LogWarning("Change notification trigger is missing for table {tablename}", table.TableName);
             if (!functionExists)
                 logger?.LogWarning("The change notification function is missing.");
-            return missingFullText.Count == 0 && staleFullText.Count == 0 && missingTriggers.Count == 0 && functionExists;
+            return missingClusterId.Count == 0 && staleClusterId.Count == 0 &&
+                missingFullText.Count == 0 && staleFullText.Count == 0 && missingTriggers.Count == 0 && functionExists;
         }
 
         public async ValueTask SyncAsync(IReadOnlyCollection<TableSchema> tables, bool async, CancellationToken cancellationToken)
         {
             var d = dialect();
+            // A table created before ClusterID was indexed gains the index in place; building it
+            // reads the table once, which is logged so a slow start can be explained.
+            var (missingClusterId, staleClusterId) = await DiffClusterIdIndexes(tables, async, cancellationToken);
+            foreach (var (_, index) in staleClusterId)
+                await catalog.ExecuteAsync(d.DropClusterIdIndex(index), async, cancellationToken);
+            foreach (var table in missingClusterId)
+            {
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                await catalog.ExecuteAsync(d.CreateClusterIdIndex(table.TableName), async, cancellationToken);
+                logger?.LogInformation("Created the {column} index on table {tablename} in {seconds:0.0} s.", TableSchema.ClusterIdColumn, table.TableName,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
+            }
+
             var (missingFullText, staleFullText) = await DiffFullText(tables, async, cancellationToken);
             foreach (var (_, index) in staleFullText)
                 await catalog.ExecuteAsync(d.DropFullTextIndex(index), async, cancellationToken);
@@ -299,6 +335,22 @@ $nucleus$";
             var existingNames = existing.Select(e => e.Index).ToHashSet(StringComparer.Ordinal);
             var missing = required.Where(r => !existingNames.Contains(PostgresSchemaDialect.FullTextIndexName(r.Table, r.Column))).ToList();
             var stale = existing.Where(e => ownTables.Contains(e.Table) && !requiredNames.Contains(e.Index)).ToList();
+            return (missing, stale);
+        }
+
+        /// <summary>
+        /// The tables whose ClusterID index is missing, and the ClusterID indexes on this model's
+        /// tables under a name that is not the table's own (one kept from a table name the
+        /// table no longer has).
+        /// </summary>
+        private async ValueTask<(List<TableSchema> Missing, List<(string Table, string Index)> Stale)> DiffClusterIdIndexes(
+            IReadOnlyCollection<TableSchema> tables, bool async, CancellationToken cancellationToken)
+        {
+            var existing = await catalog.ReadClusterIdIndexesAsync(async, cancellationToken);
+            var existingNames = existing.Select(e => (e.Table, e.Index)).ToHashSet();
+            var missing = tables.Where(t => !existingNames.Contains((Physical(t.TableName), PostgresSchemaDialect.ClusterIdIndexName(t.TableName)))).ToList();
+            var ownTables = tables.ToDictionary(t => Physical(t.TableName), t => PostgresSchemaDialect.ClusterIdIndexName(t.TableName), StringComparer.Ordinal);
+            var stale = existing.Where(e => ownTables.TryGetValue(e.Table, out var name) && e.Index != name).ToList();
             return (missing, stale);
         }
 

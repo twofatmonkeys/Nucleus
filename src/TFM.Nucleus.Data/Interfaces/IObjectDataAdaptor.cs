@@ -22,6 +22,25 @@ namespace TFM.Nucleus.Data
         /// </summary>
         public IQueryable<TICoreObject> Where(System.Linq.Expressions.Expression<Func<TICoreObject, bool>> predicate);
 
+        // The order and page operators, declared here for the reason Where is: from .NET 10 each
+        // one called straight on Get<T>() matched both Queryable and System.Linq.AsyncEnumerable
+        // (CS0121). Each is Queryable's own, so the query translates as it does after a Where.
+        // ThenBy needs no member: it is called on the IOrderedQueryable these return.
+
+        /// <summary>Orders the rows by a stored property, smallest first, in the database.</summary>
+        public IOrderedQueryable<TICoreObject> OrderBy<TKey>(System.Linq.Expressions.Expression<Func<TICoreObject, TKey>> keySelector) =>
+            Queryable.OrderBy(this, keySelector);
+
+        /// <summary>Orders the rows by a stored property, largest first, in the database.</summary>
+        public IOrderedQueryable<TICoreObject> OrderByDescending<TKey>(System.Linq.Expressions.Expression<Func<TICoreObject, TKey>> keySelector) =>
+            Queryable.OrderByDescending(this, keySelector);
+
+        /// <summary>Skips rows in the database. Unordered, the rows are taken in the order they were written.</summary>
+        public IQueryable<TICoreObject> Skip(int count) => Queryable.Skip(this, count);
+
+        /// <summary>Returns at most <paramref name="count"/> rows, cut in the database. Unordered, the rows are taken in the order they were written.</summary>
+        public IQueryable<TICoreObject> Take(int count) => Queryable.Take(this, count);
+
         // The async operators, declared here for the reason Where is: from .NET 10 each one called
         // straight on Get<T>() matched both ObjectDataAdaptorQueryableExtensions and
         // System.Linq.AsyncEnumerable and did not compile (CS0121). An instance member beats both.

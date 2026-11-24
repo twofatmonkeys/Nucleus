@@ -153,12 +153,50 @@ namespace TFM.Nucleus.Data.Queries
         /// <summary>The parent of a child collection query.</summary>
         public SelectQuery? ParentSelect => ParentQuery as SelectQuery;
 
-        /// <summary>
-        /// The root rows need an order by ID: a limit without an order would let the server pick
-        /// one set of parents for the rows and another for the children's subquery, so a root
-        /// with child queries and a Take is ordered by ID when no order was asked for.
-        /// </summary>
+        /// <summary>The rule <see cref="OrdersByInsertion"/> replaced, which ordered such a root by ID.</summary>
+        [Obsolete("A root is ordered by insertion, not by ID. Use OrdersByInsertion.")]
         public bool NeedsIdentityOrder => OrderBy.IsEmpty && Take > 0 && LinkedQueries.Count > 0;
+
+        /// <summary>
+        /// The root rows are ordered by insertion (ClusterID, or the engine's own insertion order
+        /// where it keeps no ClusterID) because nothing else orders them and they are cut, by a
+        /// skip or a limit. Every cut needs an order: the first page and the next must come from
+        /// the same one or they could share or miss rows, the first row is then always the same
+        /// row, and a limit on a root with linked queries would otherwise let the server pick one
+        /// set of parents for the rows and another for the linked queries' parent keys. Not for
+        /// <see cref="ReadsExistenceOnly"/>, which reads any one row.
+        /// </summary>
+        public bool OrdersByInsertion => IsRoot && OrderBy.IsEmpty && IsCut && !ReadsExistenceOnly;
+
+        /// <summary>The root is skipped or limited.</summary>
+        private bool IsCut => Skip > 0 || Take > 0;
+
+        /// <summary>
+        /// The query asks only whether a row matches, so whichever row the database finds first
+        /// will do and no order is written: an order would make the server look for the first row
+        /// in that order rather than any row.
+        /// </summary>
+        public bool ReadsExistenceOnly { get; set; }
+
+        /// <summary>
+        /// The caller's order is followed by insertion order, because the root is paged or limited
+        /// and its order may have ties: rows that tie could otherwise move between pages, or come
+        /// back in one statement of a batch and not in the next. Not needed when the order already
+        /// includes the ID, which never ties.
+        /// </summary>
+        public bool BreaksTiesByInsertion
+        {
+            get
+            {
+                if (!IsRoot || OrderBy.IsEmpty || !IsCut)
+                    return false;
+                var id = TableSchema?.FindByPropertyName(nameof(ICoreObject.ID))?.ColumnName ?? nameof(ICoreObject.ID);
+                foreach (var term in OrderBy)
+                    if (string.Equals(term.Column, id, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                return true;
+            }
+        }
 
         /// <summary>Paging applies to a root query only; throws for a child query.</summary>
         public void EnsurePageable()

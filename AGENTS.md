@@ -204,7 +204,15 @@ which is how one application spans several databases. The parser never drops a t
 a chain is ANDed, boolean constants are folded, an OR always becomes its own group, and anything it
 cannot translate throws, because the same translation drives deletes. `ExpressionParser.Classify`
 lets callers skip a predicate that matches nothing, and `CheckDeletePredicate` refuses a delete that
-matches everything. `ChildGraphBinder` is the one place child collections are materialised and
+matches everything. A load's expression is first taken apart by `ExpressionParser.Split` into its
+filter and a `QueryShape` (OrderBy, ThenBy, Skip, Take), which every load core applies to its
+select; a plain Where chain comes back as it was, allocating nothing. A Where or an order after a
+cut, and any other operator, throws. Only loads split: the filter and delete paths still parse the
+expression whole, so a delete refuses an order or a Take rather than deleting every match. A
+cut query is never answered from the `[Cacheable]` cache, First and Single compose with the
+query's cut, and Count and Any of a cut count the filter and work out what the cut leaves.
+`Evaluator.PartialEval` leaves an operator over a query source alone, or `Get<T>().Take(5)` was
+run and replaced by its result before translation. `ChildGraphBinder` is the one place child collections are materialised and
 attached, from either a data set's linked result sets or streamed child queries; it binds each
 child's parent as a stored value, so loaded children are never dirty. A load can exclude a child
 collection by property name, which drops its query and marks the collection unloaded
@@ -596,6 +604,13 @@ warning or an analyzer warning in new code fails CI.
   nuget.org once the surface is settled, which limits future breaking changes further.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
+- **Page by ClusterID, and index it everywhere.** A paged read, and a limited root with linked
+  queries, that the caller did not order is ordered by insertion: `ClusterID` on SQL Server and
+  PostgreSQL, `rowid` on SQLite. A caller's order on a paged or limited read is followed by the
+  same term, so ties cannot move a row between pages or give a parent's children to another
+  parent. Never add an `ORDER BY ID` fallback: a Guid order is stable but means nothing. Every
+  engine indexes ClusterID (SQL Server's clustered `CIX_`, PostgreSQL's unique `CIX_`, SQLite's
+  rowid key), so a page never sorts the whole matching set; a new engine or table path does too.
 - **Do not name an entity column `IsDeleted`.** Nucleus reserves it for its own soft-delete
   behaviour; a library flag with that meaning takes another name, such as `SoftDeleted`.
 - **Update the guide in the same commit** as any change to the public surface: the page under

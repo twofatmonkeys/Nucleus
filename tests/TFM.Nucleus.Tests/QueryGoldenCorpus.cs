@@ -129,6 +129,10 @@ namespace TFM.Nucleus.Tests
                 ["select.ordered"] = () => Select<TestWidget>(q => q.AddOrderBy("Name")),
                 ["select.paged.count"] = () => Select<TestWidget>(q => { q.Skip = 10; q.Take = 5; q.WithTotalCount = true; q.Where.And("Name", "abc"); }),
                 ["select.paged.ordered.notake"] = () => Select<TestWidget>(q => { q.Skip = 10; q.AddOrderBy("Name", descending: true); }),
+                // An order that includes the ID never ties, so it needs no insertion-order tiebreak.
+                ["select.paged.ordered.byid"] = () => Select<TestWidget>(q => { q.Skip = 10; q.Take = 5; q.AddOrderBy("Name"); q.AddOrderBy("ID"); }),
+                // A first row with no order is the first row written.
+                ["select.first.unordered"] = () => Select<TestWidget>(q => q.Take = 1),
                 ["select.count"] = () => Select<TestWidget>(q => q.WithTotalCount = true),
                 ["select.count.where"] = () => Select<TestWidget>(q => { q.WithTotalCount = true; q.Where.And("Quantity", 3); }),
                 ["select.nolockflag"] = () => Select<TestWidget>(q => { q.AllowDirtyRead = true; q.WithTotalCount = true; }),
@@ -144,6 +148,8 @@ namespace TFM.Nucleus.Tests
                 ["select.children.top"] = () => ParentWithChild<TestDeletableWidget, TestDeletableChild>(p => p.Take = 5).BuildQuery(),
                 ["select.children.top.ordered"] = () => ParentWithChild<TestDeletableWidget, TestDeletableChild>(p => { p.Take = 5; p.AddOrderBy("Name"); }).BuildQuery(),
                 ["select.children.paged"] = () => ParentWithChild<TestDeletableWidget, TestDeletableChild>(p => { p.Skip = 10; p.Take = 5; p.WithTotalCount = true; }).BuildQuery(),
+                // The caller's order, then insertion order, in the rows and in the parents' keys alike.
+                ["select.children.paged.ordered"] = () => ParentWithChild<TestDeletableWidget, TestDeletableChild>(p => { p.Skip = 10; p.Take = 5; p.AddOrderBy("Name", descending: true); }).BuildQuery(),
                 ["select.children.nobatch"] = () => ParentWithChild<TestDeletableWidget, TestDeletableChild>().BuildQuery(includeChildQueries: false),
                 ["select.grandchildren"] = () =>
                 {
@@ -187,8 +193,8 @@ namespace TFM.Nucleus.Tests
                 ["rows.grouped.soft"] = () => Grouped<TestSoftWidget>(["Name"], null, (MeasureKind.Count, null, "Rows")),
                 // As a queryable's AnyAsync reads it: one ID. And its CountAsync and RowQuery's
                 // IncludeDeleted, which reach the rows marked deleted too.
-                ["rows.any"] = () => Rows<TestWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.Where.And("Name", "a"); }),
-                ["rows.any.soft"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; }),
+                ["rows.any"] = () => Rows<TestWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.ReadsExistenceOnly = true; q.Where.And("Name", "a"); }),
+                ["rows.any.soft"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.ReadsExistenceOnly = true; }),
                 ["rows.columns.soft.includedeleted"] = () => Rows<TestSoftWidget>(q => { q.Columns = ["Name"]; q.IncludeDeleted = true; }),
                 ["rows.grouped.total.soft.includedeleted"] = () => Grouped<TestSoftWidget>([], q => q.IncludeDeleted = true, (MeasureKind.Count, null, "Rows")),
 
