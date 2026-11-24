@@ -704,10 +704,16 @@ namespace TFM.Nucleus.Data
             ArgumentOutOfRangeException.ThrowIfNegative(take);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
-            if (expression != null && ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+            // The page keeps the query's order; it cannot also keep its Skip or Take, which would
+            // make a page of a page and a total that counts neither.
+            var shape = expression == null ? Queries.QueryShape.Plain(Expression.Constant(true)) : ExpressionParser.Split(expression);
+            if (shape.IsCut)
+                throw new InvalidOperationException(
+                    "A paged load pages the query itself, so the query cannot also Skip or Take. Remove them and pass the page to ToPagedResultAsync.");
+            if (ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesNone)
                 return new PagedResult<T>([]) { Skip = skip, Take = take, TotalCount = 0 };
             var provider = ProviderFor<T>();
-            var query = ParseSelect<T>(provider, expression ?? Expression.Constant(true), excluded, included, includeDeleted);
+            var query = ParseSelect<T>(provider, shape, excluded, included, includeDeleted);
             query.Skip = skip;
             query.Take = take;
             query.WithTotalCount = true;
@@ -867,9 +873,16 @@ namespace TFM.Nucleus.Data
         /// of included lazy ones, which a plain select leaves out, and seeing soft-deleted rows
         /// when asked to.
         /// </summary>
-        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded, IPropertySchema[] included, bool includeDeleted)
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, Expression expression, IPropertySchema[] excluded, IPropertySchema[] included, bool includeDeleted) =>
+            ParseSelect<T>(provider, Queries.QueryShape.Plain(expression), excluded, included, includeDeleted);
+
+        /// <summary>
+        /// The select a load runs: the shape's filter, its collections and its view of deleted
+        /// rows, then the shape's order, skip and limit.
+        /// </summary>
+        private static ISelectQuery ParseSelect<T>(IDataProvider provider, in Queries.QueryShape shape, IPropertySchema[] excluded, IPropertySchema[] included, bool includeDeleted)
         {
-            var query = ParseSelectCore<T>(provider, expression, excluded);
+            var query = ParseSelectCore<T>(provider, shape.Predicate, excluded);
             foreach (var property in included)
             {
                 if (property.IsLinkedObject)
@@ -881,6 +894,8 @@ namespace TFM.Nucleus.Data
             }
             if (includeDeleted)
                 query.IncludeDeleted = true;
+            if (shape.HasOperators)
+                shape.ApplyTo(query);
             return query;
         }
 
@@ -1168,11 +1183,13 @@ namespace TFM.Nucleus.Data
             provider = ProviderFor<T>();
             excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+            var shape = ExpressionParser.Split(expression);
+            if (shape.TakesNothing || ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesNone)
                 return null;
-            var query = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
-            query.Skip = 0;
-            query.Take = take;
+            // The first rows of the query as it is ordered and cut: its Skip stands, and its Take
+            // can only lower the rows read.
+            var query = ParseSelect<T>(provider, shape, excluded, included, includeDeleted);
+            query.Take = shape.Take is { } limit ? Math.Min(limit, take) : take;
             return query;
         }
 
@@ -1185,7 +1202,15 @@ namespace TFM.Nucleus.Data
             IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
-            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).AnyAsync(cancellationToken);
+            // Order does not change whether a row exists; a skip does, and is answered by the count.
+            var shape = ExpressionParser.Split(expression);
+            if (shape.TakesNothing)
+                return Task.FromResult(false);
+            var rows = new RowQuery<T>(ProviderFor<T>(), shape.Predicate, includeDeleted);
+            return shape.Skip == 0 ? rows.AnyAsync(cancellationToken) : AnyAfterSkipAsync(rows, shape, cancellationToken);
+
+            static async Task<bool> AnyAfterSkipAsync(RowQuery<T> rows, Queries.QueryShape shape, CancellationToken token) =>
+                shape.CountWithin(await rows.CountAsync(token).ConfigureAwait(false)) > 0;
         }
 
         /// <summary>
@@ -1196,7 +1221,16 @@ namespace TFM.Nucleus.Data
             IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
             IncludedCollections<T>(includedCollections, ExcludedCollections<T>(excludedCollections));
-            return new RowQuery<T>(ProviderFor<T>(), expression, includeDeleted).CountAsync(cancellationToken);
+            // Order does not change a count; a Skip or Take is worked out from the filter's count,
+            // which is exact and needs no query of its own.
+            var shape = ExpressionParser.Split(expression);
+            if (shape.TakesNothing)
+                return Task.FromResult(0L);
+            var rows = new RowQuery<T>(ProviderFor<T>(), shape.Predicate, includeDeleted);
+            return shape.IsCut ? CountWithinAsync(rows, shape, cancellationToken) : rows.CountAsync(cancellationToken);
+
+            static async Task<long> CountWithinAsync(RowQuery<T> rows, Queries.QueryShape shape, CancellationToken token) =>
+                shape.CountWithin(await rows.CountAsync(token).ConfigureAwait(false));
         }
 
         Task<T?> INucleusRuntime.LoadByIDAsync<T>(Guid id, LoadOptions? options, CancellationToken cancellationToken) where T : default =>
@@ -1232,16 +1266,17 @@ namespace TFM.Nucleus.Data
         internal NucleusCollection<T> LoadCore<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted) where T : ICoreObject<T>, new()
         {
-            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
-                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+            var shape = ExpressionParser.Split(expression);
+            // Every row of a [Cacheable] type, whole and live, unordered and uncut, is what its cache holds.
+            if (!shape.HasOperators && AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesAll)
                 return Cache.GetOrLoad(schema, LoadAllFromProvider<T>);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+            if (shape.TakesNothing || ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesNone)
                 return [];
             var provider = ProviderFor<T>();
-            return Load<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded);
+            return Load<T>(provider, ParseSelect<T>(provider, shape, excluded, included, includeDeleted), excluded);
         }
 
         /// <summary>
@@ -1298,16 +1333,17 @@ namespace TFM.Nucleus.Data
         internal async Task<NucleusCollection<T>> LoadCoreAsync<T>(Expression expression, IReadOnlyCollection<string> excludedCollections,
             IReadOnlyCollection<string> includedCollections, bool includeDeleted, CancellationToken cancellationToken) where T : ICoreObject<T>, new()
         {
-            // Every row of a [Cacheable] type, whole and live, is what its cache holds.
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
-                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+            var shape = ExpressionParser.Split(expression);
+            // Every row of a [Cacheable] type, whole and live, unordered and uncut, is what its cache holds.
+            if (!shape.HasOperators && AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesAll)
                 return await LoadAllCachedAsync<T>(schema, cancellationToken);
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+            if (shape.TakesNothing || ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesNone)
                 return [];
             var provider = ProviderFor<T>();
-            return await LoadAsync<T>(provider, ParseSelect<T>(provider, expression, excluded, included, includeDeleted), excluded, cancellationToken);
+            return await LoadAsync<T>(provider, ParseSelect<T>(provider, shape, excluded, included, includeDeleted), excluded, cancellationToken);
         }
 
         /// <summary>
@@ -1349,8 +1385,9 @@ namespace TFM.Nucleus.Data
             // Every row of a [Cacheable] type, whole and live, is what its cache holds. Its rows are
             // an array only the cache holds and nothing changes once built, so they are yielded
             // without a copy; the objects are shared as on every cached read.
-            if (AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
-                ExpressionParser.Classify(expression) == PredicateShape.MatchesAll)
+            var shape = ExpressionParser.Split(expression);
+            if (!shape.HasOperators && AnswersFromCache<T>(excludedCollections, includedCollections, includeDeleted, out var schema) &&
+                ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesAll)
             {
                 foreach (var cached in await Cache.RowsAsync<T>(schema, LoadAllFromProviderAsync<T>, false, cancellationToken))
                 {
@@ -1361,10 +1398,10 @@ namespace TFM.Nucleus.Data
             }
             var excluded = ExcludedCollections<T>(excludedCollections);
             var included = IncludedCollections<T>(includedCollections, excluded);
-            if (ExpressionParser.Classify(expression) == PredicateShape.MatchesNone)
+            if (shape.TakesNothing || ExpressionParser.Classify(shape.Predicate) == PredicateShape.MatchesNone)
                 yield break;
             var provider = ProviderFor<T>();
-            var qry = ParseSelect<T>(provider, expression, excluded, included, includeDeleted);
+            var qry = ParseSelect<T>(provider, shape, excluded, included, includeDeleted);
             // Opening, the child graph and the first row are attempted again as the policy says;
             // a stream that has handed out a row is not.
             await foreach (var obj in OperationRetry.StreamAsync(provider, (manager: this, provider, qry, excluded), static async (s, ct) =>

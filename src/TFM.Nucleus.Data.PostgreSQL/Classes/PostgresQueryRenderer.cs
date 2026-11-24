@@ -93,9 +93,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
         }
 
         /// <summary>
-        /// The order of the root rows, then the page. A page is ordered by ID when no order was
-        /// asked for, as is a limit on a root with child queries, so the rows and the children's
-        /// subquery see the same parents.
+        /// The order of the root rows, then the page. A cut root is ordered by insertion
+        /// (ClusterID) when no order was asked for, and after the order asked for to break its
+        /// ties, so pages never overlap and the rows and the children's subquery see the same parents.
         /// </summary>
         private void AppendOrderAndPage(StringBuilder sb, SelectQuery q)
         {
@@ -107,12 +107,26 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 sb.Append($" OFFSET {q.Skip}");
         }
 
+        /// <summary>Insertion order: the ClusterID every table carries, under its unique index.</summary>
+        private static readonly string InsertionOrder = $"{Quote(TableSchema.ClusterIdColumn)} ASC";
+
         private static string? OrderBy(SelectQuery q)
         {
             if (!q.OrderBy.IsEmpty)
-                return "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(o => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}"));
-            return q.IsPaged || q.NeedsIdentityOrder ? "ORDER BY \"ID\"" : null;
+            {
+                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(OrderTerm));
+                return q.BreaksTiesByInsertion ? $"{order}, {InsertionOrder}" : order;
+            }
+            return q.OrdersByInsertion ? $"ORDER BY {InsertionOrder}" : null;
         }
+
+        /// <summary>
+        /// One key of an order. PostgreSQL sorts NULL above every value, the other engines below,
+        /// so the nulls are placed explicitly and an ordered read returns the same rows in the same
+        /// order on every engine.
+        /// </summary>
+        private static string OrderTerm(OrderBy o) =>
+            o.IsDescending ? $"{Quote(o.Column)} DESC NULLS LAST" : $"{Quote(o.Column)} ASC NULLS FIRST";
 
         /// <summary>
         /// One column (the ID, or for an included reference the reference column) of exactly the

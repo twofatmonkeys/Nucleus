@@ -99,6 +99,15 @@ namespace TFM.Nucleus.Data.Providers
         bool ForeignKeysInline => false;
 
         /// <summary>
+        /// True for an engine whose tables carry the <see cref="TableSchema.ClusterIdColumn"/>
+        /// system column, which a page with no order of its own is ordered by. The schema check
+        /// then requires it: a table without it is rebuilt, because ordering by a column the table
+        /// lacks would fail the first page. False for an engine that keeps insertion order some
+        /// other way (SQLite's rowid), and for a dialect that does not implement this.
+        /// </summary>
+        bool HasClusterIdColumn => false;
+
+        /// <summary>
         /// Adds <paramref name="key"/> to its table. With <paramref name="checkExisting"/> false the
         /// rows already there are not checked against it, because some point at rows that do not
         /// exist; the key still holds for every row written after it.

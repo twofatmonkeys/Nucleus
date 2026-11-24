@@ -193,6 +193,19 @@ namespace TFM.Nucleus.IntegrationTests
         }
 
         [Fact]
+        public async Task AnUnorderedPage_FollowsTheOrderTheRowsWereWritten()
+        {
+            // A page with no order of its own is ordered by insertion, so pages never overlap.
+            var manager = fixture.RequireManager();
+            var (batch, _, _) = await SeedAsync(manager);
+
+            var page = await manager.Rows<IntRowItem>(r => r.Batch == batch).Select(r => r.At).ToPageAsync(1, 2);
+
+            Assert.Equal([Start.AddMinutes(5), Start.AddMinutes(3)], page.Rows.Select(r => r.Get<DateTimeOffset>("At")));
+            Assert.Equal(5, page.TotalCount);
+        }
+
+        [Fact]
         public async Task BadShapes_AreRefusedBeforeAnySql()
         {
             var manager = fixture.RequireManager();
@@ -200,7 +213,7 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Throws<ArgumentException>(() => manager.Rows<IntRowItem>().Count("not a name"));
             Assert.Throws<ArgumentException>(() => manager.Rows<IntRowItem>().Select(r => r.Name!.Length));
             await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().ToListAsync());
-            await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().Select(r => r.Name).ToPageAsync(0, 5));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().GroupBy(r => r.Name).Count("Rows").ToPageAsync(0, 5));
             await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().GroupBy(r => r.Name).Count("Rows").Select(r => r.Kind).ToListAsync());
             await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().GroupBy(r => r.Name).Count("Name").ToListAsync());
         }

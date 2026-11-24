@@ -149,8 +149,9 @@ namespace TFM.Nucleus.Data
         }
 
         /// <summary>
-        /// One page of rows and how many rows match in all, in one round trip. The read must be
-        /// ordered, so every page comes from the same order, and must not be grouped.
+        /// One page of rows and how many rows match in all, in one round trip. Every page comes
+        /// from one order: the read's own, then the order the rows were written in to break its
+        /// ties, or that order alone when the read asks for none. A grouped read is not paged.
         /// </summary>
         public async Task<RowPage> ToPageAsync(int skip, int take, CancellationToken cancellationToken = default)
         {
@@ -158,8 +159,6 @@ namespace TFM.Nucleus.Data
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
             if (IsAggregate)
                 throw new InvalidOperationException("A grouped read is not paged; order and page its groups in memory.");
-            if (_order.Count == 0)
-                throw new InvalidOperationException("A paged read needs an order, or its pages could overlap. Call OrderBy first.");
             if (ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
                 return new RowPage([], 0, skip, take);
             var query = Build();
@@ -203,6 +202,7 @@ namespace TFM.Nucleus.Data
             var query = reading.Build();
             query.Skip = 0;
             query.Take = 1;
+            query.ReadsExistenceOnly = true;
             await foreach (var _ in Stream(query, cancellationToken).ConfigureAwait(false))
                 return true;
             return false;
