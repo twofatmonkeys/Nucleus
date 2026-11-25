@@ -51,6 +51,19 @@ public abstract class NucleusTestDatabase
     /// <summary>Why a test on this database cannot run, for the framework's skip; null when it can.</summary>
     public string? SkipReason => IsConfigured ? null : $"{ProviderName} test database not configured - {ConfigurationHint}";
 
+    /// <summary>The suffix that tells this .NET runtime's database and locks from another's: <c>net8</c>, <c>net10</c>.</summary>
+    protected static string Runtime { get; } = $"net{Environment.Version.Major}";
+
+    /// <summary>
+    /// The database this process's tests run in: the configured name with the runtime added
+    /// (<c>nucleus_test</c> becomes <c>nucleus_test_net10</c>), so the net8.0 and net10.0 runs of a
+    /// suite, which run at the same time, each have their own. Sharing one, a run could read the
+    /// catalog while the other was half way through creating a table, and a test failed now and
+    /// then for a reason that was never in the code under test. It is created when it is missing.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The database is not configured.</exception>
+    public virtual string DatabaseName => $"{RequireSettings().Database}_{Runtime}";
+
     /// <summary>The settings, or throws when the database is not configured. A shim skips before it gets here.</summary>
     /// <exception cref="InvalidOperationException">The database is not configured.</exception>
     public NucleusTestDatabaseSettings RequireSettings() => Settings ?? throw new InvalidOperationException(SkipReason);
@@ -75,7 +88,7 @@ public abstract class NucleusTestDatabase
 
     /// <summary>
     /// Starts a stack while holding <see cref="SchemaLockAsync"/>, the way a fixture boots the
-    /// stack its suites share, so the net8.0 and net10.0 runs never initialise one schema at once.
+    /// stack its suites share, so two test processes on one database never initialise its schema at once.
     /// </summary>
     /// <exception cref="InvalidOperationException">The database is not configured, or the schema initialisation failed.</exception>
     public async Task<NucleusTestStack> StartSharedStackAsync(CancellationToken token = default)
@@ -101,6 +114,7 @@ public abstract class NucleusTestDatabase
     protected async Task<NucleusTestStack> StartStackAsync(Action<IServiceCollection> addProvider)
     {
         ArgumentNullException.ThrowIfNull(addProvider);
+        await PrepareDatabaseAsync();
         var services = new ServiceCollection();
         var log = new CapturingLoggerProvider();
         services.AddLogging(builder => builder.AddProvider(log));
@@ -128,11 +142,18 @@ public abstract class NucleusTestDatabase
     }
 
     /// <summary>
-    /// The cross-process lock of a suite that resets its tables, per provider: the net8.0 and
-    /// net10.0 runs share a database, but two providers never do.
+    /// Runs before a stack is started, for whatever the database needs that the provider does not
+    /// do when it creates one. Nothing by default.
+    /// </summary>
+    protected virtual Task PrepareDatabaseAsync() => Task.CompletedTask;
+
+    /// <summary>
+    /// The cross-process lock of a suite that resets its tables, per provider and runtime, which
+    /// is per database: two test processes of one runtime (two test projects, or another repo's
+    /// suite) share a database, while two providers or two runtimes never do.
     /// </summary>
     public Task<NucleusTestLock> LockAsync(string suite, CancellationToken token = default) =>
-        NucleusTestLock.AcquireAsync($"{suite}-{ProviderName}", token);
+        NucleusTestLock.AcquireAsync($"{suite}-{ProviderName}-{Runtime}", token);
 
     /// <summary>
     /// The cross-process lock over the database's schema, per provider. Hold it to change a
@@ -250,7 +271,7 @@ public abstract class NucleusTestDatabase
         ArgumentNullException.ThrowIfNull(configure);
         var settings = RequireSettings();
         options.Server = settings.Server;
-        options.Database = settings.Database;
+        options.Database = DatabaseName;
         options.Username = settings.Username;
         options.Password = settings.Password;
         configure(options);

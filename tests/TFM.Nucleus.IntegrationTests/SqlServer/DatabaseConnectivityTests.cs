@@ -14,7 +14,7 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
             var builder = new SqlConnectionStringBuilder
             {
                 DataSource = settings.Server,
-                InitialCatalog = settings.Database,
+                InitialCatalog = fixture.Database.DatabaseName,
                 UserID = settings.Username,
                 Password = settings.Password,
                 TrustServerCertificate = true,

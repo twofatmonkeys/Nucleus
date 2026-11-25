@@ -405,9 +405,15 @@ engine's own tests. SQL Server needs a disposable database configured through th
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
 `Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database);
 SQLite through `NUCLEUS_SQLITE_TEST_DATABASE` or `Nucleus:Sqlite:Database`, a file path the provider
-creates. SQLite is the exception to the shared-database rule below: `SqliteTestDatabase` gives each
-.NET runtime its own file (`.net8`, `.net10` before the extension), because SQLite does not queue
-writers and two runs writing one file back to back starved a writer past its busy timeout.
+creates. Each .NET runtime has a database of its own on every engine
+(`NucleusTestDatabase.DatabaseName`: the configured name with `_net8` or `_net10` added, and on
+SQLite `.net8` or `.net10` before the file's extension), because the net8.0 and net10.0 runs of a
+suite run at the same time: sharing one, a run read the catalog while the other was half way
+through creating a table, and SQLite, which does not queue writers, starved a writer past its busy
+timeout. The database is created when it is missing, on SQL Server by `SqlServerTestDatabase`
+itself, at compatibility level 100 (`MinimumCompatibilityLevel`, the lowest Nucleus supports) with
+READ_COMMITTED_SNAPSHOT on, so the test login needs the right to create a database or the two
+databases made for it.
 A provider with no settings skips cleanly, which is what happens in CI. Settings, stack boot, locks
 and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer`, `.Postgres` and
 `.Sqlite`);
@@ -416,11 +422,12 @@ configured" into `Assert.SkipWhen`. Store repos write their own thin shim over t
 stack whose initialisation fails includes its warnings and errors in the message. A PostgreSQL
 stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because two runs at
 the default of 100 exhausted the server. A fixture boots
-its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
-runs once raced to create the same tables and one of them failed. The net8.0 and
-net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
-stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
-for its duration; the lock is not reentrant, so take it once per test.
+its shared stack with `StartSharedStackAsync`, under the schema lock, because two runs once raced
+to create the same tables and one of them failed. Two test processes of one runtime (the two
+test projects, or a store repo's suite) still share a database, so a test that changes a table
+with raw DDL, starts a second stack (which updates the schema) or checks the whole schema holds
+`DatabaseFixture.SchemaLockAsync` for its duration; the lock is per provider and runtime, which is
+per database, and is not reentrant, so take it once per test.
 
 `tests\Shared\` is test support compiled into every test project through `tests\Directory.Build.props`
 (linked, not copied): `TestSourcePaths`, which the accept switches write through, and the

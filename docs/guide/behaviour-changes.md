@@ -3,6 +3,18 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## TFM.Nucleus.Testing: a database per .NET runtime
+
+- **The configured database name is now a base name.** A net8.0 run uses `<name>_net8` and a
+  net10.0 run `<name>_net10`, on SQL Server and PostgreSQL as SQLite already did with its file.
+  `NucleusTestDatabase.DatabaseName` is the one in use. The first run after upgrading creates the
+  two databases and their tables; the database under the bare name is no longer used and can be
+  dropped.
+- **On SQL Server the package creates a missing database itself**, at compatibility level 100 with
+  `READ_COMMITTED_SNAPSHOT` on. The test login needs the right to create a database, or the two
+  databases made for it. An existing database is never altered.
+- **The suite locks are per runtime**, so a net8.0 run no longer waits on a net10.0 run's lock.
+
 ## A grouped row read is ordered and limited in the database
 
 - **`Rows<T>().GroupBy(...)` can be ordered**, by a group key (the existing `OrderBy` and the rest,
