@@ -633,13 +633,13 @@ namespace TFM.Nucleus.Data.Providers
         IDataContext IDataProvider.CreateContext(ContextOptions? options)
         {
             options ??= ContextOptions.Default;
-            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges), options);
+            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction ?? false, options.WatchForChanges), options);
         }
 
         async Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
         {
             options ??= ContextOptions.Default;
-            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token), options);
+            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction ?? false, options.WatchForChanges, token), options);
         }
 
         /// <summary>The options a context takes once it is open: its statement time limit.</summary>

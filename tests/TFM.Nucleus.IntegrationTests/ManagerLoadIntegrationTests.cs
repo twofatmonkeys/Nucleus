@@ -218,6 +218,15 @@ namespace TFM.Nucleus.IntegrationTests
             }
             await using (var asked = await data.CreateContextAsync<IntWidget>(ContextOptions.Default, Ct))
                 Assert.False(asked.HasTransaction);
+            // Options that say nothing about a transaction keep it: these set a time limit only.
+            await using (var timed = await data.CreateContextAsync<IntWidget>(new ContextOptions { StatementTimeoutSeconds = 60 }, Ct))
+            {
+                Assert.True(timed.HasTransaction);
+                await timed.RollbackAsync(Ct);
+            }
+            // A provider's own context is as it was: no transaction unless asked for.
+            await using (var own = await fixture.Provider!.CreateContextAsync(new ContextOptions { StatementTimeoutSeconds = 60 }, Ct))
+                Assert.False(own.HasTransaction);
 
             Assert.Null(await data.LoadByIDAsync<IntWidget>(widget.ID, Ct));
         }

@@ -293,7 +293,7 @@ rollback or a failed commit, which leaves each object as it was before its first
 transaction with later changes still pending. The manager's mixed-type batch save, its one save
 through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
 the audit logger, stays the one place its objects are marked. A context the manager hands to a
-caller (`CreateContextAsync<T>`, transactional when given no options) reports its work to an
+caller (`CreateContextAsync<T>`, transactional unless its options set `UseTransaction` false) reports its work to an
 `IContextObserver` (Data, internal) the manager sets on its root: the types its saves and deletes
 wrote, read before the saved objects are marked, and their audit entries, held until the
 transaction commits, when the caches of those types are evicted and the entries written, and
@@ -615,7 +615,8 @@ warning or an analyzer warning in new code fails CI.
   nuget.org once the surface is settled, which limits future breaking changes further.
   Exception, November 2026: pool exhaustion and a database unreachable at first use became
   `DatabaseException`s, the kinds thrown nowhere were removed, and a context from
-  `CreateContextAsync<T>()` became transactional by default. Reason: "the database failed" was
+  `CreateContextAsync<T>()` became transactional by default (`ContextOptions.UseTransaction`
+  became a `bool?` for it). Reason: "the database failed" was
   three exception types and a forgotten option silently dropped the transaction; both were
   defects in the surface, fixed before publication while every consumer is released by the same
   team. The rule stands for everything after it.

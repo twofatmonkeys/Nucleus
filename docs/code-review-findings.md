@@ -52,9 +52,7 @@ under Fixed ("The database failed was three exception types").
   one. The comment on `DataProviderCapabilities.MaxParametersPerCommand` ("queries are split above
   this") is true of writes only. An empty list still makes a round trip, as `1 = 0`. Planned: one
   set parameter per list on every engine.
-- **Options given to `CreateContextAsync<T>` without `UseTransaction` still open a context with no
-  transaction**, whose `CommitAsync` does nothing. Only the call with no options became
-  transactional, because `ContextOptions` cannot tell "not set" from "false".
+
 - **A provider whose initialisation failed with the schema in a known state is not initialised
   again by its next use.** `EnsureReady` initialises only while the status is `Uninitialized`, which
   is what a database that could not be reached leaves; `NotCurrent`, `DatasourceNotFound` and
@@ -435,7 +433,12 @@ the exception recorded in AGENTS.md.
   driver reports error 258 (the network wait timed out) there; `SqlServerErrors` listed only -2,
   so the failure was kind `Other` and not transient. Found by the test of the item above.
 - **`CreateContextAsync<T>()` with no options had no transaction**, so its `CommitAsync` did
-  nothing and each statement committed alone. It is transactional now.
+  nothing and each statement committed alone. It is transactional now. So are options that say
+  nothing about a transaction (`new ContextOptions { StatementTimeoutSeconds = 300 }`), which the
+  first fix still opened without one: `ContextOptions.UseTransaction` became a `bool?`, null
+  meaning "as what opens the context decides", which is transactional for the manager and not for
+  a provider's own context. `ContextOptions.Default` sets it false, so it still means no
+  transaction wherever it is passed.
 - **A context from the manager evicted no `[Cacheable]` cache and audited nothing.** A load after
   its commit answered from the cache as it was before. The manager now gives the context an
   observer (`IContextObserver`, internal): it collects the types the context's saves and deletes

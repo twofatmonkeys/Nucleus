@@ -52,9 +52,10 @@ var removed = await context.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobo
 await context.CommitAsync(ct);
 ```
 
-`CreateContextAsync<T>()` with no options opens a transactional context. Options you pass are
-taken as they are, so set `UseTransaction` on them (`ContextOptions.Transactional` does): a context
-without a transaction runs each statement on its own, and its `CommitAsync` does nothing.
+A context from `CreateContextAsync<T>` is transactional unless you say otherwise: with no options,
+and with options that set only something else, such as a statement time limit. For a context with
+no transaction, where each statement commits as it runs and `CommitAsync` does nothing, pass
+`ContextOptions.Default` or set `UseTransaction = false`.
 
 Once the work commits, a context from the manager does what a manager save does: the changes of
 the objects it saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are

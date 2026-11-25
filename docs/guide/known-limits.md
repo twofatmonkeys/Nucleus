@@ -28,10 +28,7 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   options and a context disposed without a commit rolls back instead; v3 makes that the only
   behaviour. A single
   type's batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
-- **A context given options without `UseTransaction` has no transaction.** `CreateContextAsync<T>()`
-  with no options is transactional, but options are taken as they are: `new ContextOptions {
-  StatementTimeoutSeconds = 300 }` opens a context that writes each statement on its own, and its
-  `CommitAsync` does nothing. Set `UseTransaction` with the rest.
+
 - **A context a provider hands out directly is not the manager's.** Only a context from
   `IObjectDataManager.CreateContextAsync<T>` audits what it saved and evicts the `[Cacheable]`
   caches of what it wrote. Application code has no reason to take one from a provider.

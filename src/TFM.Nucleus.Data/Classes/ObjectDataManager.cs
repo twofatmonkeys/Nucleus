@@ -95,10 +95,11 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Opens a caller-owned context on the provider that owns <typeparamref name="T"/>, for
-        /// work that must share one transaction across several types on that provider. With no
-        /// <paramref name="options"/> the context is transactional; options that are given are
-        /// taken as they are, so set <see cref="ContextOptions.UseTransaction"/> on them. The
-        /// caller owns the outcome:
+        /// work that must share one transaction across several types on that provider. The
+        /// context is transactional unless <paramref name="options"/> set
+        /// <see cref="ContextOptions.UseTransaction"/> false (<see cref="ContextOptions.Default"/>
+        /// does), so options that set only something else keep the transaction. The caller owns
+        /// the outcome:
         /// <list type="bullet">
         /// <item>Commit a transactional context with <see cref="IDataContext.CommitAsync"/>. A
         /// failure of anything it runs marks it for rollback; until v3, one disposed without a
@@ -271,7 +272,12 @@ namespace TFM.Nucleus.Data
         /// <inheritdoc cref="IObjectDataManager.CreateContextAsync{T}(ContextOptions?, CancellationToken)"/>
         public async Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new()
         {
-            var context = await ProviderFor<T>().CreateContextAsync(options ?? ContextOptions.Transactional, token).ConfigureAwait(false);
+            // Transactional unless the caller says not: options that leave it unsaid, a statement
+            // time limit alone say, must not drop the transaction.
+            var opened = options == null ? ContextOptions.Transactional
+                : options.UseTransaction == null ? options with { UseTransaction = true }
+                : options;
+            var context = await ProviderFor<T>().CreateContextAsync(opened, token).ConfigureAwait(false);
             // A child reports to its root's observer, so only a root is given one.
             if (options?.Parent == null && context is IObservedContext observed)
                 observed.Observer = new ContextWork(this);

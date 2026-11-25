@@ -38,11 +38,17 @@ needs the edits below.
   `DataContextErrorKind.PoolExhausted` is removed with the change above.
 - **On SQL Server, a server that does not answer on the synchronous path is a transient
   `Timeout`.** It was kind `Other` and not transient.
-- **`CreateContextAsync<T>()` with no options opens a transactional context.** It had no
-  transaction, so each statement committed as it ran and `CommitAsync` did nothing. Code that
-  called it with no options and no commit now holds a transaction: until v3 it still commits when
-  disposed, with a warning, and rolls back under `RequireCommit`. Add the `CommitAsync`, or pass
-  `ContextOptions.Default` for a context that only reads.
+- **A context from `CreateContextAsync<T>` is transactional unless told otherwise.** With no
+  options it had no transaction, so each statement committed as it ran and `CommitAsync` did
+  nothing; the same went for options that set only something else, such as
+  `new ContextOptions { StatementTimeoutSeconds = 300 }`. Both now open a transactional context.
+  Code that relied on having none, and never commits, now holds a transaction: until v3 it still
+  commits when disposed, with a warning, and rolls back under `RequireCommit`. Add the
+  `CommitAsync`, or pass `ContextOptions.Default` (or `UseTransaction = false`) for a context that
+  only reads.
+- **`ContextOptions.UseTransaction` is a `bool?`.** Null, its default, leaves the choice to what
+  opens the context: transactional for the manager, not for a context a provider opens for itself.
+  Code that reads the property needs `== true`; code that sets it is unchanged.
 - **A context from the manager audits and evicts when it commits.** The changes of the objects it
   saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are evicted,
   once its transaction commits; after a rollback, neither. Before, such a context did neither at
