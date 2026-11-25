@@ -3,6 +3,54 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## One exception for a database that failed, and a manager context that is the manager's
+
+Breaking changes. Code that catches the old types, or relies on a context with no transaction,
+needs the edits below.
+
+- **A full connection budget is a `DatabaseException`** of kind `PoolExhausted` and operation
+  `Open`, where it was a `DataContextException` of kind `PoolExhausted`. Replace
+  `catch (DataContextException ex) when (ex.Kind == DataContextErrorKind.PoolExhausted)` with
+  `catch (DatabaseException ex) when (ex.Kind == DatabaseErrorKind.PoolExhausted)`, or drop it
+  where `catch (DatabaseException)` is already there. It is never transient, so the retry policy
+  does not repeat it, and it has no inner exception.
+- **A database that cannot be reached when a provider first initialises is a `DatabaseException`**,
+  with the kind (`ConnectionFailed` or `Timeout`), the operation and the driver's exception of the
+  failure. It was the provider's exception of kind `NotInitialized` with no message.
+- **A provider that is not ready says why.** A schema that is not current, a database that does
+  not exist under a read-only schema and missing settings each reach the caller as the provider's
+  exception with that kind and a message; anything else is `NotInitialized` with the reason in
+  its message. Before, every one of them was a bare `NotInitialized`.
+- **Removed, having never been thrown:** `DataProviderErrorKind.DatabaseUnavailable`,
+  `DataContextErrorKind.UnableToCreateNewCommand` and `DataContextErrorKind.Unspecified`.
+  `DataContextErrorKind.PoolExhausted` is removed with the change above.
+- **On SQL Server, a server that does not answer on the synchronous path is a transient
+  `Timeout`.** It was kind `Other` and not transient.
+- **`CreateContextAsync<T>()` with no options opens a transactional context.** It had no
+  transaction, so each statement committed as it ran and `CommitAsync` did nothing. Code that
+  called it with no options and no commit now holds a transaction: until v3 it still commits when
+  disposed, with a warning, and rolls back under `RequireCommit`. Add the `CommitAsync`, or pass
+  `ContextOptions.Default` for a context that only reads.
+- **A context from the manager audits and evicts when it commits.** The changes of the objects it
+  saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are evicted,
+  once its transaction commits; after a rollback, neither. Before, such a context did neither at
+  all, and a load after its commit could answer from a stale cache.
+
+## A value set in Validate() no longer fails the save
+
+- **An override of `Validate()` may set a property after `base.Validate()`.** Setting one there
+  cleared the mark `base.Validate()` had just made, so the save threw `InvalidOperationException`
+  ("has not been validated ... must call base.Validate()") although the call was there, and only
+  when the value really changed: a trim failed for input that needed trimming and passed for the
+  rest. A child that did the same was saved without complaint. The save now marks the object
+  valid once its override returns, and the value is written.
+- **A save of an object whose `Validate()` never calls `base.Validate()` is still refused**, with
+  the same exception and message, before anything is written.
+- **`TFM.Nucleus.Testing`: `HoldWriteLockAsync` on SQL Server blocks readers when
+  `READ_COMMITTED_SNAPSHOT` is on.** It took an exclusive table lock, which a snapshot reader
+  passes, so a test of a blocked read saw no wait. It now takes a schema modification lock, which
+  also makes a catalog read of that table wait while the lock is held.
+
 ## Queries order and page in the database, and pages follow ClusterID
 
 - **`OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` on a query
