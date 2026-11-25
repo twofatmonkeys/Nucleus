@@ -95,8 +95,10 @@ namespace TFM.Nucleus.Data
 
         /// <summary>
         /// Opens a caller-owned context on the provider that owns <typeparamref name="T"/>, for
-        /// work that must share one transaction across several types on that provider. The
-        /// caller owns the outcome, and the manager's guarantees do not apply inside it:
+        /// work that must share one transaction across several types on that provider. With no
+        /// <paramref name="options"/> the context is transactional; options that are given are
+        /// taken as they are, so set <see cref="ContextOptions.UseTransaction"/> on them. The
+        /// caller owns the outcome:
         /// <list type="bullet">
         /// <item>Commit a transactional context with <see cref="IDataContext.CommitAsync"/>. A
         /// failure of anything it runs marks it for rollback; until v3, one disposed without a
@@ -105,7 +107,10 @@ namespace TFM.Nucleus.Data
         /// rolls back or its commit fails, the object is put back as it was before its first save
         /// in that transaction, with any change made since still pending, so it can be saved
         /// again without being reloaded.</item>
-        /// <item>No <c>[Cacheable]</c> cache is evicted.</item>
+        /// <item>Once its work commits, the changes of the objects it saved are audited and the
+        /// <c>[Cacheable]</c> caches of the types it saved or deleted are evicted, as after a
+        /// manager save. Work that rolls back does neither.</item>
+        /// <item>The retry policy does not cover it: the unit of work is the caller's to repeat.</item>
         /// </list>
         /// Prefer <see cref="SaveAsync{T}(IEnumerable{T}, CancellationToken)"/> when the objects
         /// are of one type.
@@ -264,8 +269,75 @@ namespace TFM.Nucleus.Data
         private IDataProvider ProviderFor<T>() => _registry.GetProvider(typeof(T));
 
         /// <inheritdoc cref="IObjectDataManager.CreateContextAsync{T}(ContextOptions?, CancellationToken)"/>
-        public Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new() =>
-            ProviderFor<T>().CreateContextAsync(options, token);
+        public async Task<IDataContext> CreateContextAsync<T>(ContextOptions? options = null, CancellationToken token = default) where T : ICoreObject<T>, new()
+        {
+            var context = await ProviderFor<T>().CreateContextAsync(options ?? ContextOptions.Transactional, token).ConfigureAwait(false);
+            // A child reports to its root's observer, so only a root is given one.
+            if (options?.Parent == null && context is IObservedContext observed)
+                observed.Observer = new ContextWork(this);
+            return context;
+        }
+
+        /// <summary>
+        /// The work of one context the manager handed to a caller: the types it wrote and the
+        /// audit entries of the objects it saved, kept until the work commits and dropped if it
+        /// does not. A context runs one command at a time, so nothing here is synchronised.
+        /// </summary>
+        private sealed class ContextWork(ObjectDataManager manager) : IContextObserver
+        {
+            private readonly HashSet<Type> _written = [];
+            private List<(ILogger Logger, LogLevel Level, string Message, Exception? Exception)>? _audit;
+            private Dictionary<ILogger, HeldLogger>? _loggers;
+
+            public void Saving(IEnumerable<ICoreObject?> objects)
+            {
+                foreach (var obj in objects)
+                    if (obj != null)
+                        _written.Add(obj.GetType());
+                foreach (var type in LinkTypes(objects.OfType<ICoreObject>()))
+                    _written.Add(type);
+            }
+
+            public void Deleted(Type type) => _written.Add(type);
+
+            public ILogger? AuditLoggerFor(Type type)
+            {
+                if (manager.AuditLoggerFor(type) is not { } logger)
+                    return null;
+                _loggers ??= [];
+                if (!_loggers.TryGetValue(logger, out var held))
+                    _loggers[logger] = held = new HeldLogger(this, logger);
+                return held;
+            }
+
+            public void Committed()
+            {
+                if (_audit != null)
+                {
+                    foreach (var (logger, level, message, exception) in _audit)
+                        logger.Log(level, default, message, exception, static (text, _) => text);
+                    _audit.Clear();
+                }
+                foreach (var type in _written)
+                    manager.EvictCache(type);
+                _written.Clear();
+            }
+
+            public void Abandoned()
+            {
+                _audit?.Clear();
+                _written.Clear();
+            }
+
+            /// <summary>Holds what it is given until the work commits: an entry for a change that rolled back would be false.</summary>
+            private sealed class HeldLogger(ContextWork work, ILogger inner) : ILogger
+            {
+                public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+                public bool IsEnabled(LogLevel logLevel) => inner.IsEnabled(logLevel);
+                public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+                    (work._audit ??= []).Add((inner, logLevel, formatter(state, exception), exception));
+            }
+        }
 
         /// <inheritdoc cref="IObjectDataManager.SubscribeToChangesAsync{T}(CancellationToken)"/>
         public Task<IChangeSubscription> SubscribeToChangesAsync<T>(CancellationToken token = default) where T : ICoreObject<T>, new() =>

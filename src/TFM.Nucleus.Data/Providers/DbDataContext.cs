@@ -26,7 +26,7 @@ namespace TFM.Nucleus.Data.Providers
     /// engine needs.
     /// </summary>
     /// <typeparam name="TSelf">The provider's context type.</typeparam>
-    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IStatementTimeout, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
+    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IObservedContext, IStatementTimeout, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
     {
         private readonly ConcurrentDictionary<Guid, TSelf> _childContexts = new();
         private readonly RelationalDataProvider _provider;
@@ -55,6 +55,8 @@ namespace TFM.Nucleus.Data.Providers
         // True on a context whose caller checks the saved objects itself, before, and marks them
         // saved itself, after the commit.
         private bool _callerManagesObjects;
+        // On a root the manager handed to a caller, who is told of the tree's work. Null otherwise.
+        private IContextObserver? _observer;
         // The context's own statement time limit from its ContextOptions; null takes its parent's.
         private int? _statementTimeoutSeconds;
 
@@ -387,15 +389,18 @@ namespace TFM.Nucleus.Data.Providers
                 return;
             try
             {
+                var observer = Root._observer;
+                observer?.Saving(objs);
                 if (!HasTransaction)
                 {
                     foreach (var obj in objs)
-                        obj?.CommitChanges();
+                        obj?.CommitChanges(observer?.AuditLoggerFor(obj.GetType()));
+                    observer?.Committed();
                     return;
                 }
                 var undo = Root._undo ??= new CommitUndoLog();
                 foreach (var obj in objs)
-                    obj?.CommitChangesInTransaction(undo);
+                    obj?.CommitChangesInTransaction(undo, observer?.AuditLoggerFor(obj.GetType()));
             }
             catch (Exception) when (Doom())
             {
@@ -406,6 +411,11 @@ namespace TFM.Nucleus.Data.Providers
         bool ISaveAcceptance.CallerManagesObjects
         {
             set => _callerManagesObjects = value;
+        }
+
+        IContextObserver? IObservedContext.Observer
+        {
+            set => Root._observer = value;
         }
 
         int IStatementTimeout.StatementTimeoutSeconds
@@ -734,9 +744,15 @@ namespace TFM.Nucleus.Data.Providers
                 var undo = _undo;
                 _undo = null;
                 if (committed)
+                {
                     undo?.Clear();
+                    _observer?.Committed();
+                }
                 else
+                {
                     undo?.Revert();
+                    _observer?.Abandoned();
+                }
             }
         }
 
@@ -1216,6 +1232,12 @@ namespace TFM.Nucleus.Data.Providers
                         throw Failure($"Unable to execute delete on DB. {ex.Message}", ex, DatabaseOperation.Delete, token);
                     }
                 }
+                if (Root._observer is { } observer && query.TableSchema is { } deleted)
+                {
+                    observer.Deleted(deleted.ObjectSchema.Type);
+                    if (!HasTransaction)
+                        observer.Committed();
+                }
                 return affected;
             }
             catch (Exception) when (Doom())
@@ -1401,7 +1423,11 @@ namespace TFM.Nucleus.Data.Providers
         }
     }
 
-    /// <summary>A failure of a data context itself, as opposed to the database.</summary>
+    /// <summary>
+    /// A context was used in a way it cannot serve, as opposed to the database failing: a defect in
+    /// the calling code or in Nucleus, never a state of the database. A full connection budget is
+    /// a <see cref="DatabaseException"/> of kind <see cref="DatabaseErrorKind.PoolExhausted"/>.
+    /// </summary>
     public class DataContextException : TFM.Nucleus.NucleusException
     {
         public DataContextErrorKind Kind { get; }
@@ -1414,14 +1440,11 @@ namespace TFM.Nucleus.Data.Providers
 
     public enum DataContextErrorKind
     {
-        UnableToCreateNewCommand = 0,
         CurrentCommandIsNull = 10,
         CurrentConnectionIsNull = 20,
         InvalidIQueryType = 30,
         /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
         MissingResultSet = 40,
-        /// <summary>Every connection the provider allows (MaxConnectionPoolSize) was held by its contexts and change subscriptions, and none came free in time.</summary>
-        PoolExhausted = 50,
         /// <summary>Something was run on a context whose transaction had already been committed or rolled back.</summary>
         TransactionCompleted = 60,
         /// <summary>A commit was asked of a transaction a failure or a rollback had marked; it rolled back instead.</summary>
@@ -1430,7 +1453,6 @@ namespace TFM.Nucleus.Data.Providers
         ChildContextOpen = 80,
         /// <summary>A transactional context was opened inside an ambient transaction (a TransactionScope), which its own transaction would escape.</summary>
         AmbientTransaction = 90,
-        Unspecified = 99,
     }
 
     /// <summary>

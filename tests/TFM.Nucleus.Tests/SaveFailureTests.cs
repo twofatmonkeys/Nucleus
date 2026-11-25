@@ -55,7 +55,7 @@ namespace TFM.Nucleus.Tests
         [MemberData(nameof(Paths))]
         public async Task ContextException_IsThrownAsItIs(bool async)
         {
-            var failure = new DataContextException("m", DataContextErrorKind.Unspecified);
+            var failure = new DataContextException("m", DataContextErrorKind.TransactionCompleted);
 
             var (thrown, provider) = await SaveFailing(failure, async);
 

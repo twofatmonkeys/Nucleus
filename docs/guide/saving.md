@@ -40,6 +40,27 @@ object is new again, a loaded one has its changes pending again, and its removed
 pending deletion again. Changes made since the save are kept. Save the objects again without
 reloading them.
 
+The same context deletes too, so a save, a delete and a delete by predicate are one transaction:
+
+<!-- sample: save-and-delete -->
+```csharp
+// A save, a delete and a delete by predicate in one transaction: all of it is committed, or none of it.
+await using var context = await data.CreateContextAsync<WeighIn>(ContextOptions.Transactional, ct);
+await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 15.1m, Notes = "corrected" }, ct);
+await context.DeleteAsync(superseded, ct);
+var removed = await context.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);   // the rows it deleted
+await context.CommitAsync(ct);
+```
+
+`CreateContextAsync<T>()` with no options opens a transactional context. Options you pass are
+taken as they are, so set `UseTransaction` on them (`ContextOptions.Transactional` does): a context
+without a transaction runs each statement on its own, and its `CommitAsync` does nothing.
+
+Once the work commits, a context from the manager does what a manager save does: the changes of
+the objects it saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are
+evicted. Work that rolls back does neither. The retry policy does not cover a context: see
+[Retries](#retries).
+
 ## Saving a batch
 
 A batch can hold objects of different types. Each is routed to the provider that stores it, and
@@ -107,16 +128,25 @@ catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath
 When the database fails an operation, Nucleus throws a `DatabaseException` (namespace
 `TFM.Nucleus.Data`, in the Abstractions package), on every engine, with the driver's own exception
 as its inner exception, one level down. It says what happened in terms that do not depend on the
-engine. Two cases differ. An open that ran out its connect timeout on the asynchronous path has a
-`TimeoutException` as its inner exception, with the driver's inside that. And on SQL Server a write
-that reads a value back from a table with an enabled trigger is refused by the engine (error 334)
-and reported as the provider's own exception, a `DataProviderException`, whose message says what
-to change.
+engine. Three cases differ. An open that ran out its connect timeout on the asynchronous path has a
+`TimeoutException` as its inner exception, with the driver's inside that. A full connection budget
+(`PoolExhausted`) has no inner exception, because Nucleus refused before a driver was asked. And on
+SQL Server a write that reads a value back from a table with an enabled trigger is refused by the
+engine (error 334) and reported as the provider's own exception, a `DataProviderException`, whose
+message says what to change.
 
-- **`Kind`**: `ConnectionFailed`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
+So `catch (DatabaseException)` is "the database failed", whatever the engine and whenever it
+happened: a database that cannot be reached when the provider first initialises is one too, with
+the same kinds as a failed open. A `DataProviderException` is a deployment that is wrong (settings
+missing, a schema that is not current, a database that does not exist where the schema is
+read-only), and it says which in its `Kind` and its message. Neither is a defect in your code; the
+other Nucleus exceptions are.
+
+- **`Kind`**: `ConnectionFailed`, `PoolExhausted`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
   `ForeignKeyViolation`, `NotNullViolation`, `ValueTooLong`, `CommitOutcomeUnknown` or `Other`.
 - **`IsTransient`**: another attempt of the whole operation may succeed and is safe. It is true
   for a deadlock, a dropped connection, a timeout and the like, and only when nothing was applied.
+  A full connection budget is never transient: another attempt would wait on the same full pool.
 - **`MayHaveBeenApplied`**: the database may have kept some or all of what was written. It is true
   for a commit that failed in a way that does not say whether it took effect
   (`CommitOutcomeUnknown`), and for a write on a context with no transaction, where each statement
@@ -223,8 +253,9 @@ ignored there.
 
 Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
 `catch (NucleusException)` catches the family: `DatabaseException` and `UniqueViolationException`,
-`DataProviderException` and each provider's own, `DataContextException` (a full connection budget is
-its kind `PoolExhausted`), `InvalidQueryException`, `CoreObjectException` and the schema exceptions.
+`DataProviderException` and each provider's own, `DataContextException` (a context used in a way
+it cannot serve, such as a commit after a rollback), `InvalidQueryException`, `CoreObjectException`
+and the schema exceptions.
 
 Nucleus also throws the framework's own exceptions where they are the right ones
 (`ArgumentException`, `NotSupportedException`, `InvalidOperationException`,
