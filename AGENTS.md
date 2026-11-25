@@ -92,7 +92,9 @@ extensions share, so a provider's extensions only name its types. `MaxConnection
 one connection limit: a provider's `ConnectionSlots` (one per provider, not per context type)
 counts its root contexts and live change subscriptions, and every connection to the database has
 one connection string with `Enlist=false` and the driver pool sized to the setting, raw strings
-included, so the driver keeps one pool. The startup connections (`master`, the PostgreSQL
+included, so the driver keeps one pool. A budget with no slot free is a `DatabaseException` of kind
+`PoolExhausted`, never transient, because the caller is told the database could not serve it,
+not that a context was misused. The startup connections (`master`, the PostgreSQL
 maintenance database) are unpooled. With nothing enlisting, a transactional root opened inside an
 ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
 `ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
@@ -139,7 +141,10 @@ engine's errors once (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, throu
 (`CommitOutcomeUnknown` unless the engine rejected the transaction) and a failed open are, and
 `DbDataContext.Failure` that a write may have been applied only without a transaction. A failure
 that is not the database's (`DatabaseFailures.IsDatabaseFailure`) propagates as it was thrown, and
-the manager's save wraps nothing. A `[TableIndex]` can be `Unique`, filtered to rows whose
+the manager's save wraps nothing. A provider that could not initialise keeps why
+(`RelationalDataProvider.NotReady`): a caller refused a context gets a `DatabaseException` built
+from the failure when the database failed, the provider's exception with its kind and message when
+the deployment is wrong, each new per caller. A `[TableIndex]` can be `Unique`, filtered to rows whose
 keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
 fails initialisation without touching the rows. A child's parent column is always indexed:
 `ColumnSchema` sets `Indexed` for the `[ParentObject]` property, so it is an ordinary column index
@@ -287,7 +292,13 @@ records what each object's commit changed in the root context's `CommitUndoLog` 
 rollback or a failed commit, which leaves each object as it was before its first save in the
 transaction with later changes still pending. The manager's mixed-type batch save, its one save
 through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
-the audit logger, stays the one place its objects are marked. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+the audit logger, stays the one place its objects are marked. A context the manager hands to a
+caller (`CreateContextAsync<T>`, transactional unless its options set `UseTransaction` false) reports its work to an
+`IContextObserver` (Data, internal) the manager sets on its root: the types its saves and deletes
+wrote, read before the saved objects are marked, and their audit entries, held until the
+transaction commits, when the caches of those types are evicted and the entries written, and
+dropped when it does not. A context a provider hands out has no observer and costs nothing for
+it. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
 the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour. A
 child whose effective behaviour is soft under an owner that is deleted hard fails the schema
@@ -602,6 +613,13 @@ warning or an analyzer warning in new code fails CI.
   packages) was released by the same team in one coordinated release. This was a one-off. The
   rule stands for everything after it; the repo is public and the packages will be published to
   nuget.org once the surface is settled, which limits future breaking changes further.
+  Exception, November 2026: pool exhaustion and a database unreachable at first use became
+  `DatabaseException`s, the kinds thrown nowhere were removed, and a context from
+  `CreateContextAsync<T>()` became transactional by default (`ContextOptions.UseTransaction`
+  became a `bool?` for it). Reason: "the database failed" was
+  three exception types and a forgotten option silently dropped the transaction; both were
+  defects in the surface, fixed before publication while every consumer is released by the same
+  team. The rule stands for everything after it.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Page by ClusterID, and index it everywhere.** A paged read, and a limited root with linked

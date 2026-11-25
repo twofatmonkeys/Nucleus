@@ -3,6 +3,72 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A grouped row read is ordered and limited in the database
+
+- **`Rows<T>().GroupBy(...)` can be ordered**, by a group key (the existing `OrderBy` and the rest,
+  which threw `InvalidOperationException` on a grouped read) or by a measure, through the new
+  `OrderBy(string)`, `OrderByDescending(string)`, `ThenBy(string)` and `ThenByDescending(string)`,
+  which take the measure's alias. Code that ordered its groups in memory still works; move the
+  order onto the read to have the database do it.
+- **`Take(n)` on a row read** reads the first n rows of its order, or the first n groups of a
+  grouped read. A limited grouped read needs an order, and breaks its ties by the group keys.
+- **A grouped read is still not paged.** `ToPageAsync` on one throws as before, with a message that
+  now points at `Take`.
+
+## One exception for a database that failed, and a manager context that is the manager's
+
+Breaking changes. Code that catches the old types, or relies on a context with no transaction,
+needs the edits below.
+
+- **A full connection budget is a `DatabaseException`** of kind `PoolExhausted` and operation
+  `Open`, where it was a `DataContextException` of kind `PoolExhausted`. Replace
+  `catch (DataContextException ex) when (ex.Kind == DataContextErrorKind.PoolExhausted)` with
+  `catch (DatabaseException ex) when (ex.Kind == DatabaseErrorKind.PoolExhausted)`, or drop it
+  where `catch (DatabaseException)` is already there. It is never transient, so the retry policy
+  does not repeat it, and it has no inner exception.
+- **A database that cannot be reached when a provider first initialises is a `DatabaseException`**,
+  with the kind (`ConnectionFailed` or `Timeout`), the operation and the driver's exception of the
+  failure. It was the provider's exception of kind `NotInitialized` with no message.
+- **A provider that is not ready says why.** A schema that is not current, a database that does
+  not exist under a read-only schema and missing settings each reach the caller as the provider's
+  exception with that kind and a message; anything else is `NotInitialized` with the reason in
+  its message. Before, every one of them was a bare `NotInitialized`.
+- **Removed, having never been thrown:** `DataProviderErrorKind.DatabaseUnavailable`,
+  `DataContextErrorKind.UnableToCreateNewCommand` and `DataContextErrorKind.Unspecified`.
+  `DataContextErrorKind.PoolExhausted` is removed with the change above.
+- **On SQL Server, a server that does not answer on the synchronous path is a transient
+  `Timeout`.** It was kind `Other` and not transient.
+- **A context from `CreateContextAsync<T>` is transactional unless told otherwise.** With no
+  options it had no transaction, so each statement committed as it ran and `CommitAsync` did
+  nothing; the same went for options that set only something else, such as
+  `new ContextOptions { StatementTimeoutSeconds = 300 }`. Both now open a transactional context.
+  Code that relied on having none, and never commits, now holds a transaction: until v3 it still
+  commits when disposed, with a warning, and rolls back under `RequireCommit`. Add the
+  `CommitAsync`, or pass `ContextOptions.Default` (or `UseTransaction = false`) for a context that
+  only reads.
+- **`ContextOptions.UseTransaction` is a `bool?`.** Null, its default, leaves the choice to what
+  opens the context: transactional for the manager, not for a context a provider opens for itself.
+  Code that reads the property needs `== true`; code that sets it is unchanged.
+- **A context from the manager audits and evicts when it commits.** The changes of the objects it
+  saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are evicted,
+  once its transaction commits; after a rollback, neither. Before, such a context did neither at
+  all, and a load after its commit could answer from a stale cache.
+
+## A value set in Validate() no longer fails the save
+
+- **An override of `Validate()` may set a property after `base.Validate()`.** Setting one there
+  cleared the mark `base.Validate()` had just made, so the save threw `InvalidOperationException`
+  ("has not been validated ... must call base.Validate()") although the call was there, and only
+  when the value really changed: a trim failed for input that needed trimming and passed for the
+  rest. A child that did the same was saved without complaint. The save now marks the object
+  valid once its override returns, and the value is written.
+- **A save of an object whose `Validate()` never calls `base.Validate()` is still refused**, with
+  the same exception and message, before anything is written.
+- **`TFM.Nucleus.Testing`: `HoldWriteLockAsync` on SQL Server blocks readers when
+  `READ_COMMITTED_SNAPSHOT` is on.** It took an exclusive table lock, which a snapshot reader
+  passes, so a test of a blocked read saw no wait. It now takes a schema modification lock, which
+  also makes a catalog read of that table wait while the lock is held.
+
 ## Queries order and page in the database, and pages follow ClusterID
 
 - **`OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` on a query
