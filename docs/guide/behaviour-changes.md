@@ -3,6 +3,21 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A value set in Validate() no longer fails the save
+
+- **An override of `Validate()` may set a property after `base.Validate()`.** Setting one there
+  cleared the mark `base.Validate()` had just made, so the save threw `InvalidOperationException`
+  ("has not been validated ... must call base.Validate()") although the call was there, and only
+  when the value really changed: a trim failed for input that needed trimming and passed for the
+  rest. A child that did the same was saved without complaint. The save now marks the object
+  valid once its override returns, and the value is written.
+- **A save of an object whose `Validate()` never calls `base.Validate()` is still refused**, with
+  the same exception and message, before anything is written.
+- **`TFM.Nucleus.Testing`: `HoldWriteLockAsync` on SQL Server blocks readers when
+  `READ_COMMITTED_SNAPSHOT` is on.** It took an exclusive table lock, which a snapshot reader
+  passes, so a test of a blocked read saw no wait. It now takes a schema modification lock, which
+  also makes a catalog read of that table wait while the lock is held.
+
 ## Queries order and page in the database, and pages follow ClusterID
 
 - **`OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`, `Skip` and `Take` on a query

@@ -204,6 +204,27 @@ network error, a server failing over or paused); SqlClient itself never says an 
 registration, replacing any value set on the provider, and is sent to SQL Server and PostgreSQL as
 the application name when the provider builds the connection string.
 
+A provider's options are ordinary .NET options, so `services.Configure<...>` after the registration
+layers more settings on, here over the registration that reads the environment:
+
+<!-- sample: register-layered -->
+```csharp
+// Server, database, user name and password from SQL_SERVER, SQL_DATABASE, SQL_USERNAME and SQL_PASSWORD.
+services.AddNucleusSqlServerDataProvider();
+// The other options are layered on with the options pattern. A later Configure wins.
+services.Configure<SQLConfiguration>(options =>
+{
+    options.RetryAttempts = 3;
+    options.RequireCommit = true;
+});
+```
+
+This reaches the provider registered without a root type. A provider registered for a root type
+(`AddNucleusSqlServerDataProvider<TRoot>(...)` or the `Type` overload) keeps its options under a
+name of its own, which a plain `Configure` does not reach: put its settings in its registration.
+Do not set `AppName` in a later `Configure`; it runs after Nucleus fills the name and would
+replace it.
+
 ### PostgresConfiguration
 
 | Option | Default | Meaning |
