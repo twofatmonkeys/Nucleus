@@ -356,8 +356,17 @@ namespace PortlyPrimate
             foreach (var g in groups)
                 Console.WriteLine($"{g.Get<VisitKind>("Kind")}: {g.Get<long>("Visits")} visits in {g.Get<long>("Sessions")} sessions");
 
+            // The 25 most visited paths: ordered by a measure and cut in the database.
+            var busiest = await data.Rows<GiftShopVisit>(v => v.OccurredUtc >= since)
+                .GroupBy(v => v.Path)
+                .Count("Visits")
+                .OrderByDescending("Visits")
+                .Take(25)
+                .ToListAsync(ct);
+
             var total = await data.Rows<GiftShopVisit>(v => v.Kind == VisitKind.Purchase).CountAsync(ct);
             #endregion
+            Assert.Equal("/bananas", Assert.Single(busiest).Get<string>("Path"));
             return page.TotalCount + groups.Count + total;
         }
 

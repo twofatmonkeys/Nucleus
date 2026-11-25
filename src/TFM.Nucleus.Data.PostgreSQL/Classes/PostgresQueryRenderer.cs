@@ -62,6 +62,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(", ", q.GroupBy.Select(Quote)));
+            // A key is ordered as its column and a measure by its alias, an output column name.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(", ", q.AggregateOrder().Select(OrderTerm)));
+            if (q.Take > 0)
+                sb.Append($" LIMIT {q.Take}");
             return sb.ToString();
         }
 

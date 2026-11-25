@@ -191,6 +191,12 @@ namespace TFM.Nucleus.Tests
                 ["rows.grouped.keys"] = () => Grouped<TestWidget>(["Name", "Quantity"], null, (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.total"] = () => Grouped<TestWidget>([], q => q.Where.And("Name", "a"), (MeasureKind.Count, null, "Rows")),
                 ["rows.grouped.soft"] = () => Grouped<TestSoftWidget>(["Name"], null, (MeasureKind.Count, null, "Rows")),
+                // Ordered by a measure's alias then a key; and limited, where the keys the order
+                // does not name follow it to break its ties.
+                ["rows.grouped.ordered"] = () => Grouped<TestWidget>(["Name"], q => { q.OrderBy.Add("Rows", SortDirection.Descending); q.AddOrderBy("Name"); },
+                    (MeasureKind.Count, null, "Rows")),
+                ["rows.grouped.top"] = () => Grouped<TestWidget>(["Name", "Quantity"], q => { q.Take = 5; q.OrderBy.Add("Rows", SortDirection.Descending); q.AddOrderBy("Quantity"); },
+                    (MeasureKind.Count, null, "Rows")),
                 // As a queryable's AnyAsync reads it: one ID. And its CountAsync and RowQuery's
                 // IncludeDeleted, which reach the rows marked deleted too.
                 ["rows.any"] = () => Rows<TestWidget>(q => { q.Columns = ["ID"]; q.Skip = 0; q.Take = 1; q.ReadsExistenceOnly = true; q.Where.And("Name", "a"); }),

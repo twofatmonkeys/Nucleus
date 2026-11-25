@@ -3,6 +3,18 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A grouped row read is ordered and limited in the database
+
+- **`Rows<T>().GroupBy(...)` can be ordered**, by a group key (the existing `OrderBy` and the rest,
+  which threw `InvalidOperationException` on a grouped read) or by a measure, through the new
+  `OrderBy(string)`, `OrderByDescending(string)`, `ThenBy(string)` and `ThenByDescending(string)`,
+  which take the measure's alias. Code that ordered its groups in memory still works; move the
+  order onto the read to have the database do it.
+- **`Take(n)` on a row read** reads the first n rows of its order, or the first n groups of a
+  grouped read. A limited grouped read needs an order, and breaks its ties by the group keys.
+- **A grouped read is still not paged.** `ToPageAsync` on one throws as before, with a message that
+  now points at `Take`.
+
 ## One exception for a database that failed, and a manager context that is the manager's
 
 Breaking changes. Code that catches the old types, or relies on a context with no transaction,
