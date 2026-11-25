@@ -162,11 +162,15 @@ namespace TFM.Nucleus.Data.SQL
         {
             q.EnsureAggregateShape();
             var terms = q.GroupBy.Select(c => $"[{c}]").Concat(q.Measures.Select(MeasureTerm));
-            var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{TableHint(q)}");
+            var sb = new StringBuilder($"SELECT {(q.Take > 0 ? $"TOP {q.Take} " : string.Empty)}{string.Join(" ,", terms)} FROM {q.TableName}{TableHint(q)}");
             if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(" ,", q.GroupBy.Select(c => $"[{c}]")));
+            // A key is ordered as its column and a measure by its alias, which the engine resolves
+            // against the select list.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(" ,", q.AggregateOrder().Select(OrderByTerm)));
             return sb.ToString();
         }
 

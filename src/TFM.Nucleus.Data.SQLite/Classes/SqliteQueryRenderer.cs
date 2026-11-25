@@ -63,8 +63,15 @@ namespace TFM.Nucleus.Data.SQLite
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(", ", q.GroupBy.Select(Quote)));
+            // A key is ordered as its column and a measure by its alias, a result column name.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(", ", q.AggregateOrder().Select(OrderTerm)));
+            if (q.Take > 0)
+                sb.Append($" LIMIT {q.Take}");
             return sb.ToString();
         }
+
+        private static string OrderTerm(OrderBy o) => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}";
 
         private static string MeasureTerm(Measure m)
         {
@@ -118,7 +125,7 @@ namespace TFM.Nucleus.Data.SQLite
         {
             if (!q.OrderBy.IsEmpty)
             {
-                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(o => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}"));
+                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(OrderTerm));
                 return q.BreaksTiesByInsertion ? $"{order}, {InsertionOrder}" : order;
             }
             return q.OrdersByInsertion ? $"ORDER BY {InsertionOrder}" : null;

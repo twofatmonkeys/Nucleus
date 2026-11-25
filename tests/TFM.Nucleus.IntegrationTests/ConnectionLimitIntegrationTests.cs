@@ -13,6 +13,15 @@ namespace TFM.Nucleus.IntegrationTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+        /// <summary>A full budget is a failure of the database to the caller, known not to be worth another attempt.</summary>
+        private static void AssertPoolExhausted(Exception ex)
+        {
+            var found = Assert.IsType<DatabaseException>(ex);
+            Assert.Equal(DatabaseErrorKind.PoolExhausted, found.Kind);
+            Assert.Equal(DatabaseOperation.Open, found.Operation);
+            Assert.False(found.IsTransient);
+        }
+
         private static void AssertKind(Exception ex, DataContextErrorKind kind)
         {
             var found = ExceptionChain.Find<DataContextException>(ex);
@@ -78,8 +87,8 @@ namespace TFM.Nucleus.IntegrationTests
             await using var second = await stack.Provider.CreateContextAsync(ContextOptions.Default, Ct);
 
             var ex = await Assert.ThrowsAnyAsync<Exception>(async () => await stack.Provider.CreateContextAsync(ContextOptions.Default, Ct));
-            AssertKind(ex, DataContextErrorKind.PoolExhausted);
-            AssertKind(Assert.ThrowsAny<Exception>(() => stack.Provider.CreateContext(ContextOptions.Transactional)), DataContextErrorKind.PoolExhausted);
+            AssertPoolExhausted(ex);
+            AssertPoolExhausted(Assert.ThrowsAny<Exception>(() => stack.Provider.CreateContext(ContextOptions.Transactional)));
 
             await first.CommitAsync(Ct);
             await first.DisposeAsync();

@@ -128,6 +128,85 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Equal(3, b.Get<int>("Total"));
         }
 
+        /// <summary>
+        /// A grouped read could not be ordered or limited, so "the top groups" meant reading every
+        /// group and sorting in memory. The database orders by a measure or a key and cuts.
+        /// </summary>
+        [Fact]
+        public async Task GroupBy_OrderedByAMeasureOrAKey_ReturnsTheGroupsInThatOrder()
+        {
+            var manager = fixture.RequireManager();
+            var (batch, _, _) = await SeedAsync(manager);
+            RowQuery<IntRowItem> Totals() => manager.Rows<IntRowItem>(r => r.Batch == batch).GroupBy(r => r.Name).Sum(r => r.Amount, "Total");
+
+            var smallestFirst = await Totals().OrderBy("Total").ToListAsync();
+            var largestFirst = await Totals().OrderByDescending("total").ToListAsync();
+            var byKey = await Totals().OrderByDescending(r => r.Name).ToListAsync();
+            var top = await Totals().OrderByDescending("Total").Take(1).ToListAsync();
+
+            Assert.Equal(["b", "a"], smallestFirst.Select(g => g.Get<string>("Name")));
+            Assert.Equal(["a", "b"], largestFirst.Select(g => g.Get<string>("Name")));
+            Assert.Equal(["b", "a"], byKey.Select(g => g.Get<string>("Name")));
+            Assert.Equal(60, Assert.Single(top).Get<long>("Total"));
+        }
+
+        /// <summary>Groups that tie on the order are cut by their keys, so the same groups come back every time.</summary>
+        [Fact]
+        public async Task GroupBy_Limited_BreaksTiesByTheGroupKeys()
+        {
+            var manager = fixture.RequireManager();
+            var (batch, _, _) = await SeedAsync(manager);
+
+            // Five amounts, one row each: every group ties on its count.
+            var first = await manager.Rows<IntRowItem>(r => r.Batch == batch)
+                .GroupBy(r => r.Amount)
+                .Count("Rows")
+                .OrderByDescending("Rows")
+                .Take(2)
+                .ToListAsync();
+            var named = await manager.Rows<IntRowItem>(r => r.Batch == batch)
+                .GroupBy(r => r.Amount)
+                .Count("Rows")
+                .OrderByDescending("Rows")
+                .ThenByDescending(r => r.Amount)
+                .Take(2)
+                .ToListAsync();
+
+            Assert.Equal([1, 2], first.Select(g => g.Get<int>("Amount")));
+            Assert.Equal([30, 20], named.Select(g => g.Get<int>("Amount")));
+        }
+
+        [Fact]
+        public async Task Take_OnARowRead_ReadsTheFirstRowsOfItsOrder_OrAsWritten()
+        {
+            var manager = fixture.RequireManager();
+            var (batch, _, _) = await SeedAsync(manager);
+
+            var smallest = await manager.Rows<IntRowItem>(r => r.Batch == batch).Select(r => r.Amount).OrderBy(r => r.Amount).Take(2).ToListAsync();
+            var asWritten = await manager.Rows<IntRowItem>(r => r.Batch == batch).Select(r => r.Amount).Take(2).ToListAsync();
+
+            Assert.Equal([1, 2], smallest.Select(r => r.Get<int>("Amount")));
+            Assert.Equal([10, 20], asWritten.Select(r => r.Get<int>("Amount")));
+        }
+
+        [Fact]
+        public async Task AnOrderOrALimitThatMeansNothing_IsRefused()
+        {
+            var manager = fixture.RequireManager();
+            RowQuery<IntRowItem> Counts() => manager.Rows<IntRowItem>().GroupBy(r => r.Name).Count("Rows");
+
+            // Which groups are first is not said.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Counts().Take(3).ToListAsync());
+            // Not a key of the read, and not a measure it has.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Counts().OrderBy(r => r.Amount).ToListAsync());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Counts().OrderBy("Total").ToListAsync());
+            // A read with no measures has none to order by.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().Select(r => r.Name).OrderBy("Rows").ToListAsync());
+            // A page cuts for itself.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => manager.Rows<IntRowItem>().Select(r => r.Name).Take(3).ToPageAsync(0, 5));
+            Assert.Throws<ArgumentOutOfRangeException>(() => manager.Rows<IntRowItem>().Take(0));
+        }
+
         [Fact]
         public async Task GroupBy_SeveralKeys_KeepsAnEnumAndANullKeyApart()
         {
