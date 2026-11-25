@@ -39,6 +39,42 @@ recorded here so that page's list and this one agree.
   `NULLS FIRST`/`NULLS LAST`); text is not, because matching it would need a collation of Nucleus's
   own on every engine.
 
+### Found by a review of consumer feature requests (November 2026)
+
+Found by reading the code against a set of requested features. None is fixed yet; each has a
+planned change.
+
+- **A read by a long list of values fails at the engine's parameter limit.** `list.Contains(x.Col)`
+  binds one parameter per value (`ParameterBinding.Bind`), duplicates included, and no read path
+  checks `MaxParametersPerCommand`: only deletes and writes do. Past the engine's own limit (2,100
+  on SQL Server) the driver refuses the command and the caller gets a `DatabaseException` of kind
+  `Other`. A caller has to split the list, and a split read cannot be ordered, paged or counted as
+  one. The comment on `DataProviderCapabilities.MaxParametersPerCommand` ("queries are split above
+  this") is true of writes only. An empty list still makes a round trip, as `1 = 0`. Planned: one
+  set parameter per list on every engine.
+- **"The database failed" is three exception types.** A full connection budget is a
+  `DataContextException` of kind `PoolExhausted`, thrown before the open's failure translation. A
+  database that cannot be reached on first use is a `DataProviderException` of kind
+  `NotInitialized` with no message and no inner exception, because initialise logs the real
+  failure and returns a status. Only a failure after that is a `DatabaseException`.
+  `DataProviderErrorKind.DatabaseUnavailable`, `DataContextErrorKind.UnableToCreateNewCommand` and
+  `DataContextErrorKind.Unspecified` are thrown nowhere. Planned: both become `DatabaseException`s,
+  and the unused kinds go.
+- **`CreateContextAsync<T>()` without options has no transaction, and its `CommitAsync` does
+  nothing.** `ContextOptions.Default` has `UseTransaction` false, so a caller who forgets
+  `ContextOptions.Transactional` writes each statement on its own and is told nothing. Planned: a
+  context from the manager is transactional unless the caller says otherwise.
+- **A context's delete does not make the checks the manager's does.** The manager skips new
+  objects, removes duplicates and refuses a read-only object before it builds a delete;
+  `DbDataContext.BuildDeleteQuery` checks `IsDeletable` alone. Found by reading; not reproduced.
+- **A projection on a query throws `ArgumentException`, not the documented
+  `NotSupportedException`.** `Get<T>().Select(x => x.Name)` reaches
+  `ObjectDataAdaptor.CreateQuery<TElement>`, which builds an adaptor of the element type, and a
+  type that is not an entity fails the generic constraint before the translator sees the operator.
+  Found by reading; the only test is of `Select(w => w)`.
+- **`IsReadOnly` is never true.** It is public and checked on the set, save and delete paths, but
+  every caller of `CommitChanges` passes `makeReadOnly` false.
+
 ### Found by the documentation review, what is left (November 2026)
 
 A check of the guide against the code before beta was merged to master. The three defects it

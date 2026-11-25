@@ -19,6 +19,47 @@ namespace TFM.Nucleus.Tests
         public override void PreSave() => Calls.Add(nameof(PreSave));
     }
 
+    /// <summary>A root whose Validate() tidies a value after base.Validate(), and whose child does the same.</summary>
+    public class TidyingOwner : CoreObject<TidyingOwner>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public NucleusChildCollection<TidyingLine, TidyingOwner> Lines => GetChildCollection<TidyingLine, TidyingOwner>();
+
+        public override void Validate()
+        {
+            base.Validate();
+            Name = Name?.Trim();
+        }
+    }
+
+    public class TidyingLine : CoreChildObject<TidyingLine, TidyingOwner>
+    {
+        public int ValidateCount;
+
+        [DatabaseColumn]
+        public string? Note { get => GetValue<string>(); set => SetValue(value); }
+
+        public override void Validate()
+        {
+            ValidateCount++;
+            base.Validate();
+            Note = Note?.Trim();
+        }
+    }
+
+    /// <summary>A root whose Validate() never reaches base.Validate().</summary>
+    public class UnmarkedWidget : CoreObject<UnmarkedWidget>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+
+        public override void Validate()
+        {
+        }
+    }
+
     /// <summary>An owner and child that count their save hooks.</summary>
     public class SaveHookOwner : CoreObject<SaveHookOwner>
     {
@@ -121,6 +162,65 @@ namespace TFM.Nucleus.Tests
             var thrown = await Record.ExceptionAsync(() => SaveThrough(manager, path, new CmPlainLine { Total = 1 }));
 
             Assert.IsType<CoreObjectException>(thrown);
+            Assert.Empty(provider.Contexts);
+        }
+
+        /// <summary>
+        /// A value set after base.Validate() cleared the valid mark, so the save threw "has not
+        /// been validated", blaming a base call that was there, and only when the value changed.
+        /// </summary>
+        [Theory]
+        [MemberData(nameof(ManagerSaves))]
+        public async Task ManagerSave_OfAnObjectWhoseValidateSetsAValueAfterBase_Saves(string path)
+        {
+            var (manager, _) = NewManager();
+            var owner = new TidyingOwner { Name = "  padded  " };
+
+            await SaveThrough(manager, path, owner);
+
+            Assert.Equal("padded", owner.Name);
+            Assert.False(owner.IsNew);
+            Assert.False(owner.HasChanges);
+        }
+
+        [Fact]
+        public async Task ManagerSave_OfAStoredObjectWhoseValidateSetsAValueAfterBase_Saves()
+        {
+            var (manager, _) = NewManager();
+            var owner = new TidyingOwner { Name = "first" };
+            await manager.SaveAsync(owner, CancellationToken.None);
+            owner.Name = " second ";
+
+            await manager.SaveAsync(owner, CancellationToken.None);
+
+            Assert.Equal("second", owner.Name);
+            Assert.False(owner.HasChanges);
+        }
+
+        /// <summary>A child that tidied a value in its Validate() is valid, so the next save does not run its rules again unless it changed.</summary>
+        [Fact]
+        public async Task ManagerSave_OfAChildWhoseValidateSetsAValueAfterBase_ValidatesItOncePerChange()
+        {
+            var (manager, _) = NewManager();
+            var owner = new TidyingOwner { Name = "o" };
+            var line = new TidyingLine { Note = " n " };
+            owner.Lines.Add(line);
+
+            await manager.SaveAsync(owner, CancellationToken.None);
+
+            Assert.Equal("n", line.Note);
+            Assert.Equal(1, line.ValidateCount);
+        }
+
+        [Theory]
+        [MemberData(nameof(ManagerSaves))]
+        public async Task ManagerSave_OfAnObjectWhoseValidateNeverCallsBase_IsRefused_BeforeWriting(string path)
+        {
+            var (manager, provider) = NewManager();
+
+            var thrown = await Record.ExceptionAsync(() => SaveThrough(manager, path, new UnmarkedWidget { Name = "w" }));
+
+            Assert.Contains("base.Validate()", Assert.IsType<InvalidOperationException>(thrown).Message);
             Assert.Empty(provider.Contexts);
         }
 

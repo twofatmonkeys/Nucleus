@@ -28,6 +28,9 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   options and a context disposed without a commit rolls back instead; v3 makes that the only
   behaviour. Work done through a caller-owned context evicts no `[Cacheable]` cache. A single
   type's batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
+- **A context opened without options has no transaction.** `CreateContextAsync<T>()` with no
+  `ContextOptions` writes each statement on its own, and its `CommitAsync` does nothing. Pass
+  `ContextOptions.Transactional` for work that must commit as one.
 - **A child context shares its root's connection.** A context opened with `ContextOptions.Parent`
   runs on its root's connection and transaction, so the tree commits or rolls back as one. Use one
   context of a tree at a time; they cannot run commands concurrently.
@@ -53,12 +56,23 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 - **After `CommitOutcomeUnknown`, the objects are left unsaved.** The commit may have taken effect.
   Load the rows to find out before saving again: a new object that did commit fails a second insert
   with a `UniqueViolationException` on its key.
+- **Not every failure of the database is a `DatabaseException`.** A full connection budget is a
+  `DataContextException` of kind `PoolExhausted`, and a database that cannot be reached when the
+  provider first initialises is a `DataProviderException` of kind `NotInitialized`, with the cause
+  in the log only. Code that handles "the database is unavailable" catches all three for now.
 - **SQLite has no statement time limit.** Its driver's command timeout is the wait for the write
   lock (`BusyTimeoutSeconds`), so `StatementTimeoutSeconds` is ignored, a long statement runs until
   it finishes, and a cancelled token does not stop one under way.
 
 ## Reading
 
+- **A filter on a long list of values fails at the engine's parameter limit.**
+  `ids.Contains(x.ID)` sends one parameter per value, so a list over about 2,000 values is refused
+  on SQL Server (the limits are far higher on PostgreSQL and SQLite). Split the list and read each
+  part; a read split that way is ordered, paged and counted in memory.
+- **A projection throws `ArgumentException`.** `Get<T>().Select(...)` to anything but the entity
+  fails with an `ArgumentException` about a generic constraint, not the `NotSupportedException`
+  the other untranslated operators throw. Project in memory, or use a row read.
 - **Text sorts by each engine's own rules.** An `OrderBy` on a text column is written as the
   engine's plain `ORDER BY`, so the order follows the column's collation: case-insensitive under
   SQL Server's usual collations, the database's locale on PostgreSQL, and by code point on SQLite,

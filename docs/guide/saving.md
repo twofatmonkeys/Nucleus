@@ -40,6 +40,21 @@ object is new again, a loaded one has its changes pending again, and its removed
 pending deletion again. Changes made since the save are kept. Save the objects again without
 reloading them.
 
+The same context deletes too, so a save, a delete and a delete by predicate are one transaction:
+
+<!-- sample: save-and-delete -->
+```csharp
+// A save, a delete and a delete by predicate in one transaction: all of it is committed, or none of it.
+await using var context = await data.CreateContextAsync<WeighIn>(ContextOptions.Transactional, ct);
+await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 15.1m, Notes = "corrected" }, ct);
+await context.DeleteAsync(superseded, ct);
+var removed = await context.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);   // the rows it deleted
+await context.CommitAsync(ct);
+```
+
+Ask for a transaction (`ContextOptions.Transactional`): a context opened without one runs each
+statement on its own, and its `CommitAsync` does nothing.
+
 ## Saving a batch
 
 A batch can hold objects of different types. Each is routed to the provider that stores it, and
