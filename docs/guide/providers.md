@@ -30,6 +30,19 @@ services.AddNucleusSqlServerDataProvider(options =>
 });
 ```
 
+The provider keeps four table types in the `dbo` schema beside its tables: `NucleusGuidList`,
+`NucleusIntList`, `NucleusBigIntList` and `NucleusTextList`. A predicate that compares a column
+with a list of more than 200 values (`ids.Contains(x.ID)`) sends the list as one table-valued
+parameter of one of them, where a shorter list sends a parameter per value; see
+[querying](querying.md#lists-of-values).
+
+- The first start after upgrading creates them, like a missing table.
+- Under `ReadOnlySchema` the provider does not create them, and a database without them is not
+  current, so the provider does not start. Its log names the missing types and the statement that
+  creates each; run those once.
+- A login that does not own the schema needs `EXECUTE` on each type
+  (`GRANT EXECUTE ON TYPE::[dbo].[NucleusGuidList] TO [login]`).
+
 ## PostgreSQL
 
 `TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16 or later.

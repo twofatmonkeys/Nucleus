@@ -220,6 +220,11 @@ namespace TFM.Nucleus.Tests
                 ["term.endswith"] = () => Term(new Parameter("Name", "a", Operator.EndsWith)),
                 ["term.equalsignorecase"] = () => Term(new Parameter("Name", "a", Operator.EqualsIgnoreCase)),
                 ["term.in"] = () => Term(new Parameter("Quantity", new List<int> { 1, 2, 3 }, Operator.In)),
+                // Past the length at which SQL Server sends a list as one parameter.
+                ["term.in.long"] = () => Term(new Parameter("Quantity", Enumerable.Range(0, 201).ToList(), Operator.In)),
+                ["term.in.long.text"] = () => Term(new Parameter("Name", Enumerable.Range(0, 201).Select(i => $"n{i}").ToList(), Operator.In)),
+                // Duplicates and nulls are not values of the list.
+                ["term.in.repeated"] = () => Term(new Parameter("Quantity", new List<int?> { 1, 1, null, 2 }, Operator.In)),
                 ["term.in.empty"] = () => Term(new Parameter("Quantity", new List<int>(), Operator.In)),
                 ["term.equals.null"] = () => Term(new Parameter("Name", null)),
                 ["term.notequals.null"] = () => Term(new Parameter("Name", null, Operator.NotEquals)),
@@ -336,11 +341,16 @@ namespace TFM.Nucleus.Tests
                     var tables = Tables(typeof(TestDeletableParent), typeof(TestDeletableChild));
                     return DeleteWhereQuery.ForIds(renderer, tables(typeof(TestDeletableParent))!, tables, [Guid.NewGuid(), Guid.NewGuid()])!.BuildQuery();
                 },
-                ["delete.ids.secondchunk"] = () =>
+                // More IDs than one statement took when each was a parameter: one statement, the
+                // IDs as one parameter, on every engine.
+                ["delete.ids.long"] = () =>
                 {
                     var tables = Tables(typeof(TestSoftWidget));
                     var ids = Enumerable.Range(0, DeleteWhereQuery.IdsPerStatement + 1).Select(_ => Guid.NewGuid());
-                    return DeleteWhereQuery.ForIds(renderer, tables(typeof(TestSoftWidget))!, tables, ids)!.LinkedQueries.Single().BuildQuery();
+                    var query = DeleteWhereQuery.ForIds(renderer, tables(typeof(TestSoftWidget))!, tables, ids)!;
+                    return query.LinkedQueries.Count == 0
+                        ? query.BuildQuery()
+                        : throw new InvalidOperationException("The IDs were split over several statements.");
                 },
 
             };

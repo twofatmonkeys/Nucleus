@@ -67,10 +67,18 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 
 ## Reading
 
-- **A filter on a long list of values fails at the engine's parameter limit.**
-  `ids.Contains(x.ID)` sends one parameter per value, so a list over about 2,000 values is refused
-  on SQL Server (the limits are far higher on PostgreSQL and SQLite). Split the list and read each
-  part; a read split that way is ordered, paged and counted in memory.
+- **On SQL Server, a long list of dates, decimals or mixed types is refused.** A list goes as one
+  parameter for Guids, `int` and `long` values, enums and text up to 4,000 characters. A list of
+  anything else still sends a parameter per value, and over the provider's limit (about 2,000
+  values) it throws `InvalidQueryException` before the query runs. Compare a range instead
+  (`x.Day >= from && x.Day < to`), or split that list. The other engines have the same rule for
+  fewer types: PostgreSQL for dates, at 30,000 values, and SQLite for decimals and floating-point
+  numbers, at 2,000.
+- **A list cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`.
+- **On SQL Server, a long text list is compared under the database's default collation**, the
+  collation its list type was created with. A column given another collation by hand fails the
+  query with SQL Server's collation conflict error once the list passes 200 values. Nucleus
+  creates every text column with the default, so this needs a column altered outside it.
 - **A projection throws `ArgumentException`.** `Get<T>().Select(...)` to anything but the entity
   fails with an `ArgumentException` about a generic constraint, not the `NotSupportedException`
   the other untranslated operators throw. Project in memory, or use a row read.

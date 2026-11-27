@@ -11,7 +11,11 @@ namespace TFM.Nucleus.Data
         /// <summary>The prefix used for command parameter references (e.g. "@" for SQL Server).</summary>
         public required string ParameterPrefix { get; init; }
 
-        /// <summary>Maximum bindable parameters per command; queries are split above this.</summary>
+        /// <summary>
+        /// Maximum bindable parameters per command. A write over it is split into several
+        /// commands; a read or a delete over it is refused, which only a long list of values
+        /// that the provider binds one at a time can cause.
+        /// </summary>
         public required int MaxParametersPerCommand { get; init; }
 
         public bool SupportsChangeNotifications { get; init; }

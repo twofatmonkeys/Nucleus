@@ -127,6 +127,29 @@ Only the ID translates. `x => x.Parent.Name == "a"` would need a join, and throw
 (`x.Name.Length`), and a comparison of two columns. A comparison may be written either way round:
 `3 < x.Quantity` is `x.Quantity > 3`.
 
+### Lists of values
+
+`x => ids.Contains(x.ID)` matches the rows whose column holds one of the list's values, in a load,
+a paged or ordered load, a count, a [row read](#row-reads) or a `DeleteWhere`. The list is a list,
+an array or any other collection, of IDs, text, numbers or enum values.
+
+- **The list can be any length.** Do not split a long list and read it in parts: one query over
+  the whole list is ordered, paged and counted in the database, which parts read separately cannot
+  be. PostgreSQL sends the list as one array and SQLite as one JSON array, at any length. SQL
+  Server sends a list of more than 200 values as one table-valued parameter, for a list of Guids,
+  of `int` or `long` values (an enum is its number) or of text up to 4,000 characters; see
+  [providers](providers.md#sql-server).
+- **A repeated value counts once, and a null is not a value of the list**: no row matches it. To
+  match rows whose column is null, say so beside the list (`x.Name == null || names.Contains(x.Name)`).
+- **An empty list matches no row, and no query runs to find that out.** `DeleteWhere` with it
+  deletes nothing and returns 0.
+- **A list cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`, except over
+  an empty list, where it is every row: a load returns them all, and `DeleteWhere` refuses it like
+  any other delete of a whole table.
+- When the keys come from another query, a deep one especially, ask whether the list is needed at
+  all: a filter the database can apply itself does not bring the keys to the application and send
+  them back.
+
 ## Row reads
 
 `IObjectDataManager.Rows<T>(predicate)` reads rows of values rather than entities. The predicate is

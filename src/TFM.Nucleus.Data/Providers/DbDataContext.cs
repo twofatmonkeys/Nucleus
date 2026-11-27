@@ -147,6 +147,13 @@ namespace TFM.Nucleus.Data.Providers
             return parameter;
         }
 
+        /// <summary>
+        /// Binds every value of a multi-valued term as one parameter, for a term the provider's
+        /// renderer says it writes that way (<see cref="IQueryRenderer.BindsAsList"/>).
+        /// </summary>
+        protected virtual DbParameter CreateListParameter(DbCommand command, string name, ValueList values, IQueryParameter source) =>
+            throw new NotSupportedException($"{GetType().Name} does not bind a list as one parameter, so its renderer must not write one.");
+
         /// <summary>Copies the current row into <paramref name="row"/>, in <paramref name="schema"/>'s column order.</summary>
         protected virtual void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema) => reader.GetValues(row!);
 
@@ -938,12 +945,32 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (terms == null)
                 return;
+            var renderer = _provider.Renderer;
             foreach (var term in terms)
             {
                 if (term == null || !term.UsesVariable)
                     continue;
-                foreach (var bound in ParameterBinding.Bind(term))
-                    command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value, term));
+                if (!ParameterBinding.IsMultiValued(term))
+                {
+                    foreach (var bound in ParameterBinding.Bind(term))
+                        command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value, term));
+                    continue;
+                }
+                var values = ParameterBinding.Values(term);
+                if (renderer.BindsAsList(term))
+                {
+                    command.Parameters.Add(CreateListParameter(command, term.Variable!, values, term));
+                    continue;
+                }
+                // One parameter per value. Past the engine's limit the driver would refuse the
+                // command with an error that names neither the list nor the limit.
+                if (command.Parameters.Count + values.Count > Options.MaxParametersPerCommand)
+                    throw new InvalidQueryException(
+                        $"A list of {values.Count} values compared with {term.Name} needs a command parameter for each, and a command takes " +
+                        $"{Options.MaxParametersPerCommand}. This provider binds a list of this element type ({values.ElementType?.Name ?? "mixed types"}) " +
+                        "one value at a time; compare fewer values, or use a list of one supported type.");
+                for (var i = 0; i < values.Count; i++)
+                    command.Parameters.Add(CreateParameter(command, ParameterBinding.ElementName(term, i), values[i], term));
             }
         }
 
@@ -1285,7 +1312,7 @@ namespace TFM.Nucleus.Data.Providers
         private ParameterCollection DeleteParameters(Query chunk)
         {
             var parameters = chunk.Parameters;
-            var count = ParameterBinding.Bind(parameters).Count();
+            var count = ParameterBinding.Count(parameters, _provider.Renderer);
             if (count > Options.MaxParametersPerCommand)
                 throw new InvalidQueryException(
                     $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerCommand}. Narrow the predicate.");

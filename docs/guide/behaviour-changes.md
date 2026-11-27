@@ -3,6 +3,35 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## A list of values in a predicate can be any length
+
+- **`ids.Contains(x.ID)` no longer fails on a long list.** A list over about 2,000 values was
+  refused by SQL Server's 2,100 parameter limit. Each engine now sends a list as one parameter
+  (SQL Server above 200 values), so code that split a list and read it in parts can pass the whole
+  list, and order, page and count the result in the database. See
+  [querying](querying.md#lists-of-values).
+- **SQL Server gains four table types** (`NucleusGuidList`, `NucleusIntList`, `NucleusBigIntList`,
+  `NucleusTextList`), created at the first start. **A deployment with `ReadOnlySchema` does not
+  start until they exist**: its log gives the four `CREATE TYPE` statements to run. A login that
+  does not own the schema needs `EXECUTE` on each. See [providers](providers.md#sql-server).
+- **An empty list runs no query.** A load over one returns nothing and a `DeleteWhere` returns 0,
+  where each ran a statement that matched nothing. `DeleteWhere(x => !none.Contains(x.ID))`, which
+  threw `NotSupportedException`, now throws `ArgumentException` as a delete of every row; a load
+  with it, which threw, returns every row.
+- **Repeated values and nulls in a list are not sent.** The rows matched are the same.
+- **A delete of many objects is one statement**, where it was one per 1,000 objects.
+- **A list that still binds a value at a time and passes the limit throws `InvalidQueryException`**
+  naming the list and the limit, where the driver's error surfaced as a `DatabaseException`.
+- **For a provider author:** `IQueryRenderer.BindsAsList` says whether a renderer writes a list
+  against one parameter, and `DbDataContext.CreateListParameter` binds it. Both default to the old
+  behaviour. `ParameterBinding.MultiValues` now returns the distinct, non-null values.
+
+## An ordered page on SQL Server reads its rows by key
+
+- No change in what a query returns. An ordered, paged read on SQL Server sorts and skips keys and
+  then reads the page's rows, which is faster on a deep page or an unindexed order. A listing that
+  pages deep is still better paged by key; see [querying](querying.md#what-a-query-translates).
+
 ## TFM.Nucleus.Testing: a database per .NET runtime
 
 - **The configured database name is now a base name.** A net8.0 run uses `<name>_net8` and a

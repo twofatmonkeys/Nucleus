@@ -18,7 +18,12 @@ and configure it, so the same entities run on whichever database a deployment ch
 
 A provider package implements the dialect:
 
-- an `IQueryRenderer` that writes each query;
+- an `IQueryRenderer` that writes each query. A list of values in a predicate
+  (`ids.Contains(x.ID)`) is a term whose value is a `ValueList`: the distinct, non-null values. A
+  renderer that can send a list as one parameter (an array, a table, a JSON document) returns true
+  from `BindsAsList` for the terms it writes that way, and its context overrides
+  `CreateListParameter` to bind them. Left alone, a list binds a parameter per value and is
+  refused past `MaxParametersPerCommand`;
 - an `ISchemaDialect` that writes DDL and maps column types;
 - an `ICatalogReader` over the engine's catalog;
 - an `ISchemaStore` that ties them together.

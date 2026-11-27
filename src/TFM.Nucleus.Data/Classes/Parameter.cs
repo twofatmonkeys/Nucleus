@@ -93,7 +93,11 @@ namespace TFM.Nucleus.Data
         public Parameter(string name, object? value, bool random, Operator oprtr)
         {
             _name = name;
-            _value = value;
+            // A list is read once here, into its distinct values, however often the term is
+            // rendered, counted and bound.
+            _value = oprtr == Operator.In && value is System.Collections.IEnumerable list and not string
+                ? Queries.ValueList.From(list)
+                : value;
             _variable = random ? NextVariableName() : name;
             Operator = oprtr;
         }

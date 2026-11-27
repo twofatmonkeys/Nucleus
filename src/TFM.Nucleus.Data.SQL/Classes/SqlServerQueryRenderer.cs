@@ -544,15 +544,20 @@ namespace TFM.Nucleus.Data.SQL
             return $"{LeftOperand(p)}{OperatorString(p)}{RightOperandExpression(p)}";
         }
 
+        /// <summary>A long list of a type with a list type is one table-valued parameter (<see cref="SqlServerListTypes"/>).</summary>
+        public bool BindsAsList(IQueryParameter term) => SqlServerListTypes.For(term) != null;
+
         /// <summary>
-        /// IN over the term's values, one command parameter per element. An empty list renders
-        /// as a no-match predicate.
+        /// IN over the term's values: the rows of one table-valued parameter for a long list, or
+        /// one command parameter per value. An empty list renders as a no-match predicate.
         /// </summary>
         private static string InCondition(Parameter p)
         {
-            var count = ParameterBinding.MultiValues(p).Count;
+            var count = ParameterBinding.Values(p).Count;
             if (count == 0)
                 return "1 = 0";
+            if (SqlServerListTypes.For(p) != null)
+                return $"{LeftOperand(p)} IN (SELECT [Value] FROM {VariableReference(p)})";
             var references = Enumerable.Range(0, count).Select(i => $"@{ParameterBinding.ElementName(p, i)}");
             return $"{LeftOperand(p)} IN ({string.Join(",", references)})";
         }

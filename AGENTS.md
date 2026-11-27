@@ -216,6 +216,17 @@ cut, and any other operator, throws. Only loads split: the filter and delete pat
 expression whole, so a delete refuses an order or a Take rather than deleting every match. A
 cut query is never answered from the `[Cacheable]` cache, First and Single compose with the
 query's cut, and Count and Any of a cut count the filter and work out what the cut leaves.
+A list of values in a predicate (`ids.Contains(x.ID)`) is a term holding a `ValueList` (Data):
+the distinct, non-null values, read once when the `Parameter` is built. Whether it goes to the
+database as one parameter or one per value is the renderer's answer, `IQueryRenderer.BindsAsList`,
+which the text, `DbDataContext.BindParameters` (through `CreateListParameter`),
+`ParameterBinding.Count` and `DeleteWhereQuery.ForIds` all ask, so they cannot disagree. PostgreSQL
+sends an array (`= ANY`) and SQLite a JSON array (`json_each`) at any length; SQL Server sends a
+table-valued parameter above 200 values (`SqlServerListTypes`, the threshold measured), of four
+table types that are schema extras, so a database without them is not current. A list still bound
+a value at a time is refused past `MaxParametersPerCommand` before the command is sent. An empty
+list is folded to false (`FoldBooleanConstants`), so no query runs for it, and a list cannot be
+negated.
 `Evaluator.PartialEval` leaves an operator over a query source alone, or `Get<T>().Take(5)` was
 run and replaced by its result before translation. `ChildGraphBinder` is the one place child collections are materialised and
 attached, from either a data set's linked result sets or streamed child queries; it binds each

@@ -86,6 +86,44 @@ namespace TFM.Nucleus.Data.SQLite
         }
 
         /// <summary>
+        /// Whether a list of <paramref name="elementType"/> is bound as one JSON array: the types
+        /// whose stored form is text or an integer, which JSON carries exactly. A real is left out,
+        /// because JSON has no infinity or NaN, and so is a byte array.
+        /// </summary>
+        public static bool HasJsonForm(Type elementType) =>
+            elementType.IsEnum || elementType == typeof(Guid) || elementType == typeof(string) || elementType == typeof(int) ||
+            elementType == typeof(long) || elementType == typeof(short) || elementType == typeof(byte) || elementType == typeof(bool) ||
+            elementType == typeof(DateTime) || elementType == typeof(DateTimeOffset);
+
+        /// <summary>
+        /// The values of a list as a JSON array of their stored forms, each converted as
+        /// <see cref="ToDb"/> converts a single value: text as a JSON string, an integer as a number.
+        /// </summary>
+        public static string ToJsonArray(IReadOnlyList<object> values, ColumnSchema? column)
+        {
+            var buffer = new System.Buffers.ArrayBufferWriter<byte>(values.Count * 40 + 2);
+            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartArray();
+                foreach (var value in values)
+                {
+                    switch (ToDb(value, column))
+                    {
+                        case string text: writer.WriteStringValue(text); break;
+                        case long number: writer.WriteNumberValue(number); break;
+                        case int number: writer.WriteNumberValue(number); break;
+                        case short number: writer.WriteNumberValue(number); break;
+                        case byte number: writer.WriteNumberValue(number); break;
+                        case var other:
+                            throw new NotSupportedException($"A {other?.GetType().Name ?? "null"} has no JSON form to bind in a list.");
+                    }
+                }
+                writer.WriteEndArray();
+            }
+            return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+
+        /// <summary>
         /// A value read back as the column's property stores it. SQLite hands back a long, a
         /// double, a string or a byte array; anything else is converted here. A column of another
         /// assembly's schema converts by its property type.
