@@ -81,6 +81,12 @@ is followed by the same order to break its ties. NULL sorts below every value on
 first in ascending order, last in descending. Text sorts by each engine's own rules, which differ
 (see [known limits](known-limits.md)).
 
+A page costs the database in proportion to how far it skips, on every engine: to return rows
+50,001 to 50,050 it walks the 50,000 before them. A listing that people page deep into, such as a
+feed, pages by key instead: filter on the last key the previous page showed
+(`Where(e => e.OccurredUtc < last)`), order by that key and `Take` a page, with no `Skip`. With an
+index on the key, every page then costs the same.
+
 The async operators run the query: `ToListAsync`, `ToArrayAsync`, `FirstAsync`,
 `FirstOrDefaultAsync`, `SingleAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync` and
 `LongCountAsync`. Each takes a cancellation token, and all but the list, the array and the long

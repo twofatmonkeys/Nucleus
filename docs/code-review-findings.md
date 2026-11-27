@@ -452,6 +452,38 @@ needs no database), `DatabaseFailureTests` for error 258, and
 `AContextFromTheManager_EvictsTheCacheOfWhatItWrote_OnceItCommits` and
 `AContextFromTheManager_AuditsWhatItSaved_OnlyOnceItCommits` on every provider.
 
+### An ordered page on SQL Server sorted and skipped whole rows (November 2026)
+
+A paged select numbered a derived table that selected every column, so the rows SQL Server sorted
+and skipped were whole rows. An ordered page now numbers the rows by their ClusterID alone and
+joins the page's rows back by it (`SqlServerQueryRenderer.PagedSelect`). The parent-key select of
+a paged root already numbered one column.
+
+Measured on a table of 100,000 rows of about 4 KB, 50 rows a page, logical reads and CPU from
+`SET STATISTICS IO, TIME`, before then after:
+
+| Order | Filter | Skip | Reads | CPU ms |
+|---|---|---|---|---|
+| indexed column | none | 0 | 155, 152 | 0, 0 |
+| indexed column | none | 50,000 | 153,392, 264 | 156, 15 |
+| indexed column | a column not in the index | 0 | 179, 329 | 0, 0 |
+| indexed column | a column not in the index | 50,000 | 161,358, 161,508 | 172, 187 |
+| unindexed column | none | 0 | 52,716, 52,866 | 1,094, 374 |
+| unindexed column | none | 50,000 | 52,716, 52,866 | 1,436, 500 |
+| insertion (not changed) | none | 0 | 29, 179 if it were | 0, 0 |
+
+- The join back costs a seek per row of the page, about 150 reads for 50 rows. That is the whole
+  cost where the new shape does not help, and why a page in insertion order keeps the old shape:
+  its window walks the clustered index, which is the rows.
+- **Open: a filter on a column outside the order's index gets nothing from this**, and the
+  soft-delete filter is one (`[IsDeleted] = 0` on every read of a soft-deletable type), because
+  SQL Server must visit each row to test it. An index that carried `IsDeleted` would let those
+  pages take the deep-page gain too. Not built; it changes every index of a soft-deletable table.
+- A deep skip still costs in proportion to the skip. A listing that goes deep pages by key (see
+  the guide's querying page).
+
+Cover: the four ordered and paged cases in `SqlServerGoldens.cs`, and `OrderAndPageIntegrationTests`.
+
 ### A query could not order or page in the database, and Take was evaluated away (November 2026)
 
 - **Only `Where` translated.** `Get<T>()` refused every other operator, so a listing ordered and

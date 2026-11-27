@@ -312,6 +312,10 @@ SqlDependency notifications. Everything but its registration, `SQLConfiguration`
 `SqlServerGoldens.cs`. A select batches its child collection queries after its own rows, and
 `GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
 parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
+A page in the caller's order numbers the rows by ClusterID alone and joins the page's rows back by
+it, so the sort and the skip carry a key and not every column; a page in insertion order does
+not, because its window walks the clustered index (`PagedSelect`, measured in
+`docs\code-review-findings.md`).
 Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
 collection rows deepest first, then the root, then
 `SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
