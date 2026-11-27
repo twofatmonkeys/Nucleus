@@ -4,8 +4,9 @@ namespace TFM.Nucleus.Testing;
 /// A cross-process lock over one suite's tables in a shared test database, held as an exclusively
 /// opened file in the temp folder. A file rather than a named mutex because a mutex must be
 /// released on the thread that took it, which an async test cannot promise. Each suite names its
-/// own lock, so unrelated suites never wait on each other, while the net8.0 and net10.0 runs of
-/// one suite, which <c>dotnet test</c> starts together, still cannot reset each other's rows.
+/// own lock, per provider and .NET runtime, which is per database: unrelated suites never wait on
+/// each other, nor do the net8.0 and net10.0 runs <c>dotnet test</c> starts together, which have a
+/// database each, while two test processes on one database cannot reset each other's rows.
 /// </summary>
 /// <remarks>
 /// The lock file name does not depend on the repo, so suites in different repos that share a

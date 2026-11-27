@@ -267,7 +267,7 @@ Override these on an entity to run logic at defined points:
 
 | Hook | When it runs |
 |---|---|
-| `Validate()` | At the start of every save, on every path (entity, manager, context, bulk), once per object saved. Throw to reject the save: nothing is written and the exception reaches the caller as thrown. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`. |
+| `Validate()` | At the start of every save, on every path (entity, manager, context, bulk), once per object saved. Throw to reject the save: nothing is written and the exception reaches the caller as thrown. The root's also runs every new or changed child's, and each forceSave link's. Call `base.Validate()`: a save of an object whose override never does is refused. A value the override sets, before or after that call, is written. |
 | `PreSave()` | After validation and before anything is written, on the object saved and on each new or changed child and forceSave link the save writes. A value set here is written but not validated. |
 | `OnAfterLoadFromDB()` | Once per loaded object, at the end of every load: after its columns and parent are bound, its loaded children are attached and have run theirs, and an excluded collection reads as unloaded. A lazy collection's rows run theirs when it loads. |
 | `OnAfterInitializeDB()` | Never. It is obsolete: schema initialisation has no instance to call it on. Run start-up work after `InitializeDataProviderAsync`. |

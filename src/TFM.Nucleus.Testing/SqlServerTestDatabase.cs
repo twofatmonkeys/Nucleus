@@ -5,7 +5,11 @@ using TFM.Nucleus.Data.SQL;
 
 namespace TFM.Nucleus.Testing;
 
-/// <summary>The SQL Server test database. Tables live in <c>dbo</c>.</summary>
+/// <summary>
+/// The SQL Server test database, one per .NET runtime (<see cref="NucleusTestDatabase.DatabaseName"/>).
+/// Tables live in <c>dbo</c>. A missing one is created here, not by the provider, so that it runs at
+/// <see cref="MinimumCompatibilityLevel"/>; one that exists is left as it is.
+/// </summary>
 public sealed class SqlServerTestDatabase : NucleusTestDatabase
 {
     /// <param name="settings">Where the database is; null when it is not configured.</param>
@@ -13,8 +17,58 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
     {
     }
 
+    /// <summary>
+    /// The compatibility level a database created for the tests is given: the lowest Nucleus
+    /// supports. A new server would otherwise create it at its own, newest level, and the suite
+    /// would stop catching a statement an older level refuses.
+    /// </summary>
+    public const int MinimumCompatibilityLevel = 100;
+
+    private Task? _prepared;
+
     /// <inheritdoc />
     public override string ProviderName => "sqlserver";
+
+    /// <inheritdoc />
+    /// <remarks>Creates this runtime's database when it is missing, once per process.</remarks>
+    protected override Task PrepareDatabaseAsync() => LazyInitializer.EnsureInitialized(ref _prepared, CreateIfMissingAsync);
+
+    /// <summary>
+    /// Creates the database at <see cref="MinimumCompatibilityLevel"/> with READ_COMMITTED_SNAPSHOT
+    /// on, as the provider sets it for a database it creates. Another test process may create it at
+    /// the same moment; the one that loses finds it there (error 1801) and carries on.
+    /// </summary>
+    private async Task CreateIfMissingAsync()
+    {
+        var name = DatabaseName;
+        var quoted = $"[{name.Replace("]", "]]")}]";
+        await using var connection = await OpenAsync("master", CancellationToken.None);
+        await using (var exists = new SqlCommand("SELECT DB_ID(@name)", connection))
+        {
+            exists.Parameters.AddWithValue("@name", name);
+            if (await exists.ExecuteScalarAsync() is not (null or DBNull))
+                return;
+        }
+        try
+        {
+            await using var create = new SqlCommand($"CREATE DATABASE {quoted}", connection);
+            await create.ExecuteNonQueryAsync();
+        }
+        catch (SqlException ex) when (ex.Number == 1801)
+        {
+            return;
+        }
+        catch (SqlException ex)
+        {
+            throw new InvalidOperationException(
+                $"The SQL Server test database '{name}' does not exist and could not be created: {ex.Message} " +
+                $"Create it at compatibility level {MinimumCompatibilityLevel}, or let the test login create databases.", ex);
+        }
+        await using var settle = new SqlCommand(
+            $"ALTER DATABASE {quoted} SET COMPATIBILITY_LEVEL = {MinimumCompatibilityLevel}; " +
+            $"ALTER DATABASE {quoted} SET READ_COMMITTED_SNAPSHOT ON WITH NO_WAIT", connection);
+        await settle.ExecuteNonQueryAsync();
+    }
 
     /// <inheritdoc />
     protected override string ConfigurationHint => "set the Nucleus:* user secrets or NUCLEUS_TEST_* environment variables.";
@@ -52,15 +106,20 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
     }
 
     /// <inheritdoc />
-    /// <remarks>An exclusive table lock, held to the end of the transaction, which no reader or writer passes.</remarks>
+    /// <remarks>
+    /// A schema modification lock, held to the end of the transaction, which no reader or writer
+    /// passes. An exclusive table lock is not enough: with READ_COMMITTED_SNAPSHOT on, a reader
+    /// takes no shared lock and reads the last committed version past it. The table option the
+    /// statement sets is rolled back with the transaction.
+    /// </remarks>
     public override async Task<IAsyncDisposable> HoldWriteLockAsync(string table, CancellationToken token = default)
     {
         var connection = await OpenAsync(token);
         try
         {
             var transaction = (SqlTransaction)await connection.BeginTransactionAsync(token);
-            await using var command = new SqlCommand($"SELECT COUNT(*) FROM [dbo].[{table}] WITH (TABLOCKX, HOLDLOCK)", connection, transaction);
-            await command.ExecuteScalarAsync(token);
+            await using var command = new SqlCommand($"ALTER TABLE [dbo].[{table}] SET (LOCK_ESCALATION = AUTO)", connection, transaction);
+            await command.ExecuteNonQueryAsync(token);
             return new HeldLock(connection, transaction);
         }
         catch
@@ -105,13 +164,20 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
     /// <inheritdoc />
     public override string RowCountSql(string table) => $"SELECT COUNT_BIG(*) FROM [dbo].[{table}]";
 
+    /// <summary>A connection to this runtime's database, which is created first when it is missing.</summary>
     private async Task<SqlConnection> OpenAsync(CancellationToken token)
+    {
+        await PrepareDatabaseAsync();
+        return await OpenAsync(DatabaseName, token);
+    }
+
+    private async Task<SqlConnection> OpenAsync(string database, CancellationToken token)
     {
         var settings = RequireSettings();
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = settings.Server,
-            InitialCatalog = settings.Database,
+            InitialCatalog = database,
             UserID = settings.Username,
             Password = settings.Password,
             TrustServerCertificate = true,

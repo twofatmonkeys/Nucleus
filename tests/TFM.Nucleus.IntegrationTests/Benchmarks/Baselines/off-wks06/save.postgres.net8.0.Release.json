@@ -1,0 +1,46 @@
+{
+  "commit": "30a7799-dirty",
+  "acceptedOn": "2026-11-27",
+  "scenarios": {
+    "batch 100": {
+      "medianMs": 21.58,
+      "allocatedBytes": 1397864
+    },
+    "build only 100x10": {
+      "medianMs": 2.48,
+      "allocatedBytes": 7242344
+    },
+    "bulk 20000": {
+      "medianMs": 574.97,
+      "allocatedBytes": 104974464
+    },
+    "delete cascade 50x20": {
+      "medianMs": 5.01,
+      "allocatedBytes": 38768
+    },
+    "graph insert 50x20": {
+      "medianMs": 47.23,
+      "allocatedBytes": 8947280
+    },
+    "graph remove one line x50": {
+      "medianMs": 47.75,
+      "allocatedBytes": 1095008
+    },
+    "graph update one line x50": {
+      "medianMs": 48.62,
+      "allocatedBytes": 1327136
+    },
+    "nested insert 30x10x3": {
+      "medianMs": 56.73,
+      "allocatedBytes": 10319960
+    },
+    "single x20": {
+      "medianMs": 82.45,
+      "allocatedBytes": 906480
+    },
+    "sync split 1000": {
+      "medianMs": 89.19,
+      "allocatedBytes": 13068456
+    }
+  }
+}

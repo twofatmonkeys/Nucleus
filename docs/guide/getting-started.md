@@ -223,7 +223,7 @@ store takes. Do not cast it to `ObjectDataManager`. Every call on it:
 | `DeleteWhereAsync<T>(predicate, token)` | Deletes by predicate without loading. |
 | `LoadChildCollectionAsync(collection, token)` | Loads an excluded or lazy collection. |
 | `SubscribeToChangesAsync<T>(token)` | Change notifications from the provider that owns `T`. |
-| `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types, committed by `CommitAsync`. See the known limits: until v3 one disposed without a commit still commits unless the provider sets `RequireCommit`, and the manager's eviction does not apply. |
+| `CreateContextAsync<T>(options, token)` | A caller-owned context on the provider that owns `T`, for one transaction across several types, committed by `CommitAsync`. Transactional unless the options say otherwise. Once it commits, what it saved is audited and the caches of what it wrote are evicted. See the known limits: until v3 one disposed without a commit still commits unless the provider sets `RequireCommit`. |
 | `InitializeDataProviderAsync()` | Creates or migrates every registered provider's schema. |
 | `Status` | The worst status among the registered providers; `Ok` only when every one is. |
 

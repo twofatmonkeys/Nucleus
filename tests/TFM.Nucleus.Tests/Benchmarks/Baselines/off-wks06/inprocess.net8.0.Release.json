@@ -1,0 +1,27 @@
+{
+  "commit": "30a7799-dirty",
+  "acceptedOn": "2026-11-27",
+  "scenarios": {
+    "bind 100x10": {
+      "medianMs": 1.16
+    },
+    "delete removed build 50": {
+      "medianMs": 0.02
+    },
+    "insert\u002Bupdate build 100": {
+      "medianMs": 0.39
+    },
+    "materialise 1000": {
+      "medianMs": 0.1
+    },
+    "parse predicate x200": {
+      "medianMs": 67.92
+    },
+    "savegraph walk 100x10x2": {
+      "medianMs": 1.61
+    },
+    "validate 100x10x2": {
+      "medianMs": 1.94
+    }
+  }
+}

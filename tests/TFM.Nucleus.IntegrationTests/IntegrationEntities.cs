@@ -16,6 +16,15 @@ namespace TFM.Nucleus.IntegrationTests
         public string? Name { get => GetValue<string>(); set => SetValue(value); }
     }
 
+    /// <summary>A cached type, for what evicts its cache.</summary>
+    [Cacheable]
+    [Deletable]
+    public class IntCachedTag : CoreObject<IntCachedTag>
+    {
+        [DatabaseColumn]
+        public string? Name { get => GetValue<string>(); set => SetValue(value); }
+    }
+
     [Deletable(DeleteBehavior.Soft)]
     public class IntSoftItem : CoreObject<IntSoftItem>
     {

@@ -4,7 +4,11 @@ using TFM.Nucleus.Data.Providers;
 
 namespace TFM.Nucleus.Testing;
 
-/// <summary>The PostgreSQL test database. The provider's tables live in <c>public</c>; the server is <c>host</c> or <c>host:port</c>.</summary>
+/// <summary>
+/// The PostgreSQL test database, one per .NET runtime (<see cref="NucleusTestDatabase.DatabaseName"/>),
+/// which the provider creates when it is missing. The provider's tables live in <c>public</c>; the
+/// server is <c>host</c> or <c>host:port</c>.
+/// </summary>
 public sealed class PostgresTestDatabase : NucleusTestDatabase
 {
     /// <param name="settings">Where the database is; null when it is not configured.</param>
@@ -123,7 +127,7 @@ public sealed class PostgresTestDatabase : NucleusTestDatabase
         {
             Host = parts[0],
             Port = parts.Length > 1 ? int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture) : 5432,
-            Database = settings.Database,
+            Database = DatabaseName,
             Username = settings.Username,
             Password = settings.Password,
         };
