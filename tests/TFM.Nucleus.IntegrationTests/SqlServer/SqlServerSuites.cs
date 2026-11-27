@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace TFM.Nucleus.IntegrationTests.SqlServer
 {
@@ -34,6 +34,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerOrderAndPageIntegrationTests(SqlServerFixture fixture) : OrderAndPageIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerListFilterIntegrationTests(SqlServerFixture fixture) : ListFilterIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerChildCollectionLoadIntegrationTests(SqlServerFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);

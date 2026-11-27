@@ -73,7 +73,7 @@ namespace TFM.Nucleus.Data
         /// without loading any, cascading to child collection rows by parent ID, in this context
         /// (and its transaction, if it has one). Returns the rows of <typeparamref name="T"/>
         /// affected. A predicate matching every row is refused; one matching none returns 0.
-        /// The caller owns the context, so no entity cache is evicted.
+        /// A context the manager handed out evicts the type's cache once the delete has committed; one a provider handed out evicts none.
         /// </summary>
         public int DeleteWhere<T>(Expression<Func<T, bool>> predicate) where T : ICoreObject<T>, new() =>
             throw new NotSupportedException($"{GetType().Name} does not support deleting by predicate.");

@@ -159,8 +159,11 @@ namespace TFM.Nucleus.Tests
             using var second = slots.Acquire();
 
             Assert.Equal(0, slots.Available);
-            var ex = Assert.Throws<DataContextException>(() => slots.Acquire());
-            Assert.Equal(DataContextErrorKind.PoolExhausted, ex.Kind);
+            var ex = Assert.Throws<DatabaseException>(() => slots.Acquire());
+            Assert.Equal(DatabaseErrorKind.PoolExhausted, ex.Kind);
+            Assert.Equal(DatabaseOperation.Open, ex.Operation);
+            Assert.False(ex.IsTransient);
+            Assert.False(ex.MayHaveBeenApplied);
             Assert.Contains("MaxConnectionPoolSize", ex.Message);
         }
 
@@ -171,9 +174,12 @@ namespace TFM.Nucleus.Tests
             using var held = slots.Acquire();
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            var ex = await Assert.ThrowsAsync<DataContextException>(async () => await slots.AcquireAsync(TestContext.Current.CancellationToken));
+            var ex = await Assert.ThrowsAsync<DatabaseException>(async () => await slots.AcquireAsync(TestContext.Current.CancellationToken));
 
-            Assert.Equal(DataContextErrorKind.PoolExhausted, ex.Kind);
+            Assert.Equal(DatabaseErrorKind.PoolExhausted, ex.Kind);
+            Assert.Equal(DatabaseOperation.Open, ex.Operation);
+            Assert.False(ex.IsTransient);
+            Assert.False(ex.MayHaveBeenApplied);
             Assert.InRange(clock.Elapsed, TimeSpan.FromMilliseconds(900), TimeSpan.FromSeconds(5));
         }
 

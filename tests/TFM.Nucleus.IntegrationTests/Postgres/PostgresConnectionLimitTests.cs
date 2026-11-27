@@ -88,7 +88,7 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
             var contexts = await OpenAsync(stack.Provider, ContextOptions.Transactional, Limit - 1);
 
             var ex = await Assert.ThrowsAnyAsync<Exception>(async () => await stack.Provider.CreateContextAsync(ContextOptions.Default, Ct));
-            Assert.Equal(DataContextErrorKind.PoolExhausted, ExceptionChain.Find<DataContextException>(ex)?.Kind);
+            Assert.Equal(DatabaseErrorKind.PoolExhausted, Assert.IsType<DatabaseException>(ex).Kind);
             Assert.InRange(await ServerConnectionsAsync(appName), 1, Limit);
 
             await subscription.DisposeAsync();

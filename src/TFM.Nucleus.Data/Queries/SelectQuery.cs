@@ -129,8 +129,10 @@ namespace TFM.Nucleus.Data.Queries
         public IReadOnlyList<ResultColumn>? ResultColumns { get; set; }
 
         /// <summary>
-        /// Throws when a grouped read is also asked to order or page: a grouped read returns its
-        /// groups in no particular order, so it is ordered in memory, and is small enough to be.
+        /// Throws when a grouped read is asked for what it cannot give. Its groups can be ordered
+        /// by a group key or by a measure's alias, and limited to the first of that order
+        /// (<see cref="Query.Take"/>); a limit with no order has no first groups to keep. It is not
+        /// skipped or counted: a page of groups needs a count of groups, a second query.
         /// </summary>
         public void EnsureAggregateShape()
         {
@@ -138,10 +140,58 @@ namespace TFM.Nucleus.Data.Queries
                 return;
             if (!IsRoot || LinkedQueries.Count > 0)
                 throw new InvalidQueryException("A grouped read has no child queries.");
-            if (!OrderBy.IsEmpty || Skip > 0 || Take > 0 || WithTotalCount)
-                throw new InvalidQueryException("A grouped read is not ordered or paged; order its groups in memory.");
+            if (Skip > 0 || WithTotalCount)
+                throw new InvalidQueryException("A grouped read is not paged; order it and limit it to its first groups.");
             if (!GroupBy.SequenceEqual(Columns))
                 throw new InvalidQueryException("A grouped read selects exactly its group keys.");
+            foreach (var term in OrderBy)
+                if (!term.IsEmpty && !IsGroupKey(term.Column) && !IsMeasureAlias(term.Column))
+                    throw new InvalidQueryException($"A grouped read is ordered by a group key or a measure; {term.Column} is neither.");
+            if (Take > 0 && OrderBy.IsEmpty)
+                throw new InvalidQueryException("A limited grouped read needs an order, which says which groups come first.");
+        }
+
+        /// <summary>
+        /// The order of a grouped read's groups: the one asked for, followed when the read is
+        /// limited by the group keys it does not name, smallest first. Groups that tie on a measure
+        /// would otherwise make the cut differently from one run to the next; the keys together
+        /// name one group, so the order has no ties left.
+        /// </summary>
+        public List<OrderBy> AggregateOrder()
+        {
+            var order = new List<OrderBy>(OrderBy.Count + GroupBy.Count);
+            foreach (var term in OrderBy)
+                if (!term.IsEmpty)
+                    order.Add(term);
+            if (Take > 0)
+                foreach (var key in GroupBy)
+                    if (!Orders(order, key))
+                        order.Add(new OrderBy(key));
+            return order;
+        }
+
+        private static bool Orders(List<OrderBy> order, string name)
+        {
+            foreach (var term in order)
+                if (string.Equals(term.Column, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        private bool IsGroupKey(string name)
+        {
+            foreach (var key in GroupBy)
+                if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        private bool IsMeasureAlias(string name)
+        {
+            foreach (var measure in Measures)
+                if (string.Equals(measure.Alias, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
         }
 
         /// <summary>The root of a select batch, as opposed to a child collection query.</summary>

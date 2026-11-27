@@ -199,6 +199,109 @@ namespace TFM.Nucleus.IntegrationTests
             Assert.Null(await data.LoadByIDAsync<IntWidget>(widget.ID, Ct));
         }
 
+        /// <summary>
+        /// A context opened with no options had no transaction, and its CommitAsync did nothing,
+        /// so a caller who forgot the option wrote each statement on its own and was not told.
+        /// </summary>
+        [Fact]
+        public async Task CreateContextAsync_WithNoOptions_IsTransactional()
+        {
+            IObjectDataManager data = fixture.RequireManager();
+            var widget = new IntWidget { Name = $"ml-tx-{Guid.NewGuid():N}", Quantity = 1 };
+            _seeded.Add(widget.Name!);
+
+            await using (var context = await data.CreateContextAsync<IntWidget>(token: Ct))
+            {
+                Assert.True(context.HasTransaction);
+                await context.SaveAsync(widget, Ct);
+                await context.RollbackAsync(Ct);
+            }
+            await using (var asked = await data.CreateContextAsync<IntWidget>(ContextOptions.Default, Ct))
+                Assert.False(asked.HasTransaction);
+            // Options that say nothing about a transaction keep it: these set a time limit only.
+            await using (var timed = await data.CreateContextAsync<IntWidget>(new ContextOptions { StatementTimeoutSeconds = 60 }, Ct))
+            {
+                Assert.True(timed.HasTransaction);
+                await timed.RollbackAsync(Ct);
+            }
+            // A provider's own context is as it was: no transaction unless asked for.
+            await using (var own = await fixture.Provider!.CreateContextAsync(new ContextOptions { StatementTimeoutSeconds = 60 }, Ct))
+                Assert.False(own.HasTransaction);
+
+            Assert.Null(await data.LoadByIDAsync<IntWidget>(widget.ID, Ct));
+        }
+
+        /// <summary>
+        /// Work through a context the manager handed out left a [Cacheable] type's cache as it
+        /// was, so a load after the commit answered with the rows from before it.
+        /// </summary>
+        [Fact]
+        public async Task AContextFromTheManager_EvictsTheCacheOfWhatItWrote_OnceItCommits()
+        {
+            IObjectDataManager data = fixture.RequireManager();
+            var kept = new IntCachedTag { Name = $"ml-cache-{Guid.NewGuid():N}" };
+            var rolledBack = new IntCachedTag { Name = $"ml-cache-{Guid.NewGuid():N}" };
+            Assert.DoesNotContain(await data.LoadAsync<IntCachedTag>(null, Ct), t => t.ID == kept.ID);
+
+            await using (var context = await data.CreateContextAsync<IntCachedTag>(token: Ct))
+            {
+                await context.SaveAsync(rolledBack, Ct);
+                await context.RollbackAsync(Ct);
+            }
+            Assert.DoesNotContain(await data.LoadAsync<IntCachedTag>(null, Ct), t => t.ID == rolledBack.ID);
+
+            await using (var context = await data.CreateContextAsync<IntCachedTag>(token: Ct))
+            {
+                await context.SaveAsync(kept, Ct);
+                await context.CommitAsync(Ct);
+            }
+            Assert.Contains(await data.LoadAsync<IntCachedTag>(null, Ct), t => t.ID == kept.ID);
+
+            await using (var context = await data.CreateContextAsync<IntCachedTag>(token: Ct))
+            {
+                Assert.Equal(1, await context.DeleteWhereAsync<IntCachedTag>(t => t.ID == kept.ID, Ct));
+                await context.CommitAsync(Ct);
+            }
+            Assert.DoesNotContain(await data.LoadAsync<IntCachedTag>(null, Ct), t => t.ID == kept.ID);
+        }
+
+        /// <summary>A save through a context the manager handed out was not audited; it is now, and only once it has committed.</summary>
+        [Fact]
+        public async Task AContextFromTheManager_AuditsWhatItSaved_OnlyOnceItCommits()
+        {
+            var shared = fixture.RequireManager();
+            var log = new RecordingLogger();
+            IObjectDataManager data = new ObjectDataManager(fixture.Provider!, shared.ObjectSchema, log);
+            var kept = new IntWidget { Name = $"ml-audit-{Guid.NewGuid():N}", Quantity = 1 };
+            var rolledBack = new IntWidget { Name = $"ml-audit-{Guid.NewGuid():N}", Quantity = 1 };
+            _seeded.Add(kept.Name!);
+            _seeded.Add(rolledBack.Name!);
+
+            await using (var context = await data.CreateContextAsync<IntWidget>(token: Ct))
+            {
+                await context.SaveAsync(rolledBack, Ct);
+                await context.RollbackAsync(Ct);
+            }
+            await using (var context = await data.CreateContextAsync<IntWidget>(token: Ct))
+            {
+                await context.SaveAsync(kept, Ct);
+                Assert.DoesNotContain(log.Messages, m => m.Contains(kept.ID.ToString()));
+                await context.CommitAsync(Ct);
+            }
+
+            Assert.Contains(log.Messages, m => m.StartsWith("Created") && m.Contains(kept.ID.ToString()));
+            Assert.DoesNotContain(log.Messages, m => m.Contains(rolledBack.ID.ToString()));
+        }
+
+        private sealed class RecordingLogger : Microsoft.Extensions.Logging.ILogger<ObjectDataManager>
+        {
+            public List<string> Messages { get; } = [];
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+            public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+                Exception? exception, Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+        }
+
         [Fact]
         public async Task SaveAsync_OfMixedTypes_WritesEachToItsOwnTable()
         {

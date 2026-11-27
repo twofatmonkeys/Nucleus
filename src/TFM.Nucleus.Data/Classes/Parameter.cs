@@ -45,8 +45,41 @@ namespace TFM.Nucleus.Data
         [Obsolete("Use ColumnSchema.")]
         public IDataColumnSchema? columnSchema;
 
-        public string? Variable => _variable;
-        private readonly string? _variable;
+        /// <summary>
+        /// The name the value is bound under. A context numbers the terms of each command it
+        /// runs (<see cref="NameForCommand"/>), so one shape of command is one text however many
+        /// have run. A term nobody numbered names itself on first use, uniquely in the process.
+        /// </summary>
+        public string? Variable => _variable ??= _numbered ? NextVariableName() : null;
+        private string? _variable;
+
+        /// <summary>True for a term named by number; false for one bound under its column's name, which stays.</summary>
+        private readonly bool _numbered;
+
+        /// <summary>The command this term was last numbered for, so a term two statements share is numbered once.</summary>
+        private int _command;
+
+        /// <summary>
+        /// Names the term <c>p</c><paramref name="number"/> for the command <paramref name="command"/>
+        /// identifies, and returns true, unless it keeps a name of its own or the command has
+        /// named it already. Called before the command's text is built and its values bound,
+        /// which both read <see cref="Variable"/>.
+        /// </summary>
+        internal bool NameForCommand(int command, int number)
+        {
+            if (!_numbered || _command == command)
+                return false;
+            _command = command;
+            _variable = NumberedName(number);
+            return true;
+        }
+
+        // The names of the first terms of a command are shared strings: a term then costs no
+        // string of its own, where each used to allocate one when it was built.
+        private static readonly string?[] Names = new string?[4096];
+
+        private static string NumberedName(int number) =>
+            (uint)number < (uint)Names.Length ? Names[number] ??= $"p{number}" : $"p{number}";
 
         public Operator Operator { get; set; }
 
@@ -70,7 +103,7 @@ namespace TFM.Nucleus.Data
 #pragma warning restore CS0618
             _name = colSchema.ColumnName;
             _value = colSchema.GetClrValue(value);
-            _variable = NextVariableName();
+            _numbered = true;
             Operator = Operator.Equals;
         }
         protected internal Parameter(IDataColumnSchema colSchema, object? value, bool isOutputParameter) : this(colSchema, value)
@@ -93,8 +126,13 @@ namespace TFM.Nucleus.Data
         public Parameter(string name, object? value, bool random, Operator oprtr)
         {
             _name = name;
-            _value = value;
-            _variable = random ? NextVariableName() : name;
+            // A list is read once here, into its distinct values, however often the term is
+            // rendered, counted and bound.
+            _value = oprtr == Operator.In && value is System.Collections.IEnumerable list and not string
+                ? Queries.ValueList.From(list)
+                : value;
+            _numbered = random;
+            _variable = random ? null : name;
             Operator = oprtr;
         }
 
@@ -103,7 +141,8 @@ namespace TFM.Nucleus.Data
             return [this];
         }
 
-        // Process-wide counter guarantees variable-name uniqueness within any batched command.
+        // For a term no command numbered: a process-wide counter, unique in any command. A
+        // command's terms are numbered together or not at all, so the two kinds never meet.
         private static int _variableCounter;
         private static string NextVariableName() => $"p{(uint)Interlocked.Increment(ref _variableCounter)}";
 

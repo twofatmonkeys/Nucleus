@@ -80,6 +80,9 @@ namespace TFM.Nucleus.Data.SQLite
             return new SqliteParameter($"{Provider.ParameterPrefix}{name}", SqliteValues.ToDb(value, column));
         }
 
+        protected override DbParameter CreateListParameter(DbCommand command, string name, ValueList values, IQueryParameter source) =>
+            new SqliteParameter($"{Provider.ParameterPrefix}{name}", SqliteValues.ToJsonArray(values, (source as Parameter)?.ColumnSchema as ColumnSchema));
+
         protected override void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema)
         {
             reader.GetValues(row!);

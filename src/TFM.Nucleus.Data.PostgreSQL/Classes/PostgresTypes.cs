@@ -111,6 +111,30 @@ namespace TFM.Nucleus.Data.PostgreSQL
         }
 
         /// <summary>
+        /// Whether a list of <paramref name="elementType"/> is bound as one array. The types here
+        /// each map to one array type whatever the values, which a date does not (its kind picks
+        /// timestamp or timestamptz) and a byte does not (a byte array is a bytea).
+        /// </summary>
+        public static bool HasArray(Type elementType) =>
+            elementType.IsEnum || elementType == typeof(Guid) || elementType == typeof(string) || elementType == typeof(int) ||
+            elementType == typeof(long) || elementType == typeof(short) || elementType == typeof(decimal) ||
+            elementType == typeof(double) || elementType == typeof(bool);
+
+        /// <summary>
+        /// The values of a list as one typed array, each converted as <see cref="ToDb"/> converts
+        /// a single value, so the driver sends the array of that type (a Guid array as uuid[]).
+        /// </summary>
+        public static Array ToDbArray(IReadOnlyList<object> values, ColumnSchema? column)
+        {
+            var first = ToDb(values[0], column, out _)!;
+            var array = Array.CreateInstance(first.GetType(), values.Count);
+            array.SetValue(first, 0);
+            for (var i = 1; i < values.Count; i++)
+                array.SetValue(ToDb(values[i], column, out _), i);
+            return array;
+        }
+
+        /// <summary>
         /// A value read back as the property expects it: a timestamptz arrives as a UTC DateTime
         /// and becomes a DateTimeOffset at offset zero.
         /// </summary>

@@ -177,7 +177,7 @@ type keeping its own hard or soft behaviour. It does not depend on which childre
 **Deleting by predicate.** `DeleteWhere` and `DeleteWhereAsync` delete every matching row without
 loading any. They are on `CoreObject` (static) and on the manager, where each call runs in a
 transaction of its own and evicts the cache, and on `IDataContext`, where the caller owns the
-transaction and no cache is evicted. The predicate is translated as a load's is, with two guards:
+transaction and the cache is evicted once it commits. The predicate is translated as a load's is, with two guards:
 
 - a predicate that matches every row, such as `x => true`, throws `ArgumentException`;
 - one that matches none, such as `x => false`, returns 0 without a round trip.

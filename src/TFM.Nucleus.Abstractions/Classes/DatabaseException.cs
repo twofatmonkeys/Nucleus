@@ -66,6 +66,12 @@ namespace TFM.Nucleus.Data
         Other = 0,
         /// <summary>A connection could not be opened, or broke while in use.</summary>
         ConnectionFailed = 10,
+        /// <summary>
+        /// Every connection the provider may hold to its database was in use, and none came free
+        /// within the pool wait. Never transient: another attempt would wait on the same full pool.
+        /// It has no inner exception, because the provider refused before a driver was asked.
+        /// </summary>
+        PoolExhausted = 15,
         /// <summary>A connection did not open, a statement did not finish, or a lock was not granted, within its time limit.</summary>
         Timeout = 20,
         /// <summary>The engine chose this transaction as a deadlock victim and rolled it back.</summary>

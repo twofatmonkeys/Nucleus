@@ -17,7 +17,8 @@ namespace TFM.Nucleus.Data.SQL
         {
             _provider = provider;
             _catalog = new SqlServerCatalogReader(() => provider.SqlConfig, logger);
-            Dialect = new SqlServerSchemaDialect(new SqlServerFullTextExtras(_catalog, logger));
+            Dialect = new SqlServerSchemaDialect(new SqlServerExtras(
+                new SqlServerFullTextExtras(_catalog, logger), new SqlServerListTypeExtras(_catalog, logger)));
         }
 
         public Type? RootType => _provider.RootType;
