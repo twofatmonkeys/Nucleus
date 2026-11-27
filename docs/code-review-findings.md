@@ -145,9 +145,10 @@ columns; the first three columns measured the same at level 100.
 - OPENJSON allocated less on the client (15.5 MB against 17.7 MB at 39,000 Guids).
 
 Cover: `ListBindingTests`, the `term.in.*` and `delete.ids.long` goldens of all three engines,
-`ListFilterIntegrationTests` on each engine, and `SqlServer\ListParameterLimitTests`. Not covered
-by a test: a read-only schema without the list types failing to start (the check was seen to
-report the types missing and the update to create them, on the test databases).
+`ListFilterIntegrationTests` on each engine, `SqlServer\ListParameterLimitTests`, and
+`SqlServer\ListTypeSchemaTests`, which drops a list type and holds a read-only provider to
+refusing to start (`SchemaNotCurrent`, with the type and its `CREATE TYPE` in the log) and an
+updating one to creating it.
 
 - **A provider whose initialisation failed with the schema in a known state is not initialised
   again by its next use.** `EnsureReady` initialises only while the status is `Uninitialized`, which
