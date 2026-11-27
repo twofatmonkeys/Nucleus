@@ -1,12 +1,12 @@
 {
-  "commit": "8394202-dirty",
+  "commit": "3d2461f",
   "acceptedOn": "2026-11-27",
   "scenarios": {
     "bind 100x10": {
       "allocatedBytes": 1051472
     },
     "delete removed build 50": {
-      "allocatedBytes": 28696
+      "allocatedBytes": 27496
     },
     "insert\u002Bupdate build 100": {
       "allocatedBytes": 641336
