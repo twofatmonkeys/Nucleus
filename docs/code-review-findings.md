@@ -51,6 +51,49 @@ under Fixed ("The database failed was three exception types").
   SQL Server; dates on PostgreSQL; decimals and floating-point numbers on SQLite), now by
   `InvalidQueryException` before the command is sent.
 
+### No two commands had the same text, so SQL Server compiled every save (November 2026)
+
+`Parameter` named its variable from a process-wide counter (`p124816`), which kept names unique
+in a batched command and also made every command's text unique. SQL Server caches a plan by the
+statement's text, so it never reused one: each multi-row save was compiled from scratch, and its
+plan, one statement of up to 127,000 characters and 57 MB of plan, stayed in the cache unused
+until the cache reached its limit (3.2 GB on the test server) and pushed out something else.
+
+Found through the benchmarks, which had two speeds for the same save. A second run of the same
+test process generates the same names in the same order, so it found the first run's plans and
+ran fast, unless a run on the other test database had pushed them out. The fast speed was an
+artefact of running one process twice; the slow one was what an application pays.
+
+A context now numbers the terms of each command before it builds the text
+(`ParameterBinding.NameForCommand`, called in `DbDataContext` where a read, a streamed read, a
+delete, a linked-members check and a write prepare their command). `Parameter.Variable` is `p0`,
+`p1` and on, from a shared table of names, so a term no longer allocates a name of its own; a
+term two statements of a command share is numbered once (`Parameter.NameForCommand`), and a term
+no command numbered still names itself from the counter.
+
+SQL Server Save suite, 5 rounds, median milliseconds, run alternately on two databases so that
+no run found an earlier run's plans:
+
+| Scenario | Before | After |
+|---|---|---|
+| batch 100 (insert then update) | 566 to 606 | 123 to 136 |
+| graph update one line x50 | 331 to 347 | 55 to 62 |
+| nested insert 30x10x3 | 1,151 to 1,261 | 313 to 350 |
+| single x20 (dominated by 40 commits) | 756 to 1,094 | 654 to 1,040 |
+| bulk 20000 (the bulk engine) | 2,763 to 3,506 | 2,941 to 3,058 |
+
+Per run of the suite: 1,100 compilations where there were 2,000 to 2,170, and the plan cache
+settled at 1.25 GB where it sat at its 3.2 GB limit.
+
+- The gain needs a shape to repeat: a batch of 99 rows is another text than one of 100.
+- Measured on SQL Server only. PostgreSQL and SQLite get the same texts; neither was measured for
+  a gain, and neither caches a plan by text unless the driver prepares statements.
+- The benchmarks now clear the database's plan cache before a SQL Server suite measures
+  (`SqlServerFixture.SettleAsync`), so a time no longer depends on what ran before.
+
+Cover: `ParameterNamingTests`; the integration suites, which run every command through the
+numbering on all three engines.
+
 ### A long list of values failed at the parameter limit (November 2026)
 
 `list.Contains(x.Col)` bound one parameter per value, duplicates included, and no read path

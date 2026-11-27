@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
@@ -1077,9 +1077,12 @@ namespace TFM.Nucleus.Data.Providers
                 if (query == null || query is not Query dbQuery)
                     throw new DataContextException("Invalid Query type", DataContextErrorKind.InvalidIQueryType);
                 var command = NewReadCommand();
+                // Named before the text is built, which reads the names.
+                var terms = dbQuery.AllQueryParameters;
+                ParameterBinding.NameForCommand(terms);
                 command.CommandText = dbQuery.BuildQuery();
                 PrepareCommand(command);
-                BindParameters(command, dbQuery.AllQueryParameters);
+                BindParameters(command, terms);
                 var dataSet = dbQuery is SelectQuery { ResultColumns: not null }
                     ? DataSet.Initialize(dbQuery.TableName ?? "", RowNames(dbQuery))
                     : DataSet.Initialize(dbQuery.TableSchema);
@@ -1135,11 +1138,13 @@ namespace TFM.Nucleus.Data.Providers
                 throw new DataContextException("Invalid Query type", DataContextErrorKind.InvalidIQueryType);
 
             var command = NewReadCommand();
+            var terms = dbQuery.AllQueryParameters;
+            ParameterBinding.NameForCommand(terms);
             command.CommandText = dbQuery is SelectQuery select
                 ? select.BuildQuery(includeChildQueries: false)
                 : dbQuery.BuildQuery();
             PrepareCommand(command);
-            BindParameters(command, dbQuery.AllQueryParameters);
+            BindParameters(command, terms);
 
             var row = new StreamingRow(RowNames(dbQuery));
 
@@ -1249,6 +1254,7 @@ namespace TFM.Nucleus.Data.Providers
                 foreach (var chunk in query.FlattenLinkedQueries())
                 {
                     var parameters = DeleteParameters(chunk);
+                    ParameterBinding.NameForCommand(parameters);
                     try
                     {
                         var command = Prepare(chunk.BuildQuery(), parameters, hook: false);
@@ -1288,9 +1294,11 @@ namespace TFM.Nucleus.Data.Providers
                 try
                 {
                     var command = NewReadCommand();
+                    var terms = members.AllQueryParameters;
+                    ParameterBinding.NameForCommand(terms);
                     command.CommandText = members.BuildQuery(includeChildQueries: false);
                     PrepareCommand(command);
-                    BindParameters(command, members.AllQueryParameters);
+                    BindParameters(command, terms);
                     await using var reader = async ? await command.ExecuteReaderAsync(token) : command.ExecuteReader();
                     found = async ? await reader.ReadAsync(token) : reader.Read();
                 }
@@ -1400,7 +1408,10 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private async ValueTask ExecuteWriteAsync(IQuery query, bool async, CancellationToken token)
         {
-            var command = Prepare(query.ToString()!, query.AllQueryParameters);
+            // Named before the text is built, which reads the names.
+            var terms = query.AllQueryParameters;
+            ParameterBinding.NameForCommand(terms);
+            var command = Prepare(query.ToString()!, terms);
             var outputs = query is Query q
                 ? q.AllQueryOutputParameters.ToDictionary(o => o.Variable!, StringComparer.OrdinalIgnoreCase)
                 : [];

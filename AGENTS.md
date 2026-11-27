@@ -227,6 +227,11 @@ table types that are schema extras, so a database without them is not current. A
 a value at a time is refused past `MaxParametersPerCommand` before the command is sent. An empty
 list is folded to false (`FoldBooleanConstants`), so no query runs for it, and a list cannot be
 negated.
+A command's parameters are numbered for that command (`p0`, `p1`, ...) by
+`ParameterBinding.NameForCommand`, which a context calls before it builds the command's text, so
+one shape of command is one text and an engine reuses its plan; a process-wide counter once made
+every text unique and SQL Server compiled every save. A new path that builds a command numbers its
+terms first, then builds the text, then binds.
 `Evaluator.PartialEval` leaves an operator over a query source alone, or `Get<T>().Take(5)` was
 run and replaced by its result before translation. `ChildGraphBinder` is the one place child collections are materialised and
 attached, from either a data set's linked result sets or streamed child queries; it binds each
@@ -464,8 +469,10 @@ run them.
   over the baseline by more than the tolerance and the floor twice in a row, or when it has no
   baseline. Allocations are counted process-wide, so only one benchmark measures at a time per
   machine (`BenchmarkLock`), and a fixture boots its stack under the same lock while benchmarks run.
-  A database suite purges this machine's stale `bench-<machine>-` rows and settles the tables
-  (`DatabaseFixture.SettleAsync`) before it measures.
+  A database suite purges this machine's stale `bench-<machine>-` rows and settles the database
+  (`DatabaseFixture.SettleAsync`) before it measures: a vacuum on PostgreSQL and SQLite, and on
+  SQL Server the database's plan cache cleared, because plans an earlier run left behind once
+  made the same save measure 150 ms or 570 ms.
 - Run them with `tools\Run-Benchmarks.ps1` (`-Accept` writes the baselines). A database suite
   allocates 15-20% more after another suite's heavy work in the same process, so the script gives
   each provider's Save and Read suite a process of its own, and a second database suite in one

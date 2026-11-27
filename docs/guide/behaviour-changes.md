@@ -3,6 +3,22 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## Parameters are numbered per command, so a repeated save reuses its plan
+
+- **No change in what a command does.** The parameters of each command are now named `p0`, `p1`
+  and on, where they were named from a counter that ran for the life of the process
+  (`p124816`). Two saves of the same shape now send the same SQL text, so SQL Server reuses the
+  plan it compiled for the first, where it compiled every multi-row save afresh and kept each
+  plan, of up to 57 MB, in its cache. Measured on a 100-row batch saved twice: about 130 ms
+  against about 570 ms.
+- **SQL text in a log or a trace reads differently**: the names start at `p0` in every command.
+  Anything that matched the old names, or relied on a name being unique across commands, needs
+  changing.
+- **The gain needs the shape to repeat.** A batch of 100 rows and one of 99 are two texts and two
+  plans, as before.
+- **For a provider author:** a context calls `ParameterBinding.NameForCommand` on a command's
+  terms before it builds the text. A term nobody numbered still names itself uniquely.
+
 ## A list of values in a predicate can be any length
 
 - **`ids.Contains(x.ID)` no longer fails on a long list.** A list over about 2,000 values was

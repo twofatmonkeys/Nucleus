@@ -1700,6 +1700,7 @@
                 "  TFM.Nucleus.Data.Queries.ParameterBinding::public static System.Collections.Generic.IReadOnlyList<System.Object> MultiValues(TFM.Nucleus.Data.IQueryParameter)",
                 "  TFM.Nucleus.Data.Queries.ParameterBinding::public static System.Int32 Count(System.Collections.Generic.IEnumerable<TFM.Nucleus.Data.IQueryParameter>, TFM.Nucleus.Data.Providers.IQueryRenderer)",
                 "  TFM.Nucleus.Data.Queries.ParameterBinding::public static System.String ElementName(TFM.Nucleus.Data.IQueryParameter, System.Int32)",
+                "  TFM.Nucleus.Data.Queries.ParameterBinding::public static System.Void NameForCommand(System.Collections.Generic.IEnumerable<TFM.Nucleus.Data.IQueryParameter>)",
                 "  TFM.Nucleus.Data.Queries.ParameterBinding::public static TFM.Nucleus.Data.Queries.ValueList Values(TFM.Nucleus.Data.IQueryParameter)",
                 "  TFM.Nucleus.Data.Queries.Query::System.Boolean AllowDirtyRead { get; set; }",
                 "  TFM.Nucleus.Data.Queries.Query::System.Boolean UseConstraints { get; }",

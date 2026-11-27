@@ -60,6 +60,29 @@ namespace TFM.Nucleus.Data.Queries
         public static IEnumerable<KeyValuePair<string, object?>> Bind(IEnumerable<IQueryParameter?>? terms) =>
             terms == null ? [] : terms.Where(p => p != null && p.UsesVariable).SelectMany(p => Bind(p!));
 
+        private static int _commands;
+
+        /// <summary>
+        /// Numbers the terms of one command, in the order given: <c>p0</c>, <c>p1</c> and on. The
+        /// context calls this before it builds the command's text, so two commands of one shape
+        /// have one text, which an engine that caches plans by text can then reuse. Named by a
+        /// counter for the whole process, as they were, no two commands ever had the same text,
+        /// and every one was compiled afresh.
+        /// </summary>
+        public static void NameForCommand(IEnumerable<IQueryParameter?>? terms)
+        {
+            if (terms == null)
+                return;
+            // Zero is a term no command has numbered.
+            var command = System.Threading.Interlocked.Increment(ref _commands);
+            if (command == 0)
+                command = System.Threading.Interlocked.Increment(ref _commands);
+            var number = 0;
+            foreach (var term in terms)
+                if (term is Parameter parameter && parameter.NameForCommand(command, number))
+                    number++;
+        }
+
         /// <summary>How many command parameters <paramref name="terms"/> bind as <paramref name="renderer"/> writes them.</summary>
         public static int Count(IEnumerable<IQueryParameter?>? terms, IQueryRenderer renderer)
         {
