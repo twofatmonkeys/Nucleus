@@ -839,6 +839,7 @@ namespace TFM.Nucleus
         public virtual void Validate()
         {
             _isValidated = true;
+            _baseValidateRan = true;
             if (!_validatingAsDependent)
             {
                 if (ObjectSchema.HasParentObject)
@@ -872,12 +873,23 @@ namespace TFM.Nucleus
         /// </summary>
         private bool _validatingAsDependent;
 
+        /// <summary>
+        /// Set by <see cref="Validate"/> itself, so a save can tell that an override called
+        /// <c>base.Validate()</c> even when the override went on to set a property, which clears
+        /// <see cref="_isValidated"/>. A value an override sets is part of its validation: the
+        /// save marks the object valid once the override returns.
+        /// </summary>
+        private bool _baseValidateRan;
+
         private void LinkedObjectValidate()
         {
             _validatingAsDependent = true;
+            _baseValidateRan = false;
             try
             {
                 Validate();
+                if (_baseValidateRan)
+                    _isValidated = true;
             }
             finally
             {
@@ -902,6 +914,7 @@ namespace TFM.Nucleus
         void ICoreObject.PrepareForSave()
         {
             _dependentsValidatedBySave = true;
+            _baseValidateRan = false;
             try
             {
                 Validate();
@@ -910,6 +923,13 @@ namespace TFM.Nucleus
             {
                 _dependentsValidatedBySave = false;
             }
+            if (!_baseValidateRan)
+                throw new InvalidOperationException(
+                    $"{this} has not been validated and cannot be saved. An override of Validate() must call " +
+                    $"base.Validate() so that the object is marked valid.");
+            // A property the override set after base.Validate() cleared the mark; the override's
+            // own changes are part of its validation.
+            _isValidated = true;
             // The one walk of the dependents, after the object's own rules as Validate() orders it.
             HasChangedLinkedObjects(out var dependents);
             if (dependents != null)
@@ -946,10 +966,6 @@ namespace TFM.Nucleus
 
         private void EnsureSaveable()
         {
-            if (!_isValidated)
-                throw new InvalidOperationException(
-                    $"{this} has not been validated and cannot be saved. An override of Validate() must call " +
-                    $"base.Validate() so that the object is marked valid.");
             if (IsReadOnly)
                 throw new ReadOnlyException($"{this} is locked as read only.");
         }

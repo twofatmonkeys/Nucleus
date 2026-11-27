@@ -8,9 +8,11 @@ namespace TFM.Nucleus.Data
 {
     /// <summary>
     /// A read that returns rows of values rather than entities: some columns of each matching row,
-    /// ordered and paged in the database (<see cref="Select"/>, <see cref="OrderBy"/>,
+    /// ordered and paged in the database (<see cref="Select"/>, <see cref="OrderBy(Expression{Func{T, object}})"/>,
     /// <see cref="ToPageAsync"/>), or one row per group with figures worked out in the database
-    /// (<see cref="GroupBy"/>, <see cref="Count(string)"/>, <see cref="Max"/> and the rest). Only what
+    /// (<see cref="GroupBy"/>, <see cref="Count(string)"/>, <see cref="Max"/> and the rest), ordered
+    /// and limited to the first groups there too (<see cref="OrderByDescending(string)"/>,
+    /// <see cref="Take"/>). Only what
     /// is asked for is read, so a column that is never selected is never transferred. The rows
     /// cannot be saved: a partial entity would write nulls over what it never read.
     /// </summary>
@@ -23,7 +25,8 @@ namespace TFM.Nucleus.Data
         private readonly IDataProvider _provider;
         private readonly Expression _predicate;
         private readonly List<string> _select = [];
-        private readonly List<(string Property, bool Descending)> _order = [];
+        private readonly List<(string Name, bool Descending, bool IsMeasure)> _order = [];
+        private int _take;
         private readonly List<string> _groupBy = [];
         private readonly List<(MeasureKind Kind, string? Property, string Alias)> _measures = [];
         private bool _includeDeleted;
@@ -69,21 +72,60 @@ namespace TFM.Nucleus.Data
             return this;
         }
 
-        /// <summary>Orders the rows by <paramref name="property"/>, smallest first, after any order already given.</summary>
-        public RowQuery<T> OrderBy(Expression<Func<T, object?>> property) => Order(property, descending: false);
+        /// <summary>
+        /// Orders the rows by <paramref name="property"/>, smallest first, after any order already
+        /// given. On a grouped read the property is one of its group keys.
+        /// </summary>
+        public RowQuery<T> OrderBy(Expression<Func<T, object?>> property) => Order(PropertyName(property), descending: false, isMeasure: false);
 
-        /// <summary>Orders the rows by <paramref name="property"/>, largest first, after any order already given.</summary>
-        public RowQuery<T> OrderByDescending(Expression<Func<T, object?>> property) => Order(property, descending: true);
+        /// <summary>
+        /// Orders the rows by <paramref name="property"/>, largest first, after any order already
+        /// given. On a grouped read the property is one of its group keys.
+        /// </summary>
+        public RowQuery<T> OrderByDescending(Expression<Func<T, object?>> property) => Order(PropertyName(property), descending: true, isMeasure: false);
 
-        /// <summary>The same as <see cref="OrderBy"/>: a further order for rows the earlier ones tie.</summary>
-        public RowQuery<T> ThenBy(Expression<Func<T, object?>> property) => Order(property, descending: false);
+        /// <summary>The same as <see cref="OrderBy(Expression{Func{T, object}})"/>: a further order for rows the earlier ones tie.</summary>
+        public RowQuery<T> ThenBy(Expression<Func<T, object?>> property) => Order(PropertyName(property), descending: false, isMeasure: false);
 
-        /// <summary>The same as <see cref="OrderByDescending"/>: a further order for rows the earlier ones tie.</summary>
-        public RowQuery<T> ThenByDescending(Expression<Func<T, object?>> property) => Order(property, descending: true);
+        /// <summary>The same as <see cref="OrderByDescending(Expression{Func{T, object}})"/>: a further order for rows the earlier ones tie.</summary>
+        public RowQuery<T> ThenByDescending(Expression<Func<T, object?>> property) => Order(PropertyName(property), descending: true, isMeasure: false);
+
+        /// <summary>
+        /// Orders the groups of a grouped read by the measure named <paramref name="measure"/>, the
+        /// alias it was given, smallest first, after any order already given.
+        /// </summary>
+        public RowQuery<T> OrderBy(string measure) => Order(MeasureName(measure), descending: false, isMeasure: true);
+
+        /// <summary>
+        /// Orders the groups of a grouped read by the measure named <paramref name="measure"/>, the
+        /// alias it was given, largest first, after any order already given.
+        /// </summary>
+        public RowQuery<T> OrderByDescending(string measure) => Order(MeasureName(measure), descending: true, isMeasure: true);
+
+        /// <summary>The same as <see cref="OrderBy(string)"/>: a further order for groups the earlier ones tie.</summary>
+        public RowQuery<T> ThenBy(string measure) => Order(MeasureName(measure), descending: false, isMeasure: true);
+
+        /// <summary>The same as <see cref="OrderByDescending(string)"/>: a further order for groups the earlier ones tie.</summary>
+        public RowQuery<T> ThenByDescending(string measure) => Order(MeasureName(measure), descending: true, isMeasure: true);
+
+        /// <summary>
+        /// Reads only the first <paramref name="count"/> rows of the read's order, cut in the
+        /// database. Rows with no order are taken in the order they were written in. A grouped
+        /// read needs an order to take from, and its groups that tie on it are then ordered by
+        /// their keys, so the same groups come back every time. Not with <see cref="ToPageAsync"/>,
+        /// which cuts for itself.
+        /// </summary>
+        public RowQuery<T> Take(int count)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+            _take = count;
+            return this;
+        }
 
         /// <summary>
         /// Returns one row per distinct combination of <paramref name="properties"/>, each named by
-        /// its property, with the measures asked for. The groups come back in no particular order.
+        /// its property, with the measures asked for. The groups come back in no particular order
+        /// unless the read orders them, by a key or by a measure.
         /// </summary>
         public RowQuery<T> GroupBy(params Expression<Func<T, object?>>[] properties)
         {
@@ -151,14 +193,17 @@ namespace TFM.Nucleus.Data
         /// <summary>
         /// One page of rows and how many rows match in all, in one round trip. Every page comes
         /// from one order: the read's own, then the order the rows were written in to break its
-        /// ties, or that order alone when the read asks for none. A grouped read is not paged.
+        /// ties, or that order alone when the read asks for none. A grouped read is not paged:
+        /// order it and <see cref="Take"/> its first groups.
         /// </summary>
         public async Task<RowPage> ToPageAsync(int skip, int take, CancellationToken cancellationToken = default)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(skip);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
             if (IsAggregate)
-                throw new InvalidOperationException("A grouped read is not paged; order and page its groups in memory.");
+                throw new InvalidOperationException("A grouped read is not paged; order it and Take its first groups.");
+            if (_take > 0)
+                throw new InvalidOperationException("A read limited by Take is not paged as well; ToPageAsync takes the page size.");
             if (ExpressionParser.Classify(_predicate) == PredicateShape.MatchesNone)
                 return new RowPage([], 0, skip, take);
             var query = Build();
@@ -225,8 +270,8 @@ namespace TFM.Nucleus.Data
             {
                 if (_select.Count > 0)
                     throw new InvalidOperationException("A grouped read returns its group keys and measures; do not Select as well.");
-                if (_order.Count > 0)
-                    throw new InvalidOperationException("A grouped read is not ordered; order its groups in memory.");
+                if (_take > 0 && _order.Count == 0)
+                    throw new InvalidOperationException("A limited grouped read needs an order, which says which groups come first. Order it by a group key or a measure.");
                 var keys = _groupBy.Select(p => Column(table, p)).ToList();
                 var measures = _measures.Select(m => new Measure(m.Kind, m.Property == null ? null : Column(table, m.Property), m.Alias)).ToList();
                 var names = _groupBy.Concat(measures.Select(m => m.Alias)).ToList();
@@ -236,6 +281,20 @@ namespace TFM.Nucleus.Data
                 query.GroupBy = [.. keys.Select(k => k.ColumnName)];
                 query.Measures = measures;
                 query.ResultColumns = [.. _groupBy.Select((p, i) => new ResultColumn(p, keys[i])), .. measures.Select(m => new ResultColumn(m.Alias, m.ValueColumn))];
+                foreach (var (name, descending, isMeasure) in _order)
+                {
+                    if (isMeasure)
+                    {
+                        // Ordered by the alias as the measure declared it, which is how it is selected.
+                        var measure = measures.Find(m => string.Equals(m.Alias, name, StringComparison.OrdinalIgnoreCase))
+                            ?? throw new InvalidOperationException($"The read has no measure named '{name}' to order by.");
+                        query.OrderBy.Add(measure.Alias, descending ? SortDirection.Descending : SortDirection.Ascending);
+                    }
+                    else if (_groupBy.Contains(name, StringComparer.Ordinal))
+                        query.AddOrderBy(name, descending);
+                    else
+                        throw new InvalidOperationException($"A grouped read is ordered by a group key or a measure; {typeof(T).Name}.{name} is not one of its keys.");
+                }
             }
             else
             {
@@ -246,16 +305,27 @@ namespace TFM.Nucleus.Data
                 var columns = _select.Select(p => Column(table, p)).ToList();
                 query.Columns = [.. columns.Select(c => c.ColumnName)];
                 query.ResultColumns = [.. _select.Select((p, i) => new ResultColumn(p, columns[i]))];
-                foreach (var (property, descending) in _order)
-                    query.AddOrderBy(property, descending);
+                foreach (var (name, descending, isMeasure) in _order)
+                {
+                    if (isMeasure)
+                        throw new InvalidOperationException($"'{name}' names a measure, and the read has none; order it by a property.");
+                    query.AddOrderBy(name, descending);
+                }
             }
+            query.Take = _take;
             return query;
         }
 
-        private RowQuery<T> Order(Expression<Func<T, object?>> property, bool descending)
+        private RowQuery<T> Order(string name, bool descending, bool isMeasure)
         {
-            _order.Add((PropertyName(property), descending));
+            _order.Add((name, descending, isMeasure));
             return this;
+        }
+
+        private static string MeasureName(string measure)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(measure);
+            return measure;
         }
 
         private RowQuery<T> Add(MeasureKind kind, Expression<Func<T, object?>>? property, string alias)

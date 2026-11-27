@@ -29,6 +29,14 @@ namespace TFM.Nucleus.Data.Providers
         /// commands and are never appended.
         /// </summary>
         string DeleteWhere(DeleteWhereQuery query);
+
+        /// <summary>
+        /// Whether this renderer writes a multi-valued term (<see cref="ParameterBinding.IsMultiValued"/>)
+        /// against one parameter holding every value, which the context then binds through
+        /// <c>CreateListParameter</c>, rather than one parameter per value. The one place the
+        /// choice is made: the text and the binding both ask here. False by default.
+        /// </summary>
+        bool BindsAsList(IQueryParameter term) => false;
     }
 
     /// <summary>

@@ -26,8 +26,12 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   cancellation) marks it for rollback, but an exception in your own code between two saves does
   not, so disposing it commits the first and logs a warning. Set `RequireCommit` on the provider's
   options and a context disposed without a commit rolls back instead; v3 makes that the only
-  behaviour. Work done through a caller-owned context evicts no `[Cacheable]` cache. A single
+  behaviour. A single
   type's batch belongs in `SaveAsync(objs, token)` instead, which has neither problem.
+
+- **A context a provider hands out directly is not the manager's.** Only a context from
+  `IObjectDataManager.CreateContextAsync<T>` audits what it saved and evicts the `[Cacheable]`
+  caches of what it wrote. Application code has no reason to take one from a provider.
 - **A child context shares its root's connection.** A context opened with `ContextOptions.Parent`
   runs on its root's connection and transaction, so the tree commits or rolls back as one. Use one
   context of a tree at a time; they cannot run commands concurrently.
@@ -53,12 +57,31 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
 - **After `CommitOutcomeUnknown`, the objects are left unsaved.** The commit may have taken effect.
   Load the rows to find out before saving again: a new object that did commit fails a second insert
   with a `UniqueViolationException` on its key.
+- **A provider whose first initialisation failed is initialised again on its next use only while
+  the database could not be reached.** A failure that left the schema in a known state (not
+  current, or an error while updating it) is reported on every use until the application calls
+  `InitializeDataProviderAsync` again.
 - **SQLite has no statement time limit.** Its driver's command timeout is the wait for the write
   lock (`BusyTimeoutSeconds`), so `StatementTimeoutSeconds` is ignored, a long statement runs until
   it finishes, and a cancelled token does not stop one under way.
 
 ## Reading
 
+- **On SQL Server, a long list of dates, decimals or mixed types is refused.** A list goes as one
+  parameter for Guids, `int` and `long` values, enums and text up to 4,000 characters. A list of
+  anything else still sends a parameter per value, and over the provider's limit (about 2,000
+  values) it throws `InvalidQueryException` before the query runs. Compare a range instead
+  (`x.Day >= from && x.Day < to`), or split that list. The other engines have the same rule for
+  fewer types: PostgreSQL for dates, at 30,000 values, and SQLite for decimals and floating-point
+  numbers, at 2,000.
+- **A list cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`.
+- **On SQL Server, a long text list is compared under the database's default collation**, the
+  collation its list type was created with. A column given another collation by hand fails the
+  query with SQL Server's collation conflict error once the list passes 200 values. Nucleus
+  creates every text column with the default, so this needs a column altered outside it.
+- **A projection throws `ArgumentException`.** `Get<T>().Select(...)` to anything but the entity
+  fails with an `ArgumentException` about a generic constraint, not the `NotSupportedException`
+  the other untranslated operators throw. Project in memory, or use a row read.
 - **Text sorts by each engine's own rules.** An `OrderBy` on a text column is written as the
   engine's plain `ORDER BY`, so the order follows the column's collation: case-insensitive under
   SQL Server's usual collations, the database's locale on PostgreSQL, and by code point on SQLite,

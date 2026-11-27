@@ -162,11 +162,15 @@ namespace TFM.Nucleus.Data.SQL
         {
             q.EnsureAggregateShape();
             var terms = q.GroupBy.Select(c => $"[{c}]").Concat(q.Measures.Select(MeasureTerm));
-            var sb = new StringBuilder($"SELECT {string.Join(" ,", terms)} FROM {q.TableName}{TableHint(q)}");
+            var sb = new StringBuilder($"SELECT {(q.Take > 0 ? $"TOP {q.Take} " : string.Empty)}{string.Join(" ,", terms)} FROM {q.TableName}{TableHint(q)}");
             if (SelectWhere(q, null) is { } where)
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(" ,", q.GroupBy.Select(c => $"[{c}]")));
+            // A key is ordered as its column and a measure by its alias, which the engine resolves
+            // against the select list.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(" ,", q.AggregateOrder().Select(OrderByTerm)));
             return sb.ToString();
         }
 
@@ -233,17 +237,40 @@ namespace TFM.Nucleus.Data.SQL
         /// Skip paging via a ROW_NUMBER window, valid at every supported SQL Server compatibility
         /// level, unlike OFFSET/FETCH (110+). Unordered queries page by [ClusterID].
         /// </summary>
+        /// <remarks>
+        /// A page in the caller's order numbers the rows by their ClusterID alone and joins the
+        /// page's rows back by it, so what is sorted and skipped is the order's columns and a key,
+        /// not every column. Measured on 100,000 wide rows: a page 50,000 rows deep over an indexed
+        /// order read 264 pages against 153,392, and an order that needs a sort took a third of the
+        /// CPU. A page in insertion order is not written this way: the window walks the clustered
+        /// index, which is the rows, so the join back would only add a seek per row.
+        /// </remarks>
         private StringBuilder PagedSelect(SelectQuery q)
         {
             q.EnsurePageable();
-            var columnList = string.Join(" ,", q.Columns.Select(c => $"[{c}]"));
-            var sb = new StringBuilder($"SELECT {columnList} FROM ").Append(PagedWindow(q, columnList));
+            StringBuilder sb;
+            if (q.OrderBy.IsEmpty)
+            {
+                var columnList = string.Join(" ,", q.Columns.Select(c => $"[{c}]"));
+                sb = new StringBuilder($"SELECT {columnList} FROM ").Append(PagedWindow(q, columnList));
+            }
+            else
+            {
+                var clusterId = $"[{TableSchema.ClusterIdColumn}]";
+                sb = new StringBuilder("SELECT ").Append(string.Join(" ,", q.Columns.Select(c => $"[__rows].[{c}]")))
+                    .Append(" FROM ")
+                    .Append(PagedWindow(q, clusterId,
+                        $" INNER JOIN {q.TableName} AS [__rows]{TableHint(q)} ON [__rows].{clusterId} = [__paged].{clusterId}"));
+            }
             sb.Append(" ORDER BY [__paged].[__RowNumber]");
             return sb;
         }
 
-        /// <summary>The ROW_NUMBER window over a query's rows, cut to the requested page.</summary>
-        private StringBuilder PagedWindow(SelectQuery q, string columnList)
+        /// <summary>
+        /// The ROW_NUMBER window over a query's rows, cut to the requested page, with
+        /// <paramref name="join"/> between the window and the cut.
+        /// </summary>
+        private StringBuilder PagedWindow(SelectQuery q, string columnList, string? join = null)
         {
             // A paged root always has an order: its own, or insertion order.
             var orderBy = RootOrderBy(q) ?? $"ORDER BY {InsertionOrder}";
@@ -253,7 +280,7 @@ namespace TFM.Nucleus.Data.SQL
             var where = SelectWhere(q, null);
             if (where != null)
                 sb.Append(' ').Append(where);
-            sb.Append($") AS [__paged] WHERE [__paged].[__RowNumber] > {q.Skip}");
+            sb.Append($") AS [__paged]{join} WHERE [__paged].[__RowNumber] > {q.Skip}");
             if (q.Take > 0)
                 sb.Append($" AND [__paged].[__RowNumber] <= {q.Skip + q.Take}");
             return sb;
@@ -517,15 +544,20 @@ namespace TFM.Nucleus.Data.SQL
             return $"{LeftOperand(p)}{OperatorString(p)}{RightOperandExpression(p)}";
         }
 
+        /// <summary>A long list of a type with a list type is one table-valued parameter (<see cref="SqlServerListTypes"/>).</summary>
+        public bool BindsAsList(IQueryParameter term) => SqlServerListTypes.For(term) != null;
+
         /// <summary>
-        /// IN over the term's values, one command parameter per element. An empty list renders
-        /// as a no-match predicate.
+        /// IN over the term's values: the rows of one table-valued parameter for a long list, or
+        /// one command parameter per value. An empty list renders as a no-match predicate.
         /// </summary>
         private static string InCondition(Parameter p)
         {
-            var count = ParameterBinding.MultiValues(p).Count;
+            var count = ParameterBinding.Values(p).Count;
             if (count == 0)
                 return "1 = 0";
+            if (SqlServerListTypes.For(p) != null)
+                return $"{LeftOperand(p)} IN (SELECT [Value] FROM {VariableReference(p)})";
             var references = Enumerable.Range(0, count).Select(i => $"@{ParameterBinding.ElementName(p, i)}");
             return $"{LeftOperand(p)} IN ({string.Join(",", references)})";
         }

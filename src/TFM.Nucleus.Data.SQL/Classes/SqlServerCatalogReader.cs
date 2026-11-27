@@ -272,6 +272,19 @@ namespace TFM.Nucleus.Data.SQL
             }
         }
 
+        /// <summary>The names of the table types in the dbo schema.</summary>
+        internal async ValueTask<IReadOnlyList<string>> ReadTableTypesAsync(bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await ReadAll("SELECT name FROM sys.table_types WHERE is_user_defined = 1 AND schema_id = SCHEMA_ID('dbo')", r => r.GetString(0), async, cancellationToken);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error retrieving table types from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
         internal async ValueTask CreateFullTextCatalogAsync(string catalogName, bool async, CancellationToken cancellationToken)
         {
             try

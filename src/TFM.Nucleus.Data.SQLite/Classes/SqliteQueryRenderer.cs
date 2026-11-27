@@ -63,8 +63,15 @@ namespace TFM.Nucleus.Data.SQLite
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(", ", q.GroupBy.Select(Quote)));
+            // A key is ordered as its column and a measure by its alias, a result column name.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(", ", q.AggregateOrder().Select(OrderTerm)));
+            if (q.Take > 0)
+                sb.Append($" LIMIT {q.Take}");
             return sb.ToString();
         }
+
+        private static string OrderTerm(OrderBy o) => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}";
 
         private static string MeasureTerm(Measure m)
         {
@@ -118,7 +125,7 @@ namespace TFM.Nucleus.Data.SQLite
         {
             if (!q.OrderBy.IsEmpty)
             {
-                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(o => $"{Quote(o.Column)} {(o.IsDescending ? "DESC" : "ASC")}"));
+                var order = "ORDER BY " + string.Join(", ", q.OrderBy.Where(o => !o.IsEmpty).Select(OrderTerm));
                 return q.BreaksTiesByInsertion ? $"{order}, {InsertionOrder}" : order;
             }
             return q.OrdersByInsertion ? $"ORDER BY {InsertionOrder}" : null;
@@ -314,12 +321,27 @@ namespace TFM.Nucleus.Data.SQLite
             return $"{column} {op} {RightOperand(p)}";
         }
 
-        /// <summary>IN over the term's values, one parameter per element; an empty list matches nothing.</summary>
+        /// <summary>
+        /// A list of one type whose stored form JSON can carry is one parameter, a JSON array,
+        /// whatever its length. The driver binds each statement by searching all its parameters,
+        /// so a parameter per value costs more the longer the list.
+        /// </summary>
+        public bool BindsAsList(IQueryParameter term) => IsJsonTerm(term);
+
+        private static bool IsJsonTerm(IQueryParameter term) =>
+            ParameterBinding.IsMultiValued(term) && ParameterBinding.Values(term) is { Count: > 0, ElementType: { } type } && SqliteValues.HasJsonForm(type);
+
+        /// <summary>
+        /// The column against the term's values: the elements of one JSON array parameter, or IN
+        /// over a parameter per value for a list JSON cannot carry. An empty list matches nothing.
+        /// </summary>
         private static string InCondition(Parameter p, string column)
         {
-            var count = ParameterBinding.MultiValues(p).Count;
+            var count = ParameterBinding.Values(p).Count;
             if (count == 0)
                 return "1 = 0";
+            if (IsJsonTerm(p))
+                return $"{column} IN (SELECT value FROM json_each(@{p.Variable}))";
             var references = Enumerable.Range(0, count).Select(i => $"@{ParameterBinding.ElementName(p, i)}");
             return $"{column} IN ({string.Join(", ", references)})";
         }

@@ -218,7 +218,7 @@ namespace TFM.Nucleus.Tests
         public List<CancellationToken> ExecutionTokens { get; } = [];
         public bool RolledBack { get; private set; }
 
-        public bool HasTransaction => options.UseTransaction;
+        public bool HasTransaction => options.UseTransaction == true;
         public bool WatchesForChanges => options.WatchForChanges;
         public bool HasDependency => options.WatchForChanges;
         public bool HasChildren => false;

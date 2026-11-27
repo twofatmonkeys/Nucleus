@@ -95,7 +95,7 @@ namespace TFM.Nucleus.Tests
         [Fact]
         public void NucleusExceptions_Cancellations_AndDefects_AreNotDatabaseFailures()
         {
-            Assert.False(DatabaseFailures.IsDatabaseFailure(new DataContextException("m", DataContextErrorKind.PoolExhausted)));
+            Assert.False(DatabaseFailures.IsDatabaseFailure(new DataContextException("m", DataContextErrorKind.TransactionDoomed)));
             Assert.False(DatabaseFailures.IsDatabaseFailure(new DatabaseException("m", DatabaseErrorKind.Other, false, new TestDbException())));
             Assert.False(DatabaseFailures.IsDatabaseFailure(new OperationCanceledException("m", new TestDbException())));
             Assert.False(DatabaseFailures.IsDatabaseFailure(new InvalidOperationException("a defect")));
@@ -150,6 +150,7 @@ namespace TFM.Nucleus.Tests
     {
         [Theory]
         [InlineData(-2, 16, DatabaseErrorKind.Timeout, true)]
+        [InlineData(258, 20, DatabaseErrorKind.Timeout, true)]
         [InlineData(1205, 13, DatabaseErrorKind.Deadlock, true)]
         [InlineData(3960, 16, DatabaseErrorKind.SerializationFailure, true)]
         [InlineData(2601, 14, DatabaseErrorKind.UniqueViolation, false)]

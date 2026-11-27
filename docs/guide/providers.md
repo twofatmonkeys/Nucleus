@@ -30,6 +30,19 @@ services.AddNucleusSqlServerDataProvider(options =>
 });
 ```
 
+The provider keeps four table types in the `dbo` schema beside its tables: `NucleusGuidList`,
+`NucleusIntList`, `NucleusBigIntList` and `NucleusTextList`. A predicate that compares a column
+with a list of more than 200 values (`ids.Contains(x.ID)`) sends the list as one table-valued
+parameter of one of them, where a shorter list sends a parameter per value; see
+[querying](querying.md#lists-of-values).
+
+- The first start after upgrading creates them, like a missing table.
+- Under `ReadOnlySchema` the provider does not create them, and a database without them is not
+  current, so the provider does not start. Its log names the missing types and the statement that
+  creates each; run those once.
+- A login that does not own the schema needs `EXECUTE` on each type
+  (`GRANT EXECUTE ON TYPE::[dbo].[NucleusGuidList] TO [login]`).
+
 ## PostgreSQL
 
 `TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16 or later.
@@ -173,11 +186,11 @@ inside a scope as before.
 | `Username`, `Password` | none | SQL authentication credentials. |
 | `UseIntegratedSecurity` | `false` | Use Windows authentication and ignore the credentials above. |
 | `ConnectionString` | none | A raw connection string that bypasses the builder, which is how Azure AD and managed identity are configured. `Database` is still used for schema introspection. Its `Max Pool Size` is replaced with `MaxConnectionPoolSize` and its `Enlist` with `false`. |
-| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with `PoolExhausted`. |
+| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with a `DatabaseException` of kind `PoolExhausted`. |
 | `PacketSize` | `1500` | Network packet size. |
 | `MaxThreadsForLargeQuery` | `12` | Obsolete and ignored. An oversized write the bulk engine cannot take runs its commands one after another on its own transaction. |
 | `MaxParametersPerCommand` | `2000` | The most parameters one command carries: a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
-| `PoolWaitTimeoutSeconds` | `3` | How long opening a context or a change subscription on the asynchronous path waits for a free connection under `MaxConnectionPoolSize` before it fails with a `DataContextException` of kind `PoolExhausted`. `0` fails at once; the synchronous path never waits. It is not a statement timeout; that is `StatementTimeoutSeconds`. `CommandTimeoutSeconds` is its obsolete name. |
+| `PoolWaitTimeoutSeconds` | `3` | How long opening a context or a change subscription on the asynchronous path waits for a free connection under `MaxConnectionPoolSize` before it fails with a `DatabaseException` of kind `PoolExhausted`, which is never transient. `0` fails at once; the synchronous path never waits. It is not a statement timeout; that is `StatementTimeoutSeconds`. `CommandTimeoutSeconds` is its obsolete name. |
 | `StatementTimeoutSeconds` | `30` | The time limit of each read, write and delete a context runs, the driver's own default. A statement over it fails with a `DatabaseException` of kind `Timeout`. A context can take its own (`ContextOptions.StatementTimeoutSeconds`). `0` means no limit; a negative value is refused. See [Time limits](saving.md#time-limits). |
 | `ConnectAttempts` | `3` | Attempts at opening a connection (a context's, a change subscription's, or one the schema check reads the catalog on) when the failure is transient, the first included, with an exponential back-off. Every attempt shares the connect timeout, so retries never make an open wait longer than it: a quick failure, such as a refused connection while the server restarts, is retried within it. |
 | `RetryAttempts` | `1` | Attempts at an operation the manager runs on a context of its own (a save, a delete, a load, a row read) when it fails transiently having applied nothing, the first included, with the same back-off. `1` attempts each once, so the policy is off until set. Never applied on a caller-owned context. See [Retries](saving.md#retries). |
@@ -204,6 +217,27 @@ network error, a server failing over or paused); SqlClient itself never says an 
 registration, replacing any value set on the provider, and is sent to SQL Server and PostgreSQL as
 the application name when the provider builds the connection string.
 
+A provider's options are ordinary .NET options, so `services.Configure<...>` after the registration
+layers more settings on, here over the registration that reads the environment:
+
+<!-- sample: register-layered -->
+```csharp
+// Server, database, user name and password from SQL_SERVER, SQL_DATABASE, SQL_USERNAME and SQL_PASSWORD.
+services.AddNucleusSqlServerDataProvider();
+// The other options are layered on with the options pattern. A later Configure wins.
+services.Configure<SQLConfiguration>(options =>
+{
+    options.RetryAttempts = 3;
+    options.RequireCommit = true;
+});
+```
+
+This reaches the provider registered without a root type. A provider registered for a root type
+(`AddNucleusSqlServerDataProvider<TRoot>(...)` or the `Type` overload) keeps its options under a
+name of its own, which a plain `Configure` does not reach: put its settings in its registration.
+Do not set `AppName` in a later `Configure`; it runs after Nucleus fills the name and would
+replace it.
+
 ### PostgresConfiguration
 
 | Option | Default | Meaning |
@@ -218,7 +252,7 @@ the application name when the provider builds the connection string.
 | `ConnectAttempts` | `3` | As for SQL Server, for a failure the driver or the server's SQLSTATE marks transient. `ConnectRetryCount` is its obsolete name. |
 | `RetryAttempts` | `1` | As for SQL Server. |
 | `ConnectTimeoutSeconds` | `3` | How long opening a connection waits before it fails, retries included. `0` waits indefinitely; a negative value is refused. Ignored when `ConnectionString` is set, whose own `Timeout` is used the same way. |
-| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with `PoolExhausted`. |
+| `MaxConnectionPoolSize` | `100` | The most connections the provider holds to its database. Its open contexts and its change subscriptions share it, and the driver's pool is sized to it, also when `ConnectionString` is set. When all are held, a new context or subscription waits `PoolWaitTimeoutSeconds` and then fails with a `DatabaseException` of kind `PoolExhausted`. |
 | `MaxThreadsForLargeQuery` | `12` | As for SQL Server: obsolete and ignored. |
 | `MaxParametersPerCommand` | `30000` | The most parameters one command carries (PostgreSQL allows 65,535): a batch over it is split, and a larger insert or update batch goes to the bulk engine. |
 | `PoolWaitTimeoutSeconds` | `3` | As for SQL Server. |
