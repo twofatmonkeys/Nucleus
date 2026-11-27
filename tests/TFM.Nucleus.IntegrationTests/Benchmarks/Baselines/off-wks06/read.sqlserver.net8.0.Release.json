@@ -1,0 +1,54 @@
+{
+  "commit": "30a7799-dirty",
+  "acceptedOn": "2026-11-27",
+  "scenarios": {
+    "by id x50": {
+      "medianMs": 301.26,
+      "allocatedBytes": 12774232
+    },
+    "children by parent x20": {
+      "medianMs": 124.11,
+      "allocatedBytes": 775376
+    },
+    "count by parent x20": {
+      "medianMs": 111.41,
+      "allocatedBytes": 685136
+    },
+    "flat 1000": {
+      "medianMs": 89.96,
+      "allocatedBytes": 1083704
+    },
+    "flat 1000 sync": {
+      "medianMs": 96.35,
+      "allocatedBytes": 1521088
+    },
+    "graph 100 children excluded": {
+      "medianMs": 10.47,
+      "allocatedBytes": 172808
+    },
+    "graph 100x10": {
+      "medianMs": 61.42,
+      "allocatedBytes": 1336968
+    },
+    "lazy first read x20": {
+      "medianMs": 118.27,
+      "allocatedBytes": 5373632
+    },
+    "lazy include 100": {
+      "medianMs": 59.13,
+      "allocatedBytes": 1318984
+    },
+    "lazy listing 100": {
+      "medianMs": 11.26,
+      "allocatedBytes": 170528
+    },
+    "paged 50 of 1000 with total": {
+      "medianMs": 82.3,
+      "allocatedBytes": 345096
+    },
+    "stream 1000": {
+      "medianMs": 89.08,
+      "allocatedBytes": 1064680
+    }
+  }
+}
