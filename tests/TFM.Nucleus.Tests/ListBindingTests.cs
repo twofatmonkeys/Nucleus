@@ -23,6 +23,28 @@ namespace TFM.Nucleus.Tests
             Assert.Equal(typeof(int), list.ElementType);
         }
 
+        [Theory]
+        [InlineData(3)]
+        [InlineData(16)]
+        [InlineData(17)]
+        [InlineData(500)]
+        public void AValueList_DropsRepeats_AtAnyLength(int distinct)
+        {
+            // Each value three times over, from a source that cannot say how many it holds.
+            static IEnumerable<int> Thrice(int n)
+            {
+                for (var round = 0; round < 3; round++)
+                    for (var i = 0; i < n; i++)
+                        yield return i;
+            }
+
+            var counted = ValueList.From(Thrice(distinct).ToList());
+            var uncounted = ValueList.From(Thrice(distinct));
+
+            Assert.Equal(Enumerable.Range(0, distinct), counted.Cast<int>());
+            Assert.Equal(Enumerable.Range(0, distinct), uncounted.Cast<int>());
+        }
+
         [Fact]
         public void AValueList_OfSeveralTypes_OrOfNothing_HasNoElementType()
         {

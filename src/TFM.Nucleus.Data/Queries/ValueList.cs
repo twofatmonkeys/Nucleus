@@ -36,23 +36,48 @@ namespace TFM.Nucleus.Data.Queries
             ArgumentNullException.ThrowIfNull(values);
             if (values is ValueList list)
                 return list;
-            var seen = new HashSet<object>();
-            var kept = new List<object>(values is ICollection collection ? collection.Count : 0);
+            // Filled in place and trimmed only when values were dropped. A short list, which most
+            // are, finds its repeats by looking; a set is built once a list outgrows that.
+            var size = values is ICollection collection ? collection.Count : 4;
+            var kept = size == 0 ? [] : new object[size];
+            var count = 0;
+            HashSet<object>? seen = null;
             Type? type = null;
             var mixed = false;
             foreach (var value in values)
             {
-                if (value is null || !seen.Add(value))
+                if (value is null)
                     continue;
-                kept.Add(value);
+                if (seen != null)
+                {
+                    if (!seen.Add(value))
+                        continue;
+                }
+                else if (Array.IndexOf(kept, value, 0, count) >= 0)
+                    continue;
+                else if (count == LookLimit)
+                {
+                    seen = new HashSet<object>(Math.Max(size, LookLimit * 2));
+                    for (var i = 0; i < count; i++)
+                        seen.Add(kept[i]);
+                    seen.Add(value);
+                }
+                if (count == kept.Length)
+                    Array.Resize(ref kept, Math.Max(4, count * 2));
+                kept[count++] = value;
                 var valueType = value.GetType();
                 if (type == null)
                     type = valueType;
                 else if (type != valueType)
                     mixed = true;
             }
-            return new ValueList(kept.ToArray(), mixed ? null : type);
+            if (count != kept.Length)
+                Array.Resize(ref kept, count);
+            return new ValueList(kept, mixed ? null : type);
         }
+
+        /// <summary>Up to this many values a repeat is found by looking through those kept.</summary>
+        private const int LookLimit = 16;
 
         public IEnumerator<object> GetEnumerator() => ((IEnumerable<object>)_values).GetEnumerator();
 
