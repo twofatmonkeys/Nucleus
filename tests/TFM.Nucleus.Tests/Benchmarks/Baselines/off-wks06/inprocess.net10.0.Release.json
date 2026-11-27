@@ -1,27 +1,27 @@
 {
-  "commit": "ee8f8ff-dirty",
+  "commit": "8394202-dirty",
   "acceptedOn": "2026-11-27",
   "scenarios": {
     "bind 100x10": {
-      "medianMs": 1.44
+      "medianMs": 4.81
     },
     "delete removed build 50": {
-      "medianMs": 0.03
+      "medianMs": 0.11
     },
     "insert\u002Bupdate build 100": {
-      "medianMs": 0.44
+      "medianMs": 1.83
     },
     "materialise 1000": {
-      "medianMs": 0.06
+      "medianMs": 0.1
     },
     "parse predicate x200": {
-      "medianMs": 86.05
+      "medianMs": 108.63
     },
     "savegraph walk 100x10x2": {
-      "medianMs": 1.57
+      "medianMs": 3.16
     },
     "validate 100x10x2": {
-      "medianMs": 1.86
+      "medianMs": 7.74
     }
   }
 }
