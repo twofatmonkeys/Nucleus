@@ -35,7 +35,8 @@ namespace TFM.Nucleus.Data.PostgreSQL
             "SELECT t.relname, i.relname, a.attname, ix.indisunique, " +
             "coalesce(pg_index_column_has_property(i.oid, array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1, 'desc'), false), " +
             "ix.indpred IS NOT NULL, " +
-            "array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1 AS position, ix.indnkeyatts " +
+            "array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1 AS position, ix.indnkeyatts, " +
+            "coalesce(pg_index_column_has_property(i.oid, array_position(ix.indkey::int2[], a.attnum) - array_lower(ix.indkey::int2[], 1) + 1, 'nulls_first'), false) " +
             "FROM pg_index ix " +
             "JOIN pg_class i ON i.oid = ix.indexrelid " +
             "JOIN pg_class t ON t.oid = ix.indrelid " +
@@ -135,6 +136,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 HasFilter = r.GetBoolean(5),
                 KeyOrdinal = r.GetInt32(6) <= r.GetInt16(7) ? r.GetInt32(6) : 0,
                 IsIncluded = r.GetInt32(6) > r.GetInt16(7),
+                // Low is first on an ascending key and last on a descending one. An included
+                // column orders nothing.
+                NullsSortLow = r.GetInt32(6) > r.GetInt16(7) || r.GetBoolean(8) != r.GetBoolean(4),
             }, async, cancellationToken);
 
         /// <summary>The (table, index) names of every full-text index in the schema.</summary>

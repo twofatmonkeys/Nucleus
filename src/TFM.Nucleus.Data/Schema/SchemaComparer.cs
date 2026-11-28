@@ -212,7 +212,7 @@ namespace TFM.Nucleus.Data.Schema
         {
             var comparer = dialect.IdentifierComparer;
             var rows = columns.ToList();
-            if (rows.Any(r => r.IsUnique != index.Unique || r.HasFilter != index.Unique || r.IsDescending))
+            if (rows.Any(r => r.IsUnique != index.Unique || r.HasFilter != index.Unique || r.IsDescending || (!r.IsIncluded && !r.NullsSortLow)))
                 return false;
             var keys = rows.Where(r => !r.IsIncluded).OrderBy(r => r.KeyOrdinal).Select(r => r.ColumnName).ToList();
             var included = rows.Where(r => r.IsIncluded).Select(r => r.ColumnName).ToList();
@@ -259,7 +259,8 @@ namespace TFM.Nucleus.Data.Schema
             dialect.IdentifierComparer.Equals(existing.ColumnName, dialect.PhysicalName(col.ColumnName)) &&
             existing.IsUnique == col.Unique &&
             existing.HasFilter == col.Unique &&
-            existing.IsDescending == col.IndexDescending;
+            existing.IsDescending == col.IndexDescending &&
+            existing.NullsSortLow;
     }
 
     internal enum TableUpdateKind

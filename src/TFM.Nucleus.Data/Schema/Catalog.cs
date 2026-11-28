@@ -34,6 +34,14 @@ namespace TFM.Nucleus.Data.Schema
 
         /// <summary>The column is carried by the index without ordering it.</summary>
         public bool IsIncluded;
+
+        /// <summary>
+        /// The index places a null key below every value: first when the key ascends, last when it
+        /// descends. That is the order every ordered read asks for, so an index that places nulls
+        /// the other way cannot serve one, and the schema check replaces it. True unless a reader
+        /// says otherwise, because most engines order nulls low and have no other way.
+        /// </summary>
+        public bool NullsSortLow = true;
     }
 
     /// <summary>

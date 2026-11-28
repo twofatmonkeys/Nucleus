@@ -1906,6 +1906,7 @@
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.Boolean IsDescending",
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.Boolean IsIncluded",
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.Boolean IsUnique",
+                "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.Boolean NullsSortLow",
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.Int32 KeyOrdinal",
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.String ColumnName",
                 "  TFM.Nucleus.Data.Schema.CatalogIndex::public System.String IndexName",

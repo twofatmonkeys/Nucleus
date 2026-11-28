@@ -370,6 +370,10 @@ sequence before it creates the new table. Values are bound as their column's typ
 `DateTimeOffset` as `timestamptz` in UTC (PostgreSQL keeps no offset and nothing below a
 microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `jsonb`; a `timestamptz`
 reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
+An ordered read places NULL below every value (`NULLS FIRST` ascending, `NULLS LAST` descending),
+and every index key is created the same way, because PostgreSQL uses an index for an order only
+when the two agree; the catalog reader reports each key's placing (`CatalogIndex.NullsSortLow`)
+and an index made with PostgreSQL's default is replaced.
 A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
 unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
 retries a transient failure (`ConnectAttempts`). Its output is pinned by `PostgresGoldens.cs`,

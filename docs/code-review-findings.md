@@ -610,17 +610,50 @@ Measured on 100,000 rows of about 4 KB with 5% soft-deleted, an ordered page of 
   order at all. See the open finding below.
 - Not done on SQLite, whose indexes carry no included columns.
 
-**Open: no ordered read on PostgreSQL can use a column's index.** Nucleus orders NULL below every
-value on every engine, so PostgreSQL's renderer writes `NULLS FIRST` ascending and `NULLS LAST`
-descending. A column index is created with PostgreSQL's default order (`ASC NULLS LAST`), which
-read forwards or backwards gives the opposite placing of NULL, so the planner sorts instead. Seen
-on the measurement above (a sequential scan and an external sort of every row for a page of 50);
-not investigated further. Creating the index `NULLS FIRST` would let it serve both directions, and
-would rebuild every column index on PostgreSQL.
+That PostgreSQL did not use the index for an order was a defect of its own, fixed next: see "No
+ordered read on PostgreSQL could use an index" below. With it fixed, whether an included
+`IsDeleted` would then pay on PostgreSQL has not been measured.
 
 Cover: `SoftDeleteIndexTests`, the `ddl.create.TestSoftWidget` and `TestSoftParent` goldens,
 `SqlServerTableIndexIntegrationTests` (the declared index carries the flag) and the schema-current
 checks of every SQL Server suite, which fail while any index is without it.
+
+### No ordered read on PostgreSQL could use an index (November 2026)
+
+Nucleus orders NULL below every value on every engine, so PostgreSQL's renderer writes
+`ASC NULLS FIRST` and `DESC NULLS LAST` (`PostgresQueryRenderer.OrderTerm`). Its indexes were
+created `ASC`, which in PostgreSQL means `NULLS LAST`. Read forwards that is the wrong placing of
+NULL for an ascending order, and read backwards it is the wrong placing for a descending one, so
+the planner could use the index for neither and sorted every matching row instead.
+
+Every index key is now written with nulls low: `ASC NULLS FIRST`, or `DESC NULLS LAST` for a
+descending column index, on column indexes and on the keys of `[TableIndex]` indexes
+(`PostgresSchemaDialect.CreateIndex`, `CreateTableIndex`). The catalog reader reads each key's
+placing (`CatalogIndex.NullsSortLow`, true on the engines that have no other way) and
+`SchemaComparer` replaces an index that places nulls high.
+
+Measured on 100,000 rows of about 4 KB, a page of 50 ordered by an indexed column, third run:
+
+| Order | Skip | Before | After |
+|---|---|---|---|
+| descending, live rows | 0 | 21.4 ms, 20,088 pages | 0.07 ms, 55 pages |
+| descending, live rows | 1,000 | 81.3 ms, 20,088 pages | 1.3 ms, 1,101 pages |
+| descending, live rows | 50,000 | 120.6 ms, 20,088 pages | 78.6 ms, 52,417 pages |
+| ascending, live rows | 0 | 23.7 ms, 20,088 pages | 3.1 ms, 2,004 pages |
+| ascending, live rows | 50,000 | 140.1 ms, 20,088 pages | 80.8 ms, 53,324 pages |
+| descending, one category in 100 | 0 | 21.9 ms, 20,000 pages | 4.3 ms, 4,551 pages |
+
+Before, every case read the whole table (20,088 pages) and sorted it. The ascending first page
+reads 2,004 pages because the test data holds 2,000 rows with a NULL key, which sort first and tie.
+
+- **Open: a deep page still visits every row it skips** (the 50,000 rows above), as SQL Server did
+  before key-first paging. A key-first shape for PostgreSQL has not been measured.
+- **Open: a `Unique` column's index serves no order.** It is filtered to non-null values, and
+  PostgreSQL uses a partial index only for a query that excludes the same rows.
+
+Cover: `IndexNullOrderTests`, the PostgreSQL DDL goldens, and `Postgres\PostgresIndexNullOrderTests`,
+which remakes an index the old way and holds the check to calling it not current and a start to
+replacing it.
 
 ### A query could not order or page in the database, and Take was evaluated away (November 2026)
 

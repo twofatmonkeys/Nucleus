@@ -3,6 +3,18 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## PostgreSQL: indexes place nulls where an ordered read does
+
+- **Every column index and `[TableIndex]` index is rebuilt at the first start after upgrading**,
+  on PostgreSQL only. Each is dropped and created again with its keys `NULLS FIRST` (or
+  `DESC NULLS LAST` for a descending column index); the time and the locks are in proportion to
+  the table.
+- **A deployment with `ReadOnlySchema` does not start until they are rebuilt.** Its log names
+  each index that is not current.
+- **What it buys:** an `OrderBy` on an indexed column uses the index, where every ordered read
+  scanned and sorted the table. A first page of 50 over 100,000 rows took 0.07 ms and 55 pages
+  where it took 21 ms and 20,088. The rows returned and their order are unchanged.
+
 ## SQL Server: the indexes of a soft-deletable table carry the soft-delete flag
 
 - **Every index on a soft-deletable table is rebuilt at the first start after upgrading**, on SQL

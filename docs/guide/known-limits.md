@@ -74,10 +74,10 @@ finding in [`docs/code-review-findings.md`](../code-review-findings.md), which h
   (`x.Day >= from && x.Day < to`), or split that list. The other engines have the same rule for
   fewer types: PostgreSQL for dates, at 30,000 values, and SQLite for decimals and floating-point
   numbers, at 2,000.
-- **On PostgreSQL an `OrderBy` does not use the column's index.** The order is sorted for every
-  read, so an ordered page over a large table costs a sort of every matching row. Page by key
-  where the table is large (see [querying](querying.md#what-a-query-translates)); the cause and
-  the fix not yet made are in `docs/code-review-findings.md`.
+- **On PostgreSQL an `OrderBy` on a `Unique` column does not use its index.** The index holds only
+  non-null values, and PostgreSQL uses such an index only for a query that leaves the nulls out
+  too, so the rows are sorted for every such read. `Indexed` beside `Unique` changes nothing:
+  the column still gets the one unique index.
 - **A list cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`.
 - **On SQL Server, a long text list is compared under the database's default collation**, the
   collation its list type was created with. A column given another collation by hand fails the
