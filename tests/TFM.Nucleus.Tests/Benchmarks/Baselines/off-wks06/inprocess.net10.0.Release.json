@@ -1,0 +1,27 @@
+{
+  "commit": "3d2461f-dirty",
+  "acceptedOn": "2026-11-27",
+  "scenarios": {
+    "bind 100x10": {
+      "medianMs": 1.64
+    },
+    "delete removed build 50": {
+      "medianMs": 0.03
+    },
+    "insert\u002Bupdate build 100": {
+      "medianMs": 0.46
+    },
+    "materialise 1000": {
+      "medianMs": 0.06
+    },
+    "parse predicate x200": {
+      "medianMs": 104.25
+    },
+    "savegraph walk 100x10x2": {
+      "medianMs": 2.05
+    },
+    "validate 100x10x2": {
+      "medianMs": 2.14
+    }
+  }
+}

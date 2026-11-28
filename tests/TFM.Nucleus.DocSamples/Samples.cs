@@ -4,6 +4,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TFM.Nucleus.Data.Schema;
+using TFM.Nucleus.Data.SQL;
 using TFM.Nucleus.Testing;
 
 namespace PortlyPrimate
@@ -78,6 +79,20 @@ namespace PortlyPrimate
                 // A manager save, delete or load that fails transiently, having applied nothing, is
                 // attempted again on a new connection: up to 3 attempts in all, 200 ms then 400 ms apart.
                 options.RetryAttempts = 3;
+            });
+            #endregion
+        }
+
+        public static void Layered(IServiceCollection services)
+        {
+            #region register-layered
+            // Server, database, user name and password from SQL_SERVER, SQL_DATABASE, SQL_USERNAME and SQL_PASSWORD.
+            services.AddNucleusSqlServerDataProvider();
+            // The other options are layered on with the options pattern. A later Configure wins.
+            services.Configure<SQLConfiguration>(options =>
+            {
+                options.RetryAttempts = 3;
+                options.RequireCommit = true;
             });
             #endregion
         }
@@ -341,8 +356,17 @@ namespace PortlyPrimate
             foreach (var g in groups)
                 Console.WriteLine($"{g.Get<VisitKind>("Kind")}: {g.Get<long>("Visits")} visits in {g.Get<long>("Sessions")} sessions");
 
+            // The 25 most visited paths: ordered by a measure and cut in the database.
+            var busiest = await data.Rows<GiftShopVisit>(v => v.OccurredUtc >= since)
+                .GroupBy(v => v.Path)
+                .Count("Visits")
+                .OrderByDescending("Visits")
+                .Take(25)
+                .ToListAsync(ct);
+
             var total = await data.Rows<GiftShopVisit>(v => v.Kind == VisitKind.Purchase).CountAsync(ct);
             #endregion
+            Assert.Equal("/bananas", Assert.Single(busiest).Get<string>("Path"));
             return page.TotalCount + groups.Count + total;
         }
 
@@ -412,6 +436,19 @@ namespace PortlyPrimate
                 }
             }
             #endregion
+        }
+
+        public async Task<int> ReplaceWeighInAsync(WeighIn superseded, CancellationToken ct)
+        {
+            #region save-and-delete
+            // A save, a delete and a delete by predicate in one transaction: all of it is committed, or none of it.
+            await using var context = await data.CreateContextAsync<WeighIn>(ContextOptions.Transactional, ct);
+            await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 15.1m, Notes = "corrected" }, ct);
+            await context.DeleteAsync(superseded, ct);
+            var removed = await context.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);   // the rows it deleted
+            await context.CommitAsync(ct);
+            #endregion
+            return removed;
         }
 
         public async Task StatementTimeoutAsync(CancellationToken ct)

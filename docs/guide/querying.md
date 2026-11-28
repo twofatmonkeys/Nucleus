@@ -81,6 +81,12 @@ is followed by the same order to break its ties. NULL sorts below every value on
 first in ascending order, last in descending. Text sorts by each engine's own rules, which differ
 (see [known limits](known-limits.md)).
 
+A page costs the database in proportion to how far it skips, on every engine: to return rows
+50,001 to 50,050 it walks the 50,000 before them. A listing that people page deep into, such as a
+feed, pages by key instead: filter on the last key the previous page showed
+(`Where(e => e.OccurredUtc < last)`), order by that key and `Take` a page, with no `Skip`. With an
+index on the key, every page then costs the same.
+
 The async operators run the query: `ToListAsync`, `ToArrayAsync`, `FirstAsync`,
 `FirstOrDefaultAsync`, `SingleAsync`, `SingleOrDefaultAsync`, `AnyAsync`, `CountAsync` and
 `LongCountAsync`. Each takes a cancellation token, and all but the list, the array and the long
@@ -121,6 +127,29 @@ Only the ID translates. `x => x.Parent.Name == "a"` would need a join, and throw
 (`x.Name.Length`), and a comparison of two columns. A comparison may be written either way round:
 `3 < x.Quantity` is `x.Quantity > 3`.
 
+### Lists of values
+
+`x => ids.Contains(x.ID)` matches the rows whose column holds one of the list's values, in a load,
+a paged or ordered load, a count, a [row read](#row-reads) or a `DeleteWhere`. The list is a list,
+an array or any other collection, of IDs, text, numbers or enum values.
+
+- **The list can be any length.** Do not split a long list and read it in parts: one query over
+  the whole list is ordered, paged and counted in the database, which parts read separately cannot
+  be. PostgreSQL sends the list as one array and SQLite as one JSON array, at any length. SQL
+  Server sends a list of more than 200 values as one table-valued parameter, for a list of Guids,
+  of `int` or `long` values (an enum is its number) or of text up to 4,000 characters; see
+  [providers](providers.md#sql-server).
+- **A repeated value counts once, and a null is not a value of the list**: no row matches it. To
+  match rows whose column is null, say so beside the list (`x.Name == null || names.Contains(x.Name)`).
+- **An empty list matches no row, and no query runs to find that out.** `DeleteWhere` with it
+  deletes nothing and returns 0.
+- **A list cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`, except over
+  an empty list, where it is every row: a load returns them all, and `DeleteWhere` refuses it like
+  any other delete of a whole table.
+- When the keys come from another query, a deep one especially, ask whether the list is needed at
+  all: a filter the database can apply itself does not bring the keys to the application and send
+  them back.
+
 ## Row reads
 
 `IObjectDataManager.Rows<T>(predicate)` reads rows of values rather than entities. The predicate is
@@ -146,14 +175,23 @@ var groups = await data.Rows<GiftShopVisit>(v => v.OccurredUtc >= since)
 foreach (var g in groups)
     Console.WriteLine($"{g.Get<VisitKind>("Kind")}: {g.Get<long>("Visits")} visits in {g.Get<long>("Sessions")} sessions");
 
+// The 25 most visited paths: ordered by a measure and cut in the database.
+var busiest = await data.Rows<GiftShopVisit>(v => v.OccurredUtc >= since)
+    .GroupBy(v => v.Path)
+    .Count("Visits")
+    .OrderByDescending("Visits")
+    .Take(25)
+    .ToListAsync(ct);
+
 var total = await data.Rows<GiftShopVisit>(v => v.Kind == VisitKind.Purchase).CountAsync(ct);
 ```
 
 What each part does:
 
-- **Columns:** `Select(...)` names the properties each row returns. `OrderBy`, `OrderByDescending`, `ThenBy` and `ThenByDescending` order the rows in the database.
-- **Groups:** `GroupBy(...)` returns one row per distinct combination of the keys, each named by its property, with the measures asked for: `Count(alias)`, `CountDistinct(property, alias)`, `Min`, `Max` and `Sum`. Measures without `GroupBy` are one row over every match. A grouped read is not ordered or paged (order its groups in memory) and does not `Select` as well. A measure's alias is a plain identifier (letters, digits, underscores, starting with a letter or underscore) and must not repeat a key's name.
-- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; not for a grouped read; a read with no order is paged in the order the rows were written in) and `CountAsync` (a `COUNT` in the database, as the query's `CountAsync` is too).
+- **Columns:** `Select(...)` names the properties each row returns. `OrderBy`, `OrderByDescending`, `ThenBy` and `ThenByDescending` order the rows in the database, and `Take(n)` reads only the first n of that order (the order the rows were written in when the read gives none).
+- **Groups:** `GroupBy(...)` returns one row per distinct combination of the keys, each named by its property, with the measures asked for: `Count(alias)`, `CountDistinct(property, alias)`, `Min`, `Max` and `Sum`. Measures without `GroupBy` are one row over every match. A grouped read does not `Select` as well.
+- **Ordered groups:** a grouped read is ordered by a group key (`OrderBy(v => v.Kind)`) or by a measure, named by its alias (`OrderByDescending("Visits")`), and `Take(n)` keeps the first n groups of that order, cut in the database. A limited grouped read needs an order, and groups that tie on it are then ordered by their keys, so the same groups come back every time. A grouped read is not paged: there is no `ToPageAsync` for it and no skip. A measure's alias is a plain identifier (letters, digits, underscores, starting with a letter or underscore) and must not repeat a key's name.
+- **Running it:** `ToListAsync`, `StreamAsync` (one row at a time; each row can be kept), `ToPageAsync(skip, take)` (rows and the total count in one round trip; not for a grouped read or one limited by `Take`; a read with no order is paged in the order the rows were written in) and `CountAsync` (a `COUNT` in the database, as the query's `CountAsync` is too).
 - **Values:** `ResultRow.Get<T>(name)` converts each value: a database null is the type's default, an integer becomes an enum, a number becomes the numeric type asked for. A count is a `long`; a minimum or maximum has the column's type (a date stays a `DateTimeOffset` on every engine); a sum is the number the engine returns. `row[name]` is the value as read.
 - **Rules:** soft-deleted rows are left out as in any read, unless the read asks for them with `IncludeDeleted()`. Child collections are never read. The rows cannot be saved: a partial entity would write nulls over the columns it never read. A predicate that matches nothing returns no rows without a round trip.
 

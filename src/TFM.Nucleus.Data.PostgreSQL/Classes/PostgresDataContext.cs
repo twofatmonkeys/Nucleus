@@ -57,6 +57,9 @@ namespace TFM.Nucleus.Data.PostgreSQL
             return parameter;
         }
 
+        protected override DbParameter CreateListParameter(DbCommand command, string name, ValueList values, IQueryParameter source) =>
+            new NpgsqlParameter(name, PostgresTypes.ToDbArray(values, (source as Parameter)?.ColumnSchema as ColumnSchema));
+
         protected override void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema)
         {
             reader.GetValues(row!);

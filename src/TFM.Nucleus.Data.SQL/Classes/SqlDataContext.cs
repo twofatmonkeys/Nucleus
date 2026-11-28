@@ -68,6 +68,10 @@ namespace TFM.Nucleus.Data.SQL
                 dependency.OnChange -= OnChange;
         }
 
+        protected override DbParameter CreateListParameter(DbCommand command, string name, ValueList values, IQueryParameter source) =>
+            SqlServerListTypes.Parameter(name, values, SqlServerListTypes.For(source)
+                ?? throw new InvalidQueryException($"The list compared with {source.Name} has no list type."));
+
         protected override bool CanUseBulkPath(Query query) => BulkWritePlanner.CanUseBulkPath(query);
 
         protected override string DescribeConnection() =>

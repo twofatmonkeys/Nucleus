@@ -34,10 +34,11 @@ namespace TFM.Nucleus.Data.SQL
                 ? ColumnsSql
                 : new SchemaStatement($"{ColumnsSql} WHERE TABLE_NAME = @tableName", new ParameterCollection(new Parameter("tableName", tableName, false)));
 
-        // Reads every Nucleus-named nonclustered index: the key columns of each column index
-        // (NCI_* and UQ_*), and the key and included columns of each [TableIndex] index (NIX_*).
-        // Only those prefixes are returned so the schema compare and sync never see, drop or
-        // recreate an index a DBA added by hand. [_] is a literal underscore inside LIKE.
+        // Reads every Nucleus-named nonclustered index, its key and included columns: each column
+        // index (NCI_* and UQ_*), which carries the soft-delete flag on a soft-deletable table, and
+        // each [TableIndex] index (NIX_*). Only those prefixes are returned so the schema compare
+        // and sync never see, drop or recreate an index a DBA added by hand. [_] is a literal
+        // underscore inside LIKE.
         private const string ColumnIndexQuery = @"
                 SELECT t.name AS TableName, i.name AS IndexName, c.name AS ColumnName, i.is_unique, ic.is_descending_key, i.has_filter, ic.key_ordinal, ic.is_included_column
                 FROM sys.indexes i
@@ -45,7 +46,7 @@ namespace TFM.Nucleus.Data.SQL
                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                 WHERE i.type = 2 AND i.is_primary_key = 0
-                  AND ((ic.is_included_column = 0 AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%')) OR i.name LIKE 'NIX[_]%')";
+                  AND (i.name LIKE 'NCI[_]%' OR i.name LIKE 'UQ[_]%' OR i.name LIKE 'NIX[_]%')";
 
         // Every Nucleus-named foreign key (FK_*), one row per key: each is on one column. A key
         // the engine has not checked the existing rows of is not trusted.
@@ -269,6 +270,19 @@ namespace TFM.Nucleus.Data.SQL
             catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
             {
                 throw DatabaseFailures.Translate($"Error retrieving full-text catalogs from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
+            }
+        }
+
+        /// <summary>The names of the table types in the dbo schema.</summary>
+        internal async ValueTask<IReadOnlyList<string>> ReadTableTypesAsync(bool async, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await ReadAll("SELECT name FROM sys.table_types WHERE is_user_defined = 1 AND schema_id = SCHEMA_ID('dbo')", r => r.GetString(0), async, cancellationToken);
+            }
+            catch (Exception ex) when (DatabaseFailures.IsDatabaseFailure(ex))
+            {
+                throw DatabaseFailures.Translate($"Error retrieving table types from database '{Config.Database}'. Error: {ex.Message}", ex, SqlServerErrors.Classify(ex), DatabaseOperation.Schema, token: cancellationToken);
             }
         }
 

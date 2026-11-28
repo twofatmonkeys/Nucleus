@@ -113,6 +113,15 @@ namespace TFM.Nucleus.IntegrationTests
         /// <summary>The SQL Server test database, typed for its SQL Server-only members.</summary>
         public SqlServerTestDatabase SqlServer => NucleusTestDatabase.SqlServer;
 
+        /// <summary>
+        /// Drops this database's cached plans, so a suite starts from the same place whatever ran
+        /// before it. A plan is cached by its statement's text, and plans left by an earlier run
+        /// (found or pushed out by a run on another database) once made the same save measure
+        /// 150 ms or 570 ms. The warm-up round then compiles each statement once.
+        /// </summary>
+        internal override Task SettleAsync(CancellationToken token) =>
+            Database.ExecuteAsync("ALTER DATABASE SCOPED CONFIGURATION CLEAR PROCEDURE_CACHE", token);
+
         /// <summary>A second stack on the same database with its SQL Server settings changed by <paramref name="configure"/>.</summary>
         public Task<NucleusTestStack> StartStackAsync(Action<SQLConfiguration> configure)
         {

@@ -27,8 +27,9 @@ namespace TFM.Nucleus.Data.SQL
 
         private static DatabaseErrorClass Classify(SqlException exception) => exception.Number switch
         {
-            // -2: the client's timeout expired, for a command or a connection.
-            -2 => new(DatabaseErrorKind.Timeout, true),
+            // -2: the client's timeout expired, for a command or a connection. 258: the network
+            // wait timed out while connecting, which is what a server that does not answer gives.
+            -2 or 258 => new(DatabaseErrorKind.Timeout, true),
             1205 => new(DatabaseErrorKind.Deadlock, true),
             // 3960: a snapshot transaction's update conflicted with another transaction's.
             3960 => new(DatabaseErrorKind.SerializationFailure, true),

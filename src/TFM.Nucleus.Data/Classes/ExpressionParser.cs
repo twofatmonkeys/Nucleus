@@ -327,6 +327,11 @@ namespace TFM.Nucleus.Data
                         return b ? False : True;
                     return not.Update(operand);
                 }
+                // A list with nothing in it holds no value, so the term is false whatever the
+                // column: the caller is told the predicate matches nothing (or, negated, every
+                // row) and no query runs to find that out.
+                case MethodCallExpression { Method.Name: "Contains" } call when IsEmptyListContains(call):
+                    return False;
                 default:
                     return expression;
             }
@@ -558,6 +563,27 @@ namespace TFM.Nucleus.Data
                 return UnwrapSpanConversion(call.Arguments[0]);
 
             return expression;
+        }
+
+        /// <summary>
+        /// A collection's Contains over a list already evaluated to a constant that holds no
+        /// value: nothing at all, or only nulls, which no comparison matches. The list is found as
+        /// <see cref="HandleContains"/> finds it.
+        /// </summary>
+        private static bool IsEmptyListContains(MethodCallExpression call)
+        {
+            Expression? list;
+            if (call.Object != null)
+                list = call.Method.DeclaringType == typeof(string) ? null : call.Object;
+            else
+                list = call.Arguments.Count == 2 ? UnwrapSpanConversion(call.Arguments[0]) : null;
+            // A query is a list too, but reading it here would run it.
+            if (list is not ConstantExpression { Value: System.Collections.IEnumerable values and not string and not IQueryable })
+                return false;
+            foreach (var value in values)
+                if (value != null)
+                    return false;
+            return true;
         }
 
         private static Parameter? BuildCollectionParameter(string memberName, object? listValue)

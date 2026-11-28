@@ -84,6 +84,17 @@ namespace TFM.Nucleus.Data.Providers
         bool SupportsIncludedColumns => true;
 
         /// <summary>
+        /// True for a dialect whose indexes on a soft-deletable table carry the soft-delete flag as
+        /// a non-key column, so the engine can tell a live row from the index alone. A read of live
+        /// rows through such an index then visits only the rows it returns, where it otherwise
+        /// visits every row it passes to test the flag: a page 50,000 rows deep read 276 pages
+        /// against 161,453. The schema check expects the flag on every column index and
+        /// [TableIndex] index of a soft-deletable table of such a dialect, and on none otherwise.
+        /// False by default, and worth setting only where it was measured to pay.
+        /// </summary>
+        bool IndexesCarrySoftDeleteFlag => false;
+
+        /// <summary>
         /// True for an engine whose dialect writes foreign keys. A dialect that does not implement
         /// the members below leaves this false, and its provider creates no keys.
         /// </summary>

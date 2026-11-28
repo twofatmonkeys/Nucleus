@@ -1,21 +1,21 @@
 {
-  "commit": "963cf77",
-  "acceptedOn": "2026-11-21",
+  "commit": "8394202",
+  "acceptedOn": "2026-11-27",
   "scenarios": {
     "bind 100x10": {
-      "allocatedBytes": 1042704
+      "allocatedBytes": 1051504
     },
     "delete removed build 50": {
-      "allocatedBytes": 33240
+      "allocatedBytes": 27728
     },
     "insert\u002Bupdate build 100": {
-      "allocatedBytes": 642944
+      "allocatedBytes": 641352
     },
     "materialise 1000": {
-      "allocatedBytes": 160040
+      "allocatedBytes": 168040
     },
     "parse predicate x200": {
-      "allocatedBytes": 4578472
+      "allocatedBytes": 4616048
     },
     "savegraph walk 100x10x2": {
       "allocatedBytes": 627624

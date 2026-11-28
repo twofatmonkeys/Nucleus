@@ -25,7 +25,10 @@ namespace TFM.Nucleus.Data.Queries
     /// </summary>
     public class DeleteWhereQuery : Query, IDeleteQuery
     {
-        /// <summary>IDs per statement when deleting a list of objects, well under the parameter limit.</summary>
+        /// <summary>
+        /// IDs per statement when deleting a list of objects through a renderer that binds each
+        /// ID as a parameter of its own, well under the parameter limit.
+        /// </summary>
         public const int IdsPerStatement = 1000;
 
         /// <summary>The table being deleted from, with the cascade below it.</summary>
@@ -84,11 +87,23 @@ namespace TFM.Nucleus.Data.Queries
         {
             var identity = tableSchema.IdentityColumn
                 ?? throw new InvalidQueryException($"Table {tableSchema.TableName} has no identity column.");
-            DeleteWhereQuery? root = null;
-            foreach (var chunk in ids.Distinct().Chunk(IdsPerStatement))
+            var all = ValueList.From(ids);
+            if (all.Count == 0)
+                return null;
+            // One statement when the renderer binds the IDs as one parameter; otherwise a
+            // statement per IdsPerStatement, each with a parameter per ID.
+            var whole = new Parameter(identity.ColumnName, all, Operator.In);
+            if (renderer.BindsAsList(whole))
             {
                 var query = new DeleteWhereQuery(renderer, tableSchema, resolveTable, throughOwner);
-                query.Where.And(new Parameter(identity.ColumnName, chunk.ToList(), Operator.In));
+                query.Where.And(whole);
+                return query;
+            }
+            DeleteWhereQuery? root = null;
+            foreach (var chunk in all.Chunk(IdsPerStatement))
+            {
+                var query = new DeleteWhereQuery(renderer, tableSchema, resolveTable, throughOwner);
+                query.Where.And(new Parameter(identity.ColumnName, chunk, Operator.In));
                 if (root == null)
                     root = query;
                 else

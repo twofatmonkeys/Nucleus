@@ -331,6 +331,17 @@ namespace TFM.Nucleus.Tests
                 HasFilter = c.Unique,
                 IsDescending = c.IndexDescending,
             })];
+            // SQL Server's indexes on a soft-deletable table carry the soft-delete flag.
+            if (provider == "sqlserver" && table.IsSoftDeletable)
+                indexes.AddRange(table.IndexedColumns.Select(c => new CatalogIndex
+                {
+                    TableName = table.TableName,
+                    IndexName = IndexNaming.ColumnIndexName(table, c),
+                    ColumnName = SoftDelete.IsDeletedColumn,
+                    IsUnique = c.Unique,
+                    HasFilter = c.Unique,
+                    IsIncluded = true,
+                }));
             return new CatalogSnapshot([table.TableName], columns, indexes);
         }
 
@@ -338,7 +349,9 @@ namespace TFM.Nucleus.Tests
         public static CatalogSnapshot Without(this CatalogSnapshot catalog, string table, params string[] columns) => catalog with
         {
             Columns = [.. catalog.Columns.Where(c => !(c.TableName == table && columns.Contains(c.Name)))],
-            Indexes = [.. catalog.Indexes.Where(i => !(i.TableName == table && columns.Contains(i.ColumnName)))],
+            // The whole index goes with its key column, the flag it carries included.
+            Indexes = [.. catalog.Indexes.Where(i => !(i.TableName == table &&
+                catalog.Indexes.Any(k => k.TableName == table && k.IndexName == i.IndexName && !k.IsIncluded && columns.Contains(k.ColumnName))))],
         };
 
         /// <summary>The catalog with one column of the table reported as another type.</summary>

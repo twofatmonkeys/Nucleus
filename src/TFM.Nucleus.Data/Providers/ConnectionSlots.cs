@@ -10,7 +10,7 @@ namespace TFM.Nucleus.Data.Providers
     /// <see cref="RelationalProviderOptions.MaxConnectionPoolSize"/> slots, shared by its open root
     /// contexts and its live change subscriptions, each of which holds one connection. It is the
     /// same number the driver's pool is sized to, so a provider that cannot take a slot fails with
-    /// <see cref="DataContextErrorKind.PoolExhausted"/> instead of waiting on the driver's pool.
+    /// <see cref="DatabaseErrorKind.PoolExhausted"/> instead of waiting on the driver's pool.
     /// </summary>
     public sealed class ConnectionSlots
     {
@@ -81,9 +81,16 @@ namespace TFM.Nucleus.Data.Providers
 
         internal void Release() => Interlocked.Decrement(ref _inUse);
 
-        private DataContextException Exhausted(string detail) =>
+        /// <summary>
+        /// A failure of the database to the caller, like a server at its own connection limit: not
+        /// transient, because another attempt would wait on the same full budget.
+        /// </summary>
+        private DatabaseException Exhausted(string detail) =>
             new($"No connection is free: all {Capacity} (MaxConnectionPoolSize) are held by open contexts and change subscriptions, {detail}. " +
-                "Dispose contexts and subscriptions sooner, or raise the limit.", DataContextErrorKind.PoolExhausted);
+                "Dispose contexts and subscriptions sooner, or raise the limit.", DatabaseErrorKind.PoolExhausted, transient: false, innerException: null)
+            {
+                Operation = DatabaseOperation.Open,
+            };
     }
 
     /// <summary>One slot of a provider's <see cref="ConnectionSlots"/>; disposing it gives the slot back, once.</summary>

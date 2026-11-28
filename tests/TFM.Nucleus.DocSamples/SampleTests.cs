@@ -86,6 +86,12 @@ namespace PortlyPrimate
             await desk.WeighAsync(gerald, new WeighIn { MonkeyName = "Gerald", WeightKg = 14.6m, Notes = "Gerald: no change" }, Ct);
             Assert.Equal("Gerald", (await desk.FindAsync(gerald.ID, Ct))!.Name);
 
+            var superseded = new WeighIn { MonkeyName = "Gerald", WeightKg = 51.1m, Notes = "typo" };
+            await sanctuary.Data.SaveAsync(new ICoreObject?[] { superseded, new WeighIn { MonkeyName = "Nobody", WeightKg = 1m } }, Ct);
+            Assert.Equal(1, await Samples.ReplaceWeighInAsync(superseded, Ct));
+            Assert.Null(await sanctuary.Data.LoadByIDAsync<WeighIn>(superseded.ID, Ct));
+            Assert.Single(await sanctuary.Data.LoadAsync<WeighIn>(w => w.Notes == "corrected", Ct));
+
             var (refused, reportedBy) = await Samples.ForeignKeyViolationAsync(Ct);
             Assert.True(refused);
             Assert.Null(reportedBy);
@@ -104,6 +110,34 @@ namespace PortlyPrimate
         [Fact]
         public async Task ChangeNotifications_AreNotOfferedBySqlite() =>
             await Assert.ThrowsAsync<NotSupportedException>(() => Samples.ChangesAsync(sanctuary.Data, Ct));
+
+        [Fact]
+        public void OptionsLayeredAfterRegistration_ReachTheProvider()
+        {
+            string[] names = ["SQL_SERVER", "SQL_DATABASE", "SQL_USERNAME", "SQL_PASSWORD"];
+            var before = names.Select(Environment.GetEnvironmentVariable).ToArray();
+            try
+            {
+                foreach (var name in names)
+                    Environment.SetEnvironmentVariable(name, name == "SQL_SERVER" ? "db01" : "sanctuary");
+                var services = new ServiceCollection();
+                services.AddLogging();
+                services.AddNucleus();
+                Registration.Layered(services);
+                using var provider = services.BuildServiceProvider();
+
+                var database = provider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SQLConfiguration>>().CurrentValue;
+
+                Assert.Equal("db01", database.Server);
+                Assert.Equal(3, database.RetryAttempts);
+                Assert.True(database.RequireCommit);
+            }
+            finally
+            {
+                for (var i = 0; i < names.Length; i++)
+                    Environment.SetEnvironmentVariable(names[i], before[i]);
+            }
+        }
 
         [Fact]
         public void TheRegistrationExamples_Register()
