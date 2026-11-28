@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace TFM.Nucleus.IntegrationTests.SqlServer
 {
@@ -36,6 +36,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerOrderAndPageIntegrationTests(SqlServerFixture fixture) : OrderAndPageIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
+    public sealed class SqlServerListFilterIntegrationTests(SqlServerFixture fixture) : ListFilterIntegrationTests(fixture);
+
+    [Collection(SqlServerCollection.Name)]
     public sealed class SqlServerChildCollectionLoadIntegrationTests(SqlServerFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);
 
     [Collection(SqlServerCollection.Name)]
@@ -51,6 +54,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     public sealed class SqlServerTableIndexIntegrationTests(SqlServerFixture fixture) : TableIndexIntegrationTests(fixture)
     {
         protected override string DropIndexSql(string table, string index) => $"DROP INDEX [{index}] ON [dbo].[{table}]";
+
+        // The entity is soft-deletable, and on SQL Server every index of such a table carries the flag.
+        protected override string ExpectedIndexColumns => "Batch,At,+Amount,+IsDeleted,+Name,+Notes";
 
         // FOR XML PATH rather than STRING_AGG, which the test database's compatibility level lacks.
         protected override string IndexColumnsSql(string table, string index) =>

@@ -171,11 +171,19 @@ $nucleus$",
             if (!column.HasColumnIndex)
                 throw new ArgumentException($"Column '{column.ColumnName}' does not carry a column index.", nameof(column));
             var name = Quote(IndexNaming.ColumnIndexName(table, column));
-            var key = $"({Quote(column.ColumnName)} {(column.IndexDescending ? "DESC" : "ASC")})";
+            var key = $"({Quote(column.ColumnName)} {(column.IndexDescending ? DescendingKey : AscendingKey)})";
             return column.Unique
                 ? $"CREATE UNIQUE INDEX {name} ON {TableName(table.TableName)} {key} WHERE {Quote(column.ColumnName)} IS NOT NULL"
                 : $"CREATE INDEX {name} ON {TableName(table.TableName)} {key}";
         }
+
+        // An index key places a null below every value, as every ordered read does
+        // (PostgresQueryRenderer.OrderTerm). PostgreSQL's own default places it above, and an
+        // index made that way matches an order read neither forwards nor backwards, so no ordered
+        // read could use one: measured on 100,000 rows, a first page of 50 took 21 ms and read
+        // every page of the table, against 0.07 ms and 55 pages with the nulls placed low.
+        private const string AscendingKey = "ASC NULLS FIRST";
+        private const string DescendingKey = "DESC NULLS LAST";
 
         public SchemaStatement DropIndex(TableSchema table, string physicalIndexName) =>
             $"DROP INDEX {Quote(Schema)}.{Quote(physicalIndexName)}";
@@ -186,7 +194,7 @@ $nucleus$",
         /// </summary>
         public SchemaStatement CreateTableIndex(TableSchema table, TableIndexSchema index)
         {
-            var keys = string.Join(", ", index.Keys.Select(k => $"{Quote(k.ColumnName)} ASC"));
+            var keys = string.Join(", ", index.Keys.Select(k => $"{Quote(k.ColumnName)} {AscendingKey}"));
             var include = index.Include.Count == 0 ? "" : $" INCLUDE ({string.Join(", ", index.Include.Select(c => Quote(c.ColumnName)))})";
             var target = $"{Quote(IndexNaming.TableIndexName(table, index))} ON {TableName(table.TableName)} ({keys}){include}";
             return index.Unique

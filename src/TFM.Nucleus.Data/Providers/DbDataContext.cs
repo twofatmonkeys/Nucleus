@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
@@ -26,7 +26,7 @@ namespace TFM.Nucleus.Data.Providers
     /// engine needs.
     /// </summary>
     /// <typeparam name="TSelf">The provider's context type.</typeparam>
-    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IStatementTimeout, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
+    public abstract class DbDataContext<TSelf> : IDataContext, ISaveAcceptance, IObservedContext, IStatementTimeout, IDisposable, IAsyncDisposable where TSelf : DbDataContext<TSelf>
     {
         private readonly ConcurrentDictionary<Guid, TSelf> _childContexts = new();
         private readonly RelationalDataProvider _provider;
@@ -55,6 +55,8 @@ namespace TFM.Nucleus.Data.Providers
         // True on a context whose caller checks the saved objects itself, before, and marks them
         // saved itself, after the commit.
         private bool _callerManagesObjects;
+        // On a root the manager handed to a caller, who is told of the tree's work. Null otherwise.
+        private IContextObserver? _observer;
         // The context's own statement time limit from its ContextOptions; null takes its parent's.
         private int? _statementTimeoutSeconds;
 
@@ -144,6 +146,13 @@ namespace TFM.Nucleus.Data.Providers
             parameter.Value = value;
             return parameter;
         }
+
+        /// <summary>
+        /// Binds every value of a multi-valued term as one parameter, for a term the provider's
+        /// renderer says it writes that way (<see cref="IQueryRenderer.BindsAsList"/>).
+        /// </summary>
+        protected virtual DbParameter CreateListParameter(DbCommand command, string name, ValueList values, IQueryParameter source) =>
+            throw new NotSupportedException($"{GetType().Name} does not bind a list as one parameter, so its renderer must not write one.");
 
         /// <summary>Copies the current row into <paramref name="row"/>, in <paramref name="schema"/>'s column order.</summary>
         protected virtual void ReadRow(DbDataReader reader, object?[] row, IDataTableSchema? schema) => reader.GetValues(row!);
@@ -387,15 +396,18 @@ namespace TFM.Nucleus.Data.Providers
                 return;
             try
             {
+                var observer = Root._observer;
+                observer?.Saving(objs);
                 if (!HasTransaction)
                 {
                     foreach (var obj in objs)
-                        obj?.CommitChanges();
+                        obj?.CommitChanges(observer?.AuditLoggerFor(obj.GetType()));
+                    observer?.Committed();
                     return;
                 }
                 var undo = Root._undo ??= new CommitUndoLog();
                 foreach (var obj in objs)
-                    obj?.CommitChangesInTransaction(undo);
+                    obj?.CommitChangesInTransaction(undo, observer?.AuditLoggerFor(obj.GetType()));
             }
             catch (Exception) when (Doom())
             {
@@ -406,6 +418,11 @@ namespace TFM.Nucleus.Data.Providers
         bool ISaveAcceptance.CallerManagesObjects
         {
             set => _callerManagesObjects = value;
+        }
+
+        IContextObserver? IObservedContext.Observer
+        {
+            set => Root._observer = value;
         }
 
         int IStatementTimeout.StatementTimeoutSeconds
@@ -734,9 +751,15 @@ namespace TFM.Nucleus.Data.Providers
                 var undo = _undo;
                 _undo = null;
                 if (committed)
+                {
                     undo?.Clear();
+                    _observer?.Committed();
+                }
                 else
+                {
                     undo?.Revert();
+                    _observer?.Abandoned();
+                }
             }
         }
 
@@ -922,12 +945,32 @@ namespace TFM.Nucleus.Data.Providers
         {
             if (terms == null)
                 return;
+            var renderer = _provider.Renderer;
             foreach (var term in terms)
             {
                 if (term == null || !term.UsesVariable)
                     continue;
-                foreach (var bound in ParameterBinding.Bind(term))
-                    command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value, term));
+                if (!ParameterBinding.IsMultiValued(term))
+                {
+                    foreach (var bound in ParameterBinding.Bind(term))
+                        command.Parameters.Add(CreateParameter(command, bound.Key, bound.Value, term));
+                    continue;
+                }
+                var values = ParameterBinding.Values(term);
+                if (renderer.BindsAsList(term))
+                {
+                    command.Parameters.Add(CreateListParameter(command, term.Variable!, values, term));
+                    continue;
+                }
+                // One parameter per value. Past the engine's limit the driver would refuse the
+                // command with an error that names neither the list nor the limit.
+                if (command.Parameters.Count + values.Count > Options.MaxParametersPerCommand)
+                    throw new InvalidQueryException(
+                        $"A list of {values.Count} values compared with {term.Name} needs a command parameter for each, and a command takes " +
+                        $"{Options.MaxParametersPerCommand}. This provider binds a list of this element type ({values.ElementType?.Name ?? "mixed types"}) " +
+                        "one value at a time; compare fewer values, or use a list of one supported type.");
+                for (var i = 0; i < values.Count; i++)
+                    command.Parameters.Add(CreateParameter(command, ParameterBinding.ElementName(term, i), values[i], term));
             }
         }
 
@@ -1034,9 +1077,12 @@ namespace TFM.Nucleus.Data.Providers
                 if (query == null || query is not Query dbQuery)
                     throw new DataContextException("Invalid Query type", DataContextErrorKind.InvalidIQueryType);
                 var command = NewReadCommand();
+                // Named before the text is built, which reads the names.
+                var terms = dbQuery.AllQueryParameters;
+                ParameterBinding.NameForCommand(terms);
                 command.CommandText = dbQuery.BuildQuery();
                 PrepareCommand(command);
-                BindParameters(command, dbQuery.AllQueryParameters);
+                BindParameters(command, terms);
                 var dataSet = dbQuery is SelectQuery { ResultColumns: not null }
                     ? DataSet.Initialize(dbQuery.TableName ?? "", RowNames(dbQuery))
                     : DataSet.Initialize(dbQuery.TableSchema);
@@ -1092,11 +1138,13 @@ namespace TFM.Nucleus.Data.Providers
                 throw new DataContextException("Invalid Query type", DataContextErrorKind.InvalidIQueryType);
 
             var command = NewReadCommand();
+            var terms = dbQuery.AllQueryParameters;
+            ParameterBinding.NameForCommand(terms);
             command.CommandText = dbQuery is SelectQuery select
                 ? select.BuildQuery(includeChildQueries: false)
                 : dbQuery.BuildQuery();
             PrepareCommand(command);
-            BindParameters(command, dbQuery.AllQueryParameters);
+            BindParameters(command, terms);
 
             var row = new StreamingRow(RowNames(dbQuery));
 
@@ -1206,6 +1254,7 @@ namespace TFM.Nucleus.Data.Providers
                 foreach (var chunk in query.FlattenLinkedQueries())
                 {
                     var parameters = DeleteParameters(chunk);
+                    ParameterBinding.NameForCommand(parameters);
                     try
                     {
                         var command = Prepare(chunk.BuildQuery(), parameters, hook: false);
@@ -1215,6 +1264,12 @@ namespace TFM.Nucleus.Data.Providers
                     {
                         throw Failure($"Unable to execute delete on DB. {ex.Message}", ex, DatabaseOperation.Delete, token);
                     }
+                }
+                if (Root._observer is { } observer && query.TableSchema is { } deleted)
+                {
+                    observer.Deleted(deleted.ObjectSchema.Type);
+                    if (!HasTransaction)
+                        observer.Committed();
                 }
                 return affected;
             }
@@ -1239,9 +1294,11 @@ namespace TFM.Nucleus.Data.Providers
                 try
                 {
                     var command = NewReadCommand();
+                    var terms = members.AllQueryParameters;
+                    ParameterBinding.NameForCommand(terms);
                     command.CommandText = members.BuildQuery(includeChildQueries: false);
                     PrepareCommand(command);
-                    BindParameters(command, members.AllQueryParameters);
+                    BindParameters(command, terms);
                     await using var reader = async ? await command.ExecuteReaderAsync(token) : command.ExecuteReader();
                     found = async ? await reader.ReadAsync(token) : reader.Read();
                 }
@@ -1263,7 +1320,7 @@ namespace TFM.Nucleus.Data.Providers
         private ParameterCollection DeleteParameters(Query chunk)
         {
             var parameters = chunk.Parameters;
-            var count = ParameterBinding.Bind(parameters).Count();
+            var count = ParameterBinding.Count(parameters, _provider.Renderer);
             if (count > Options.MaxParametersPerCommand)
                 throw new InvalidQueryException(
                     $"A delete of {chunk.TableName} needs {count} parameters; the limit is {Options.MaxParametersPerCommand}. Narrow the predicate.");
@@ -1351,7 +1408,10 @@ namespace TFM.Nucleus.Data.Providers
         /// </summary>
         private async ValueTask ExecuteWriteAsync(IQuery query, bool async, CancellationToken token)
         {
-            var command = Prepare(query.ToString()!, query.AllQueryParameters);
+            // Named before the text is built, which reads the names.
+            var terms = query.AllQueryParameters;
+            ParameterBinding.NameForCommand(terms);
+            var command = Prepare(query.ToString()!, terms);
             var outputs = query is Query q
                 ? q.AllQueryOutputParameters.ToDictionary(o => o.Variable!, StringComparer.OrdinalIgnoreCase)
                 : [];
@@ -1401,7 +1461,11 @@ namespace TFM.Nucleus.Data.Providers
         }
     }
 
-    /// <summary>A failure of a data context itself, as opposed to the database.</summary>
+    /// <summary>
+    /// A context was used in a way it cannot serve, as opposed to the database failing: a defect in
+    /// the calling code or in Nucleus, never a state of the database. A full connection budget is
+    /// a <see cref="DatabaseException"/> of kind <see cref="DatabaseErrorKind.PoolExhausted"/>.
+    /// </summary>
     public class DataContextException : TFM.Nucleus.NucleusException
     {
         public DataContextErrorKind Kind { get; }
@@ -1414,14 +1478,11 @@ namespace TFM.Nucleus.Data.Providers
 
     public enum DataContextErrorKind
     {
-        UnableToCreateNewCommand = 0,
         CurrentCommandIsNull = 10,
         CurrentConnectionIsNull = 20,
         InvalidIQueryType = 30,
         /// <summary>A batch returned fewer result sets than the queries it was built from.</summary>
         MissingResultSet = 40,
-        /// <summary>Every connection the provider allows (MaxConnectionPoolSize) was held by its contexts and change subscriptions, and none came free in time.</summary>
-        PoolExhausted = 50,
         /// <summary>Something was run on a context whose transaction had already been committed or rolled back.</summary>
         TransactionCompleted = 60,
         /// <summary>A commit was asked of a transaction a failure or a rollback had marked; it rolled back instead.</summary>
@@ -1430,7 +1491,6 @@ namespace TFM.Nucleus.Data.Providers
         ChildContextOpen = 80,
         /// <summary>A transactional context was opened inside an ambient transaction (a TransactionScope), which its own transaction would escape.</summary>
         AmbientTransaction = 90,
-        Unspecified = 99,
     }
 
     /// <summary>

@@ -40,6 +40,28 @@ object is new again, a loaded one has its changes pending again, and its removed
 pending deletion again. Changes made since the save are kept. Save the objects again without
 reloading them.
 
+The same context deletes too, so a save, a delete and a delete by predicate are one transaction:
+
+<!-- sample: save-and-delete -->
+```csharp
+// A save, a delete and a delete by predicate in one transaction: all of it is committed, or none of it.
+await using var context = await data.CreateContextAsync<WeighIn>(ContextOptions.Transactional, ct);
+await context.SaveAsync(new WeighIn { MonkeyName = "Gerald", WeightKg = 15.1m, Notes = "corrected" }, ct);
+await context.DeleteAsync(superseded, ct);
+var removed = await context.DeleteWhereAsync<WeighIn>(w => w.MonkeyName == "Nobody", ct);   // the rows it deleted
+await context.CommitAsync(ct);
+```
+
+A context from `CreateContextAsync<T>` is transactional unless you say otherwise: with no options,
+and with options that set only something else, such as a statement time limit. For a context with
+no transaction, where each statement commits as it runs and `CommitAsync` does nothing, pass
+`ContextOptions.Default` or set `UseTransaction = false`.
+
+Once the work commits, a context from the manager does what a manager save does: the changes of
+the objects it saved are audited, and the `[Cacheable]` caches of the types it saved or deleted are
+evicted. Work that rolls back does neither. The retry policy does not cover a context: see
+[Retries](#retries).
+
 ## Saving a batch
 
 A batch can hold objects of different types. Each is routed to the provider that stores it, and
@@ -107,16 +129,25 @@ catch (UniqueViolationException ex) when (ex.IsIndex<GiftShopVisit>("SessionPath
 When the database fails an operation, Nucleus throws a `DatabaseException` (namespace
 `TFM.Nucleus.Data`, in the Abstractions package), on every engine, with the driver's own exception
 as its inner exception, one level down. It says what happened in terms that do not depend on the
-engine. Two cases differ. An open that ran out its connect timeout on the asynchronous path has a
-`TimeoutException` as its inner exception, with the driver's inside that. And on SQL Server a write
-that reads a value back from a table with an enabled trigger is refused by the engine (error 334)
-and reported as the provider's own exception, a `DataProviderException`, whose message says what
-to change.
+engine. Three cases differ. An open that ran out its connect timeout on the asynchronous path has a
+`TimeoutException` as its inner exception, with the driver's inside that. A full connection budget
+(`PoolExhausted`) has no inner exception, because Nucleus refused before a driver was asked. And on
+SQL Server a write that reads a value back from a table with an enabled trigger is refused by the
+engine (error 334) and reported as the provider's own exception, a `DataProviderException`, whose
+message says what to change.
 
-- **`Kind`**: `ConnectionFailed`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
+So `catch (DatabaseException)` is "the database failed", whatever the engine and whenever it
+happened: a database that cannot be reached when the provider first initialises is one too, with
+the same kinds as a failed open. A `DataProviderException` is a deployment that is wrong (settings
+missing, a schema that is not current, a database that does not exist where the schema is
+read-only), and it says which in its `Kind` and its message. Neither is a defect in your code; the
+other Nucleus exceptions are.
+
+- **`Kind`**: `ConnectionFailed`, `PoolExhausted`, `Timeout`, `Deadlock`, `SerializationFailure`, `UniqueViolation`,
   `ForeignKeyViolation`, `NotNullViolation`, `ValueTooLong`, `CommitOutcomeUnknown` or `Other`.
 - **`IsTransient`**: another attempt of the whole operation may succeed and is safe. It is true
   for a deadlock, a dropped connection, a timeout and the like, and only when nothing was applied.
+  A full connection budget is never transient: another attempt would wait on the same full pool.
 - **`MayHaveBeenApplied`**: the database may have kept some or all of what was written. It is true
   for a commit that failed in a way that does not say whether it took effect
   (`CommitOutcomeUnknown`), and for a write on a context with no transaction, where each statement
@@ -223,8 +254,9 @@ ignored there.
 
 Every exception Nucleus defines derives from `NucleusException` (`TFM.Nucleus`), so
 `catch (NucleusException)` catches the family: `DatabaseException` and `UniqueViolationException`,
-`DataProviderException` and each provider's own, `DataContextException` (a full connection budget is
-its kind `PoolExhausted`), `InvalidQueryException`, `CoreObjectException` and the schema exceptions.
+`DataProviderException` and each provider's own, `DataContextException` (a context used in a way
+it cannot serve, such as a commit after a rollback), `InvalidQueryException`, `CoreObjectException`
+and the schema exceptions.
 
 Nucleus also throws the framework's own exceptions where they are the right ones
 (`ArgumentException`, `NotSupportedException`, `InvalidOperationException`,
@@ -254,6 +286,6 @@ table's trigger notifies, which needs nothing beyond the schema Nucleus creates.
 - **Schema management.** Tables, indexes and full-text catalogs are created and migrated from the entity attributes. Soft-deletable types gain `IsDeleted` and `DeletedAt` columns.
 - **Several databases in one application.** Register one provider per abstract entity root. Each entity routes to the provider of its nearest registered root, and each provider owns its own connection, configuration and schema partition. Graphs that span providers save in separate transactions, so there is no distributed atomicity.
 - **Layered cache.** `[Cacheable]` types keep the whole collection plus a Guid index in memory, with single-flight population, a hard TTL, serve-stale-while-revalidate, and eviction on save or delete. Hand-rolled, with no external caching package.
-- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
+- **Paging.** `PagedResult<T>` batches the rows and the unpaged count into one round trip. SQL Server pages with a `ROW_NUMBER()` window, which works at every compatibility level, and an ordered page numbers the rows by key and reads only the page's rows in full; PostgreSQL and SQLite with `LIMIT` and `OFFSET`.
 - **Bulk writes.** Large batches route through a temp table, loaded with `SqlBulkCopy` on SQL Server and COPY BINARY on PostgreSQL, then one insert or one changed-column bitmask update. SQLite, which writes in-process, runs them as commands one after another on one transaction.
 - **Minimal dependencies.** The Microsoft.Extensions DI, Options and Logging abstractions, plus the provider's ADO.NET driver (the SQL Server package also pins a patched `System.Security.Cryptography.Pkcs`, which its driver brings in). JSON uses the in-box `System.Text.Json`.

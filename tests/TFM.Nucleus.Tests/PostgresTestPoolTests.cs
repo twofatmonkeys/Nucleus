@@ -31,7 +31,9 @@ namespace TFM.Nucleus.Tests
             var options = OptionsAfter(services => Database.AddProvider(services, _ => { }));
 
             Assert.Equal(20, options.MaxConnectionPoolSize);
-            Assert.Equal("nucleus_test", options.Database);
+            // Each runtime has a database of its own, so the two runs of a suite never share one.
+            Assert.Equal($"nucleus_test_net{Environment.Version.Major}", options.Database);
+            Assert.Equal(options.Database, Database.DatabaseName);
         }
 
         [Fact]

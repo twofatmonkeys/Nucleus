@@ -8,10 +8,10 @@ namespace TFM.Nucleus.Testing;
 /// The SQLite test database: a file per .NET runtime, at the path
 /// <see cref="NucleusTestDatabaseSettings.Database"/> holds with the runtime's major version added
 /// before the extension (<c>nucleus.db</c> becomes <c>nucleus.net10.db</c>). The provider creates it
-/// when it is missing. Unlike the server databases, the net8.0 and net10.0 runs do not share one:
-/// SQLite lets one connection write at a time and does not queue its waiters, so two runs writing
-/// one file back to back could starve a writer past its busy timeout. Writers inside one run still
-/// contend, which the provider's own tests exercise.
+/// when it is missing. Like the server databases, the net8.0 and net10.0 runs do not share one.
+/// SQLite also lets one connection write at a time and does not queue its waiters, so two runs
+/// writing one file back to back could starve a writer past its busy timeout. Writers inside one
+/// run still contend, which the provider's own tests exercise.
 /// </summary>
 public sealed class SqliteTestDatabase : NucleusTestDatabase
 {
@@ -287,10 +287,13 @@ public sealed class SqliteTestDatabase : NucleusTestDatabase
         get
         {
             var path = Path.GetFullPath(RequireSettings().Database);
-            var runtime = $".net{Environment.Version.Major}";
-            return Path.Combine(Path.GetDirectoryName(path) ?? "", Path.GetFileNameWithoutExtension(path) + runtime + Path.GetExtension(path));
+            return Path.Combine(Path.GetDirectoryName(path) ?? "", $"{Path.GetFileNameWithoutExtension(path)}.{Runtime}{Path.GetExtension(path)}");
         }
     }
+
+    /// <inheritdoc />
+    /// <remarks>The file's path, <see cref="FilePath"/>.</remarks>
+    public override string DatabaseName => FilePath;
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken token)
     {

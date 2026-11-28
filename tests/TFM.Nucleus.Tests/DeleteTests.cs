@@ -251,15 +251,46 @@ namespace TFM.Nucleus.Tests
         }
 
         [Fact]
-        public void DeleteById_ManyIds_ChunksIntoLinkedCommands()
+        public void DeleteById_ManyIds_IsOneStatement_WhenTheRendererBindsAList()
         {
             var tables = Tables(typeof(TestDeletableWidget));
             var ids = Enumerable.Range(0, DeleteWhereQuery.IdsPerStatement + 1).Select(_ => Guid.NewGuid());
 
             var query = DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableWidget))!, tables, ids)!;
 
-            Assert.Single(query.LinkedQueries);
+            Assert.Empty(query.LinkedQueries);
             Assert.DoesNotContain("tbl_", query.BuildQuery().Split("SELECT @@ROWCOUNT")[1]);
+        }
+
+        [Fact]
+        public void DeleteById_ManyIds_ChunksIntoLinkedCommands_WhenEachIdIsAParameter()
+        {
+            var tables = Tables(typeof(TestDeletableWidget));
+            var ids = Enumerable.Range(0, DeleteWhereQuery.IdsPerStatement + 1).Select(_ => Guid.NewGuid());
+
+            var query = DeleteWhereQuery.ForIds(new ParameterPerValueRenderer(), tables(typeof(TestDeletableWidget))!, tables, ids)!;
+
+            Assert.Single(query.LinkedQueries);
+        }
+
+        [Fact]
+        public void DeleteById_RepeatedIds_AreDeletedOnce()
+        {
+            var tables = Tables(typeof(TestDeletableWidget));
+            var id = Guid.NewGuid();
+
+            var query = DeleteWhereQuery.ForIds(SqlServerQueryRenderer.Instance, tables(typeof(TestDeletableWidget))!, tables, [id, id, id])!;
+
+            Assert.Equal(1, ParameterBinding.Count(query.Parameters, SqlServerQueryRenderer.Instance));
+        }
+
+        /// <summary>A renderer of another provider, which binds every value of a list as a parameter of its own.</summary>
+        private sealed class ParameterPerValueRenderer : TFM.Nucleus.Data.Providers.IQueryRenderer
+        {
+            public string Select(SelectQuery query, bool includeChildQueries) => SqlServerQueryRenderer.Instance.Select(query, includeChildQueries);
+            public string Insert(InsertQuery query) => SqlServerQueryRenderer.Instance.Insert(query);
+            public string Update(UpdateQuery query) => SqlServerQueryRenderer.Instance.Update(query);
+            public string DeleteWhere(DeleteWhereQuery query) => SqlServerQueryRenderer.Instance.DeleteWhere(query);
         }
 
         [Fact]

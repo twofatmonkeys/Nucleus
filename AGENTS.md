@@ -92,7 +92,9 @@ extensions share, so a provider's extensions only name its types. `MaxConnection
 one connection limit: a provider's `ConnectionSlots` (one per provider, not per context type)
 counts its root contexts and live change subscriptions, and every connection to the database has
 one connection string with `Enlist=false` and the driver pool sized to the setting, raw strings
-included, so the driver keeps one pool. The startup connections (`master`, the PostgreSQL
+included, so the driver keeps one pool. A budget with no slot free is a `DatabaseException` of kind
+`PoolExhausted`, never transient, because the caller is told the database could not serve it,
+not that a context was misused. The startup connections (`master`, the PostgreSQL
 maintenance database) are unpooled. With nothing enlisting, a transactional root opened inside an
 ambient `TransactionScope` throws `AmbientTransaction` rather than commit outside it.
 `ConnectionOpener` gives every attempt of an open one budget, the connection's own connect
@@ -123,7 +125,11 @@ engine: there is no parallel write path, because parts on connections of their o
 commit as one. A read leaves the connection open, because closing it with the reader ended the
 transaction. A dialect whose indexes carry no
 included columns sets `ISchemaDialect.SupportsIncludedColumns` false: its `[TableIndex]` indexes
-are created and compared by their keys alone. I/O in the dialect interfaces takes an async flag and returns ValueTask,
+are created and compared by their keys alone. A dialect that sets
+`ISchemaDialect.IndexesCarrySoftDeleteFlag` (SQL Server, where it was measured to pay) includes
+`IsDeleted` in every column index and `[TableIndex]` index of a soft-deletable table, and
+`SchemaComparer.CarriedColumns` is what the check expects there, so an index without the flag, or
+with it on any other table, is rebuilt. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
@@ -139,7 +145,10 @@ engine's errors once (`SqlServerErrors`, `PostgresErrors`, `SqliteErrors`, throu
 (`CommitOutcomeUnknown` unless the engine rejected the transaction) and a failed open are, and
 `DbDataContext.Failure` that a write may have been applied only without a transaction. A failure
 that is not the database's (`DatabaseFailures.IsDatabaseFailure`) propagates as it was thrown, and
-the manager's save wraps nothing. A `[TableIndex]` can be `Unique`, filtered to rows whose
+the manager's save wraps nothing. A provider that could not initialise keeps why
+(`RelationalDataProvider.NotReady`): a caller refused a context gets a `DatabaseException` built
+from the failure when the database failed, the provider's exception with its kind and message when
+the deployment is wrong, each new per caller. A `[TableIndex]` can be `Unique`, filtered to rows whose
 keys are all non-null like a column's `Unique`, and a duplicate key while building either kind
 fails initialisation without touching the rows. A child's parent column is always indexed:
 `ColumnSchema` sets `Indexed` for the `[ParentObject]` property, so it is an ordinary column index
@@ -211,6 +220,22 @@ cut, and any other operator, throws. Only loads split: the filter and delete pat
 expression whole, so a delete refuses an order or a Take rather than deleting every match. A
 cut query is never answered from the `[Cacheable]` cache, First and Single compose with the
 query's cut, and Count and Any of a cut count the filter and work out what the cut leaves.
+A list of values in a predicate (`ids.Contains(x.ID)`) is a term holding a `ValueList` (Data):
+the distinct, non-null values, read once when the `Parameter` is built. Whether it goes to the
+database as one parameter or one per value is the renderer's answer, `IQueryRenderer.BindsAsList`,
+which the text, `DbDataContext.BindParameters` (through `CreateListParameter`),
+`ParameterBinding.Count` and `DeleteWhereQuery.ForIds` all ask, so they cannot disagree. PostgreSQL
+sends an array (`= ANY`) and SQLite a JSON array (`json_each`) at any length; SQL Server sends a
+table-valued parameter above 200 values (`SqlServerListTypes`, the threshold measured), of four
+table types that are schema extras, so a database without them is not current. A list still bound
+a value at a time is refused past `MaxParametersPerCommand` before the command is sent. An empty
+list is folded to false (`FoldBooleanConstants`), so no query runs for it, and a list cannot be
+negated.
+A command's parameters are numbered for that command (`p0`, `p1`, ...) by
+`ParameterBinding.NameForCommand`, which a context calls before it builds the command's text, so
+one shape of command is one text and an engine reuses its plan; a process-wide counter once made
+every text unique and SQL Server compiled every save. A new path that builds a command numbers its
+terms first, then builds the text, then binds.
 `Evaluator.PartialEval` leaves an operator over a query source alone, or `Get<T>().Take(5)` was
 run and replaced by its result before translation. `ChildGraphBinder` is the one place child collections are materialised and
 attached, from either a data set's linked result sets or streamed child queries; it binds each
@@ -287,7 +312,13 @@ records what each object's commit changed in the root context's `CommitUndoLog` 
 rollback or a failed commit, which leaves each object as it was before its first save in the
 transaction with later changes still pending. The manager's mixed-type batch save, its one save
 through a context's own save, turns that off (`ISaveAcceptance`, internal) so its `MarkSaved`, with
-the audit logger, stays the one place its objects are marked. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
+the audit logger, stays the one place its objects are marked. A context the manager hands to a
+caller (`CreateContextAsync<T>`, transactional unless its options set `UseTransaction` false) reports its work to an
+`IContextObserver` (Data, internal) the manager sets on its root: the types its saves and deletes
+wrote, read before the saved objects are marked, and their audit entries, held until the
+transaction commits, when the caches of those types are evicted and the entries written, and
+dropped when it does not. A context a provider hands out has no observer and costs nothing for
+it. The delete policy is resolved once per type by `ObjectSchema` (`IsDeletable` for a direct
 delete, `IsDeletableThroughParent` and `EffectiveDeleteBehavior` for the owned graph), walking up
 the fixed `ParentObjectProperty` chain; `SoftDelete.Applies` reads the effective behaviour. A
 child whose effective behaviour is soft under an owner that is deleted hard fails the schema
@@ -301,6 +332,10 @@ SqlDependency notifications. Everything but its registration, `SQLConfiguration`
 `SqlServerGoldens.cs`. A select batches its child collection queries after its own rows, and
 `GetDataSet` reads each into `DataSet.LinkedDataSets`; a child selects by the IDs of exactly the
 parent rows returned, page and TOP included, while `StreamAsync` sends the root query alone.
+A page in the caller's order numbers the rows by ClusterID alone and joins the page's rows back by
+it, so the sort and the skip carry a key and not every column; a page in insertion order does
+not, because its window walks the clustered index (`PagedSelect`, measured in
+`docs\code-review-findings.md`).
 Every delete, by object or by predicate, is a `DeleteWhereQuery`: one batch that deletes child
 collection rows deepest first, then the root, then
 `SELECT @@ROWCOUNT`, which is the one place Nucleus reports rows affected. It runs through
@@ -335,6 +370,10 @@ sequence before it creates the new table. Values are bound as their column's typ
 `DateTimeOffset` as `timestamptz` in UTC (PostgreSQL keeps no offset and nothing below a
 microsecond), a `DateTime` as `timestamp`, an enum as its integer, JSON as `jsonb`; a `timestamptz`
 reads back as a `DateTimeOffset`. Pattern predicates use `ILIKE ... ESCAPE ''`, equality is exact.
+An ordered read places NULL below every value (`NULLS FIRST` ascending, `NULLS LAST` descending),
+and every index key is created the same way, because PostgreSQL uses an index for an order only
+when the two agree; the catalog reader reports each key's placing (`CatalogIndex.NullsSortLow`)
+and an index made with PostgreSQL's default is replaced.
 A delete reports rows affected through `WITH affected AS (... RETURNING 1) SELECT count(*)`. A
 unique violation is SQLSTATE 23505 with the index in `ConstraintName`. Opening a connection
 retries a transient failure (`ConnectAttempts`). Its output is pinned by `PostgresGoldens.cs`,
@@ -394,9 +433,15 @@ engine's own tests. SQL Server needs a disposable database configured through th
 or the matching `Nucleus:*` user secrets; PostgreSQL through `NUCLEUS_PG_TEST_*` or
 `Nucleus:Postgres:*` (a `postgres:16` container is enough; the provider creates the database);
 SQLite through `NUCLEUS_SQLITE_TEST_DATABASE` or `Nucleus:Sqlite:Database`, a file path the provider
-creates. SQLite is the exception to the shared-database rule below: `SqliteTestDatabase` gives each
-.NET runtime its own file (`.net8`, `.net10` before the extension), because SQLite does not queue
-writers and two runs writing one file back to back starved a writer past its busy timeout.
+creates. Each .NET runtime has a database of its own on every engine
+(`NucleusTestDatabase.DatabaseName`: the configured name with `_net8` or `_net10` added, and on
+SQLite `.net8` or `.net10` before the file's extension), because the net8.0 and net10.0 runs of a
+suite run at the same time: sharing one, a run read the catalog while the other was half way
+through creating a table, and SQLite, which does not queue writers, starved a writer past its busy
+timeout. The database is created when it is missing, on SQL Server by `SqlServerTestDatabase`
+itself, at compatibility level 100 (`MinimumCompatibilityLevel`, the lowest Nucleus supports) with
+READ_COMMITTED_SNAPSHOT on, so the test login needs the right to create a database or the two
+databases made for it.
 A provider with no settings skips cleanly, which is what happens in CI. Settings, stack boot, locks
 and raw statements live in `TFM.Nucleus.Testing` (`NucleusTestDatabase.SqlServer`, `.Postgres` and
 `.Sqlite`);
@@ -405,11 +450,12 @@ configured" into `Assert.SkipWhen`. Store repos write their own thin shim over t
 stack whose initialisation fails includes its warnings and errors in the message. A PostgreSQL
 stack caps its provider's pool at 20 (`PostgresTestDatabase.TestPoolSize`), because two runs at
 the default of 100 exhausted the server. A fixture boots
-its shared stack with `StartSharedStackAsync`, under the schema lock, because the net8.0 and net10.0
-runs once raced to create the same tables and one of them failed. The net8.0 and
-net10.0 runs share each database, so a test that changes a table with raw DDL, starts a second
-stack (which updates the schema) or checks the whole schema holds `DatabaseFixture.SchemaLockAsync`
-for its duration; the lock is not reentrant, so take it once per test.
+its shared stack with `StartSharedStackAsync`, under the schema lock, because two runs once raced
+to create the same tables and one of them failed. Two test processes of one runtime (the two
+test projects, or a store repo's suite) still share a database, so a test that changes a table
+with raw DDL, starts a second stack (which updates the schema) or checks the whole schema holds
+`DatabaseFixture.SchemaLockAsync` for its duration; the lock is per provider and runtime, which is
+per database, and is not reentrant, so take it once per test.
 
 `tests\Shared\` is test support compiled into every test project through `tests\Directory.Build.props`
 (linked, not copied): `TestSourcePaths`, which the accept switches write through, and the
@@ -431,8 +477,10 @@ run them.
   over the baseline by more than the tolerance and the floor twice in a row, or when it has no
   baseline. Allocations are counted process-wide, so only one benchmark measures at a time per
   machine (`BenchmarkLock`), and a fixture boots its stack under the same lock while benchmarks run.
-  A database suite purges this machine's stale `bench-<machine>-` rows and settles the tables
-  (`DatabaseFixture.SettleAsync`) before it measures.
+  A database suite purges this machine's stale `bench-<machine>-` rows and settles the database
+  (`DatabaseFixture.SettleAsync`) before it measures: a vacuum on PostgreSQL and SQLite, and on
+  SQL Server the database's plan cache cleared, because plans an earlier run left behind once
+  made the same save measure 150 ms or 570 ms.
 - Run them with `tools\Run-Benchmarks.ps1` (`-Accept` writes the baselines). A database suite
   allocates 15-20% more after another suite's heavy work in the same process, so the script gives
   each provider's Save and Read suite a process of its own, and a second database suite in one
@@ -602,6 +650,13 @@ warning or an analyzer warning in new code fails CI.
   packages) was released by the same team in one coordinated release. This was a one-off. The
   rule stands for everything after it; the repo is public and the packages will be published to
   nuget.org once the surface is settled, which limits future breaking changes further.
+  Exception, November 2026: pool exhaustion and a database unreachable at first use became
+  `DatabaseException`s, the kinds thrown nowhere were removed, and a context from
+  `CreateContextAsync<T>()` became transactional by default (`ContextOptions.UseTransaction`
+  became a `bool?` for it). Reason: "the database failed" was
+  three exception types and a forgotten option silently dropped the transaction; both were
+  defects in the surface, fixed before publication while every consumer is released by the same
+  team. The rule stands for everything after it.
 - **Do not add a `NoWarn` entry to hide new code.** The existing list covers code that predates the
   scaffold. New code compiles clean.
 - **Page by ClusterID, and index it everywhere.** A paged read, and a limited root with linked

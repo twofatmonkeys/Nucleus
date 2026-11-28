@@ -1,4 +1,4 @@
-﻿using Npgsql;
+using Npgsql;
 
 namespace TFM.Nucleus.IntegrationTests.Postgres
 {
@@ -34,6 +34,9 @@ namespace TFM.Nucleus.IntegrationTests.Postgres
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresOrderAndPageIntegrationTests(PostgresFixture fixture) : OrderAndPageIntegrationTests(fixture);
+
+    [Collection(PostgresCollection.Name)]
+    public sealed class PostgresListFilterIntegrationTests(PostgresFixture fixture) : ListFilterIntegrationTests(fixture);
 
     [Collection(PostgresCollection.Name)]
     public sealed class PostgresChildCollectionLoadIntegrationTests(PostgresFixture fixture) : ChildCollectionLoadIntegrationTests(fixture);

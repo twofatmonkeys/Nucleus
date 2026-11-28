@@ -62,6 +62,11 @@ namespace TFM.Nucleus.Data.PostgreSQL
                 sb.Append(' ').Append(where);
             if (q.GroupBy.Count > 0)
                 sb.Append(" GROUP BY ").Append(string.Join(", ", q.GroupBy.Select(Quote)));
+            // A key is ordered as its column and a measure by its alias, an output column name.
+            if (!q.OrderBy.IsEmpty)
+                sb.Append(" ORDER BY ").Append(string.Join(", ", q.AggregateOrder().Select(OrderTerm)));
+            if (q.Take > 0)
+                sb.Append($" LIMIT {q.Take}");
             return sb.ToString();
         }
 
@@ -319,12 +324,26 @@ namespace TFM.Nucleus.Data.PostgreSQL
             return $"{column} {op} {RightOperand(p)}";
         }
 
-        /// <summary>IN over the term's values, one parameter per element; an empty list matches nothing.</summary>
+        /// <summary>
+        /// A list of one type PostgreSQL has an array of is one array parameter, whatever its
+        /// length: one plan for any number of values, and no parameter per value.
+        /// </summary>
+        public bool BindsAsList(IQueryParameter term) => IsArrayTerm(term);
+
+        private static bool IsArrayTerm(IQueryParameter term) =>
+            ParameterBinding.IsMultiValued(term) && ParameterBinding.Values(term) is { Count: > 0, ElementType: { } type } && PostgresTypes.HasArray(type);
+
+        /// <summary>
+        /// The column against the term's values: any element of one array parameter, or IN over a
+        /// parameter per value for a list of a type with no array. An empty list matches nothing.
+        /// </summary>
         private static string InCondition(Parameter p, string column)
         {
-            var count = ParameterBinding.MultiValues(p).Count;
+            var count = ParameterBinding.Values(p).Count;
             if (count == 0)
                 return "1 = 0";
+            if (IsArrayTerm(p))
+                return $"{column} = ANY(@{p.Variable})";
             var references = Enumerable.Range(0, count).Select(i => $"@{ParameterBinding.ElementName(p, i)}");
             return $"{column} IN ({string.Join(", ", references)})";
         }

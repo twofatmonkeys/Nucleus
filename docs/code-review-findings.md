@@ -39,6 +39,134 @@ recorded here so that page's list and this one agree.
   `NULLS FIRST`/`NULLS LAST`); text is not, because matching it would need a collation of Nucleus's
   own on every engine.
 
+### Found by a review of consumer feature requests (November 2026)
+
+Found by reading the code against a set of requested features. What is left of them; the rest is
+under Fixed ("The database failed was three exception types").
+
+- **A list in a predicate cannot be negated.** `!ids.Contains(x.ID)` throws `NotSupportedException`
+  (`ExpressionParser.NegateOperator` has no NOT IN). Nobody has asked for it; it needs an operator
+  and a rendering on each engine, and a decision on rows whose column is null.
+- **A long list of a type with no list form is still refused** (dates, decimals and mixed types on
+  SQL Server; dates on PostgreSQL; decimals and floating-point numbers on SQLite), now by
+  `InvalidQueryException` before the command is sent.
+
+### No two commands had the same text, so SQL Server compiled every save (November 2026)
+
+`Parameter` named its variable from a process-wide counter (`p124816`), which kept names unique
+in a batched command and also made every command's text unique. SQL Server caches a plan by the
+statement's text, so it never reused one: each multi-row save was compiled from scratch, and its
+plan, one statement of up to 127,000 characters and 57 MB of plan, stayed in the cache unused
+until the cache reached its limit (3.2 GB on the test server) and pushed out something else.
+
+Found through the benchmarks, which had two speeds for the same save. A second run of the same
+test process generates the same names in the same order, so it found the first run's plans and
+ran fast, unless a run on the other test database had pushed them out. The fast speed was an
+artefact of running one process twice; the slow one was what an application pays.
+
+A context now numbers the terms of each command before it builds the text
+(`ParameterBinding.NameForCommand`, called in `DbDataContext` where a read, a streamed read, a
+delete, a linked-members check and a write prepare their command). `Parameter.Variable` is `p0`,
+`p1` and on, from a shared table of names, so a term no longer allocates a name of its own; a
+term two statements of a command share is numbered once (`Parameter.NameForCommand`), and a term
+no command numbered still names itself from the counter.
+
+SQL Server Save suite, 5 rounds, median milliseconds, run alternately on two databases so that
+no run found an earlier run's plans:
+
+| Scenario | Before | After |
+|---|---|---|
+| batch 100 (insert then update) | 566 to 606 | 123 to 136 |
+| graph update one line x50 | 331 to 347 | 55 to 62 |
+| nested insert 30x10x3 | 1,151 to 1,261 | 313 to 350 |
+| single x20 (dominated by 40 commits) | 756 to 1,094 | 654 to 1,040 |
+| bulk 20000 (the bulk engine) | 2,763 to 3,506 | 2,941 to 3,058 |
+
+Per run of the suite: 1,100 compilations where there were 2,000 to 2,170, and the plan cache
+settled at 1.25 GB where it sat at its 3.2 GB limit.
+
+- The gain needs a shape to repeat: a batch of 99 rows is another text than one of 100.
+- Measured on SQL Server only. PostgreSQL and SQLite get the same texts; neither was measured for
+  a gain, and neither caches a plan by text unless the driver prepares statements.
+- The benchmarks now clear the database's plan cache before a SQL Server suite measures
+  (`SqlServerFixture.SettleAsync`), so a time no longer depends on what ran before.
+
+Cover: `ParameterNamingTests`; the integration suites, which run every command through the
+numbering on all three engines.
+
+### A long list of values failed at the parameter limit (November 2026)
+
+`list.Contains(x.Col)` bound one parameter per value, duplicates included, and no read path
+checked the limit, so past 2,100 values SQL Server's driver refused the command and the caller got
+a `DatabaseException` of kind `Other`. Three callers each cut their lists into parts of 1,000,
+which cannot be ordered, paged or counted as one read.
+
+- **The values are read once.** A multi-valued term keeps a `ValueList` (Data): the distinct,
+  non-null values in order, with their one element type. `Parameter` builds it in its constructor,
+  so the renderer, the count and the binder read the same list and a caller's 50,000 keys are
+  walked once.
+- **The renderer decides, in one place.** `IQueryRenderer.BindsAsList(term)` is asked by the text
+  (each renderer's `InCondition`), by `DbDataContext.BindParameters`, by `ParameterBinding.Count`
+  and by `DeleteWhereQuery.ForIds`, which writes one statement when the IDs are one parameter and
+  keeps its statements of 1,000 for a renderer that binds each ID. `CreateListParameter` binds.
+- **PostgreSQL** writes `col = ANY(@p)` with a typed array, at any length (`PostgresTypes.HasArray`).
+- **SQLite** writes `col IN (SELECT value FROM json_each(@p))` with a JSON array of stored forms,
+  at any length (`SqliteValues.HasJsonForm`).
+- **SQL Server** writes `col IN (SELECT [Value] FROM @p)` with a table-valued parameter above 200
+  values (`SqlServerListTypes`), and the four table types are schema extras
+  (`SqlServerListTypeExtras`), so a database without them is not current.
+- **An empty list is folded to false** in `ExpressionParser.FoldBooleanConstants`, so `Classify`
+  reports a predicate that matches nothing and no query runs.
+- **Past the limit, a list still bound a value at a time is refused** in `BindParameters` by an
+  `InvalidQueryException` naming the list and the limit.
+
+SQL Server was chosen by measurement, on 100,000 rows with 37,000 to 39,000 distinct keys found,
+median of 5 runs (41 below 1,000 keys), milliseconds. Compatibility level 170 for the OPENJSON
+columns; the first three columns measured the same at level 100.
+
+| Keys | Read | Parameter per value | Parts of 1,000 | Table parameter | OPENJSON | OPENJSON into a table variable |
+|---|---|---|---|---|---|---|
+| 10 Guids | load | 3.8 | | 4.6 | 3.8 | 6.3 |
+| 100 Guids | load | 6.0 | | 6.6 | 6.1 | 8.2 |
+| 2,000 Guids | load | 90.9 | 73.2 | 34.8 | 43.4 | 45.1 |
+| 39,000 Guids | load | refused | 1,429 | 502 | 980 | 969 |
+| 39,000 Guids | count | refused | 1,317 | 357 | 826 | 796 |
+| 39,000 Guids | first 50 in an order | refused | not possible | 410 | 897 | 841 |
+| 2,000 text | load | 125.6 | 108.1 | 60.0 | 110.3 | 74.5 |
+| 39,000 text | load | refused | 2,188 | 1,398 | 3,339 | 2,302 |
+
+- The table parameter is the fastest at every length from 2,000 up, for Guid keys by about 2
+  times over OPENJSON and 2.8 times over parts of 1,000, and it works at compatibility level 100. OPENJSON
+  needs level 130 and won nowhere, so the minimum stays at 100.
+- Below 200 values a parameter per value is 1 to 2 ms faster, the two are level from 200 to 400,
+  and the table parameter is 1.5 times faster at 800. Hence the threshold of 200.
+- `OPTION (RECOMPILE)` on the table parameter was faster at 39,000 keys for a count and an ordered
+  cut (214 and 142 ms) and 5 ms slower on every short list. Not used.
+- OPENJSON allocated less on the client (15.5 MB against 17.7 MB at 39,000 Guids).
+
+Cover: `ListBindingTests`, the `term.in.*` and `delete.ids.long` goldens of all three engines,
+`ListFilterIntegrationTests` on each engine, `SqlServer\ListParameterLimitTests`, and
+`SqlServer\ListTypeSchemaTests`, which drops a list type and holds a read-only provider to
+refusing to start (`SchemaNotCurrent`, with the type and its `CREATE TYPE` in the log) and an
+updating one to creating it.
+
+- **A provider whose initialisation failed with the schema in a known state is not initialised
+  again by its next use.** `EnsureReady` initialises only while the status is `Uninitialized`, which
+  is what a database that could not be reached leaves; `NotCurrent`, `DatasourceNotFound` and
+  `Error` are reported on every use until the application initialises again.
+- **A context's delete does not make the checks the manager's does.** The manager skips new
+  objects, removes duplicates and refuses a read-only object before it builds a delete;
+  `DbDataContext.BuildDeleteQuery` checks `IsDeletable` alone. The cost is a round trip that
+  deletes nothing for a new object; the read-only check is of a flag nothing sets (below). Found
+  by reading; not reproduced.
+- **A projection on a query throws `ArgumentException`, not the documented
+  `NotSupportedException`.** `Get<T>().Select(x => x.Name)` reaches
+  `ObjectDataAdaptor.CreateQuery<TElement>`, which builds an adaptor of the element type, and a
+  type that is not an entity fails the generic constraint before the translator sees the operator.
+  Found by reading; the only test is of `Select(w => w)`.
+- **`IsReadOnly` is never true.** It is public and checked on the set, save and delete paths, but
+  every caller of `CommitChanges` passes `makeReadOnly` false.
+
 ### Found by the documentation review, what is left (November 2026)
 
 A check of the guide against the code before beta was merged to master. The three defects it
@@ -269,10 +397,12 @@ on: mark the property `ReturnOutputToProperty` and run the benchmarks with `NUCL
   is the first thing to measure if SQLite saves look slow.
 - **A lower SQLite limit would write faster still, but deletes stop it.** At 500 parameters a command
   the oversized saves measured about five times faster again (a late unique violation over 12001
-  rows: 1 s at 2000, 0.2 s at 500). `DeleteWhereQuery.ForIds` puts a fixed 1000 IDs in each
+  rows: 1 s at 2000, 0.2 s at 500). `DeleteWhereQuery.ForIds` put a fixed 1000 IDs in each
   statement, and the delete path refuses a chunk over the limit, so any limit under about 1001
-  breaks deleting a list of objects. Chunking the IDs by the provider's limit would lift that; it
-  changes the delete batches every provider sends, so it is left for its own change.
+  broke deleting a list of objects. Since the IDs became one list parameter (November 2026, "A
+  long list of values failed at the parameter limit") a delete of a list is one statement with one
+  parameter for them, so that no longer stands in the way. The lower limit itself is not measured
+  again or changed.
 
 ### The parameterless AddNucleus() enables schema migration
 
@@ -375,6 +505,155 @@ What the failure contract below ("A database failure was a bare Exception") does
   `StatementTimeoutSeconds` and `SchemaCommandTimeoutSeconds`.
 
 ## Fixed
+
+### "The database failed" was three exception types, and a manager context was a lesser one (November 2026)
+
+Found by a review of consumer feature requests. A breaking change to the public surface, made as
+the exception recorded in AGENTS.md.
+
+- **A full connection budget was a `DataContextException`.** `ConnectionSlots` threw it before the
+  open's failure translation, so code that handled "the database is unavailable" with
+  `catch (DatabaseException)` missed it. It is now a `DatabaseException` of kind `PoolExhausted`,
+  operation `Open`, with no inner exception, and never transient: another attempt would wait on
+  the same full pool, so the retry policy does not repeat it.
+- **A provider that failed to initialise did not say why.** `RelationalDataProvider.InitializeCore`
+  logged the failure and returned a status, and `EnsureReady` then threw the provider's exception
+  of kind `NotInitialized` with no message and no inner exception, whatever had happened. The
+  kinds `SchemaNotCurrent` and `DatabaseNonExistent` were thrown inside initialise and caught
+  there, so no caller ever saw them. The provider now keeps the failure and `NotReady` builds the
+  caller's exception from it, new for each caller: a `DatabaseException` with the same kind,
+  operation and inner exception when the database failed, the provider's exception with its own
+  kind and message when the deployment is wrong, and `NotInitialized` with the reason in its
+  message for anything else.
+- **Kinds nothing threw are gone**: `DataProviderErrorKind.DatabaseUnavailable`,
+  `DataContextErrorKind.UnableToCreateNewCommand` and `DataContextErrorKind.Unspecified`, with
+  `DataContextErrorKind.PoolExhausted`.
+- **On SQL Server a server that did not answer was not a timeout on the synchronous path.** The
+  driver reports error 258 (the network wait timed out) there; `SqlServerErrors` listed only -2,
+  so the failure was kind `Other` and not transient. Found by the test of the item above.
+- **`CreateContextAsync<T>()` with no options had no transaction**, so its `CommitAsync` did
+  nothing and each statement committed alone. It is transactional now. So are options that say
+  nothing about a transaction (`new ContextOptions { StatementTimeoutSeconds = 300 }`), which the
+  first fix still opened without one: `ContextOptions.UseTransaction` became a `bool?`, null
+  meaning "as what opens the context decides", which is transactional for the manager and not for
+  a provider's own context. `ContextOptions.Default` sets it false, so it still means no
+  transaction wherever it is passed.
+- **A context from the manager evicted no `[Cacheable]` cache and audited nothing.** A load after
+  its commit answered from the cache as it was before. The manager now gives the context an
+  observer (`IContextObserver`, internal): it collects the types the context's saves and deletes
+  wrote, read before the saved objects are marked, and holds their audit entries, then evicts and
+  writes them when the transaction commits, or drops them when it does not. A context with no
+  transaction does both after each write. A context a provider hands out has no observer.
+
+Cover: `ConnectionSlotTests`, `ConnectionLimitIntegrationTests`, `ProviderNotReadyTests` (which
+needs no database), `DatabaseFailureTests` for error 258, and
+`ManagerLoadIntegrationTests.CreateContextAsync_WithNoOptions_IsTransactional`,
+`AContextFromTheManager_EvictsTheCacheOfWhatItWrote_OnceItCommits` and
+`AContextFromTheManager_AuditsWhatItSaved_OnlyOnceItCommits` on every provider.
+
+### An ordered page on SQL Server sorted and skipped whole rows (November 2026)
+
+A paged select numbered a derived table that selected every column, so the rows SQL Server sorted
+and skipped were whole rows. An ordered page now numbers the rows by their ClusterID alone and
+joins the page's rows back by it (`SqlServerQueryRenderer.PagedSelect`). The parent-key select of
+a paged root already numbered one column.
+
+Measured on a table of 100,000 rows of about 4 KB, 50 rows a page, logical reads and CPU from
+`SET STATISTICS IO, TIME`, before then after:
+
+| Order | Filter | Skip | Reads | CPU ms |
+|---|---|---|---|---|
+| indexed column | none | 0 | 155, 152 | 0, 0 |
+| indexed column | none | 50,000 | 153,392, 264 | 156, 15 |
+| indexed column | a column not in the index | 0 | 179, 329 | 0, 0 |
+| indexed column | a column not in the index | 50,000 | 161,358, 161,508 | 172, 187 |
+| unindexed column | none | 0 | 52,716, 52,866 | 1,094, 374 |
+| unindexed column | none | 50,000 | 52,716, 52,866 | 1,436, 500 |
+| insertion (not changed) | none | 0 | 29, 179 if it were | 0, 0 |
+
+- The join back costs a seek per row of the page, about 150 reads for 50 rows. That is the whole
+  cost where the new shape does not help, and why a page in insertion order keeps the old shape:
+  its window walks the clustered index, which is the rows.
+- **A filter on a column outside the order's index gets nothing from this**, because SQL Server
+  must visit each row to test it. The soft-delete filter was one (`[IsDeleted] = 0` on every read
+  of a soft-deletable type) until the indexes of a soft-deletable table carried the flag; see
+  "SQL Server's indexes did not carry the soft-delete flag" below. Any other such filter still is.
+- A deep skip still costs in proportion to the skip. A listing that goes deep pages by key (see
+  the guide's querying page).
+
+Cover: the four ordered and paged cases in `SqlServerGoldens.cs`, and `OrderAndPageIntegrationTests`.
+
+### SQL Server's indexes did not carry the soft-delete flag (November 2026)
+
+Every read of a soft-deletable type filters on `[IsDeleted] = 0`, and no index held the column, so
+a read through an index visited each row it passed to test the flag. An ordered page therefore
+cost a row visit for every row skipped, which is what key-first paging was meant to remove.
+
+On SQL Server every column index and `[TableIndex]` index of a soft-deletable table now includes
+`IsDeleted` (`ISchemaDialect.IndexesCarrySoftDeleteFlag`, `SchemaComparer.CarriedColumns`,
+`SqlServerSchemaDialect.ColumnIndexSql` and `TableIndexSql`). The schema check expects the flag on
+those indexes and on no others, so an existing index is dropped and created again at the first
+start, and the catalog reader now reads the included columns of a column index, which it left out.
+
+Measured on 100,000 rows of about 4 KB with 5% soft-deleted, an ordered page of 50, logical reads:
+
+| Index | Live rows, first page | Live rows, 50,000 deep | Every row, 50,000 deep | Index pages |
+|---|---|---|---|---|
+| the column alone (before) | 305 | 161,453 | 264 | 225 |
+| the column, `IsDeleted` included (now) | 152 | 276 | 270 | 237 |
+| filtered to live rows (not chosen) | 152 | 264 | 52,866 | 214 |
+
+- A filtered index was rejected: it serves live rows as well, and sends every `IncludeDeleted`
+  read to a scan of the table.
+- **Not done on PostgreSQL, where it was measured to gain nothing**: the same page took 109 ms
+  with the column included and 110 ms without, because PostgreSQL did not use the index for the
+  order at all. See the open finding below.
+- Not done on SQLite, whose indexes carry no included columns.
+
+That PostgreSQL did not use the index for an order was a defect of its own, fixed next: see "No
+ordered read on PostgreSQL could use an index" below. With it fixed, whether an included
+`IsDeleted` would then pay on PostgreSQL has not been measured.
+
+Cover: `SoftDeleteIndexTests`, the `ddl.create.TestSoftWidget` and `TestSoftParent` goldens,
+`SqlServerTableIndexIntegrationTests` (the declared index carries the flag) and the schema-current
+checks of every SQL Server suite, which fail while any index is without it.
+
+### No ordered read on PostgreSQL could use an index (November 2026)
+
+Nucleus orders NULL below every value on every engine, so PostgreSQL's renderer writes
+`ASC NULLS FIRST` and `DESC NULLS LAST` (`PostgresQueryRenderer.OrderTerm`). Its indexes were
+created `ASC`, which in PostgreSQL means `NULLS LAST`. Read forwards that is the wrong placing of
+NULL for an ascending order, and read backwards it is the wrong placing for a descending one, so
+the planner could use the index for neither and sorted every matching row instead.
+
+Every index key is now written with nulls low: `ASC NULLS FIRST`, or `DESC NULLS LAST` for a
+descending column index, on column indexes and on the keys of `[TableIndex]` indexes
+(`PostgresSchemaDialect.CreateIndex`, `CreateTableIndex`). The catalog reader reads each key's
+placing (`CatalogIndex.NullsSortLow`, true on the engines that have no other way) and
+`SchemaComparer` replaces an index that places nulls high.
+
+Measured on 100,000 rows of about 4 KB, a page of 50 ordered by an indexed column, third run:
+
+| Order | Skip | Before | After |
+|---|---|---|---|
+| descending, live rows | 0 | 21.4 ms, 20,088 pages | 0.07 ms, 55 pages |
+| descending, live rows | 1,000 | 81.3 ms, 20,088 pages | 1.3 ms, 1,101 pages |
+| descending, live rows | 50,000 | 120.6 ms, 20,088 pages | 78.6 ms, 52,417 pages |
+| ascending, live rows | 0 | 23.7 ms, 20,088 pages | 3.1 ms, 2,004 pages |
+| ascending, live rows | 50,000 | 140.1 ms, 20,088 pages | 80.8 ms, 53,324 pages |
+| descending, one category in 100 | 0 | 21.9 ms, 20,000 pages | 4.3 ms, 4,551 pages |
+
+Before, every case read the whole table (20,088 pages) and sorted it. The ascending first page
+reads 2,004 pages because the test data holds 2,000 rows with a NULL key, which sort first and tie.
+
+- **Open: a deep page still visits every row it skips** (the 50,000 rows above), as SQL Server did
+  before key-first paging. A key-first shape for PostgreSQL has not been measured.
+- **Open: a `Unique` column's index serves no order.** It is filtered to non-null values, and
+  PostgreSQL uses a partial index only for a query that excludes the same rows.
+
+Cover: `IndexNullOrderTests`, the PostgreSQL DDL goldens, and `Postgres\PostgresIndexNullOrderTests`,
+which remakes an index the old way and holds the check to calling it not current and a start to
+replacing it.
 
 ### A query could not order or page in the database, and Take was evaluated away (November 2026)
 

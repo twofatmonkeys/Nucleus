@@ -113,9 +113,11 @@ namespace TFM.Nucleus.Data.Schema
             foreach (var group in existing)
             {
                 var col = required.FirstOrDefault(c => comparer.Equals(PhysicalIndexName(table, c, dialect), group.Key));
-                // A Nucleus index always has exactly one key column. Anything else with our prefix
-                // is stale and gets rebuilt.
-                if (col == null || group.Count() != 1 || !ColumnIndexMatches(col, group.First(), dialect))
+                // A Nucleus index always has exactly one key column, and carries the soft-delete
+                // flag or nothing. Anything else with our prefix is stale and gets rebuilt.
+                var keys = group.Where(r => !r.IsIncluded).ToList();
+                if (col == null || keys.Count != 1 || !ColumnIndexMatches(col, keys[0], dialect)
+                    || !CarriesOnly(group.Where(r => r.IsIncluded).Select(r => r.ColumnName), CarriedColumns(table, dialect), dialect))
                     drop.Add(group.Key);
             }
             foreach (var col in required)
@@ -187,7 +189,7 @@ namespace TFM.Nucleus.Data.Schema
             foreach (var group in existing)
             {
                 var index = table.TableIndexes.FirstOrDefault(i => comparer.Equals(PhysicalIndexName(table, i, dialect), group.Key));
-                if (index == null || !TableIndexMatches(index, group, dialect))
+                if (index == null || !TableIndexMatches(table, index, group, dialect))
                     drop.Add(group.Key);
             }
             foreach (var index in table.TableIndexes)
@@ -206,11 +208,11 @@ namespace TFM.Nucleus.Data.Schema
         // The keys in order, all ascending, then the included columns in any order. A unique index
         // is filtered to rows whose keys are all non-null, so a matching unique index has a filter
         // and a plain one has none, as for a column's index.
-        private static bool TableIndexMatches(TableIndexSchema index, IEnumerable<CatalogIndex> columns, ISchemaDialect dialect)
+        private static bool TableIndexMatches(TableSchema table, TableIndexSchema index, IEnumerable<CatalogIndex> columns, ISchemaDialect dialect)
         {
             var comparer = dialect.IdentifierComparer;
             var rows = columns.ToList();
-            if (rows.Any(r => r.IsUnique != index.Unique || r.HasFilter != index.Unique || r.IsDescending))
+            if (rows.Any(r => r.IsUnique != index.Unique || r.HasFilter != index.Unique || r.IsDescending || (!r.IsIncluded && !r.NullsSortLow)))
                 return false;
             var keys = rows.Where(r => !r.IsIncluded).OrderBy(r => r.KeyOrdinal).Select(r => r.ColumnName).ToList();
             var included = rows.Where(r => r.IsIncluded).Select(r => r.ColumnName).ToList();
@@ -219,8 +221,32 @@ namespace TFM.Nucleus.Data.Schema
             // An engine without included columns stores the keys alone, so the keys are the whole index.
             if (!dialect.SupportsIncludedColumns)
                 return included.Count == 0;
-            return included.Count == index.Include.Count &&
-                   index.Include.All(c => included.Contains(dialect.PhysicalName(c.ColumnName), comparer));
+            return CarriesOnly(included, [.. index.Include.Select(c => c.ColumnName), .. CarriedColumns(table, dialect)], dialect);
+        }
+
+        private static readonly string[] SoftDeleteFlag = [SoftDelete.IsDeletedColumn];
+
+        /// <summary>
+        /// The columns every index of <paramref name="table"/> carries beside its own: the
+        /// soft-delete flag, for a soft-deletable table of a dialect that sets
+        /// <see cref="ISchemaDialect.IndexesCarrySoftDeleteFlag"/>, and nothing otherwise.
+        /// </summary>
+        public static IReadOnlyList<string> CarriedColumns(TableSchema table, ISchemaDialect dialect) =>
+            dialect.IndexesCarrySoftDeleteFlag && dialect.SupportsIncludedColumns && table.IsSoftDeletable ? SoftDeleteFlag : [];
+
+        /// <summary>Whether the included columns an index has are exactly those it should, in any order.</summary>
+        private static bool CarriesOnly(IEnumerable<string?> included, IReadOnlyList<string> expected, ISchemaDialect dialect)
+        {
+            var comparer = dialect.IdentifierComparer;
+            var names = expected.Select(dialect.PhysicalName).Distinct(comparer).ToList();
+            var count = 0;
+            foreach (var column in included)
+            {
+                if (column == null || !names.Contains(column, comparer))
+                    return false;
+                count++;
+            }
+            return count == names.Count;
         }
 
         /// <summary>The name the engine stores for a column's index.</summary>
@@ -233,7 +259,8 @@ namespace TFM.Nucleus.Data.Schema
             dialect.IdentifierComparer.Equals(existing.ColumnName, dialect.PhysicalName(col.ColumnName)) &&
             existing.IsUnique == col.Unique &&
             existing.HasFilter == col.Unique &&
-            existing.IsDescending == col.IndexDescending;
+            existing.IsDescending == col.IndexDescending &&
+            existing.NullsSortLow;
     }
 
     internal enum TableUpdateKind

@@ -11,7 +11,11 @@ namespace TFM.Nucleus.Data
         /// <summary>The prefix used for command parameter references (e.g. "@" for SQL Server).</summary>
         public required string ParameterPrefix { get; init; }
 
-        /// <summary>Maximum bindable parameters per command; queries are split above this.</summary>
+        /// <summary>
+        /// Maximum bindable parameters per command. A write over it is split into several
+        /// commands; a read or a delete over it is refused, which only a long list of values
+        /// that the provider binds one at a time can cause.
+        /// </summary>
         public required int MaxParametersPerCommand { get; init; }
 
         public bool SupportsChangeNotifications { get; init; }
@@ -24,10 +28,20 @@ namespace TFM.Nucleus.Data
     /// </summary>
     public sealed record ContextOptions
     {
-        public static readonly ContextOptions Default = new();
+        /// <summary>A context with no transaction: each statement commits as it runs. For work that only reads.</summary>
+        public static readonly ContextOptions Default = new() { UseTransaction = false };
+
+        /// <summary>A context whose work is one transaction, ended by its commit or rollback.</summary>
         public static readonly ContextOptions Transactional = new() { UseTransaction = true };
 
-        public bool UseTransaction { get; init; }
+        /// <summary>
+        /// Whether the context's work is one transaction. Null, the default, leaves it to what
+        /// opens the context: one the manager hands out (<c>CreateContextAsync</c>) is
+        /// transactional, so options that set something else, such as a statement time limit, do
+        /// not drop the transaction by saying nothing about it; one a provider opens for itself is
+        /// not. Set false for a context with none.
+        /// </summary>
+        public bool? UseTransaction { get; init; }
         public IDataContext? Parent { get; init; }
         /// <summary>
         /// Open the context so that what it reads can be watched for changes, on an engine whose

@@ -178,14 +178,22 @@ namespace TFM.Nucleus.Data.Providers
                     };
                 }
 
+                _initializationFailure = null;
                 return DataProviderStatus.Ok;
             }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Error initializing the {engine} data provider", EngineName);
+                _initializationFailure = ex;
                 return DataProviderStatus.Error;
             }
         }
+
+        /// <summary>
+        /// Why the last initialisation failed, kept so that a caller refused a context is told the
+        /// reason and not only that the provider is not ready. Null once one succeeds.
+        /// </summary>
+        private volatile Exception? _initializationFailure;
 
         /// <summary>Initialises on first use and refuses to hand out a context while the provider is not ready.</summary>
         protected void EnsureReady()
@@ -193,7 +201,7 @@ namespace TFM.Nucleus.Data.Providers
             if (Status == DataProviderStatus.Uninitialized)
                 Initialize();
             if (Status != DataProviderStatus.Ok)
-                throw ProviderException(DataProviderErrorKind.NotInitialized);
+                throw NotReady();
         }
 
         /// <inheritdoc cref="EnsureReady"/>
@@ -202,8 +210,31 @@ namespace TFM.Nucleus.Data.Providers
             if (Status == DataProviderStatus.Uninitialized)
                 await InitializeAsync();
             if (Status != DataProviderStatus.Ok)
-                throw ProviderException(DataProviderErrorKind.NotInitialized);
+                throw NotReady();
         }
+
+        /// <summary>
+        /// The exception for a provider that is not ready, from why its initialisation failed. A
+        /// database that failed is a <see cref="DatabaseException"/> like any other failure of it,
+        /// one level over the driver's exception; a schema or deployment that is wrong keeps its
+        /// <see cref="DataProviderErrorKind"/>; anything else is
+        /// <see cref="DataProviderErrorKind.NotInitialized"/> with the reason in its message. Each
+        /// is built new, because the kept failure may be reported to many callers at once.
+        /// </summary>
+        private Exception NotReady() => _initializationFailure switch
+        {
+            DatabaseException database => new DatabaseException(
+                $"The {EngineName} data provider could not be initialised. {database.Message}",
+                database.Kind, database.IsTransient, database.InnerException)
+            {
+                Operation = database.Operation,
+                Attempts = database.Attempts,
+            },
+            DataProviderException provider => ProviderException(provider.Kind, provider.Message),
+            { } other => ProviderException(DataProviderErrorKind.NotInitialized,
+                $"The {EngineName} data provider could not be initialised. {other.Message}"),
+            null => ProviderException(DataProviderErrorKind.NotInitialized),
+        };
 
         #endregion
 
@@ -602,13 +633,13 @@ namespace TFM.Nucleus.Data.Providers
         IDataContext IDataProvider.CreateContext(ContextOptions? options)
         {
             options ??= ContextOptions.Default;
-            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction, options.WatchForChanges), options);
+            return ApplyOptions(CreateDataContext(options.Parent, options.UseTransaction ?? false, options.WatchForChanges), options);
         }
 
         async Task<IDataContext> IDataProvider.CreateContextAsync(ContextOptions? options, CancellationToken token)
         {
             options ??= ContextOptions.Default;
-            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction, options.WatchForChanges, token), options);
+            return ApplyOptions(await CreateDataContextAsync(options.Parent, options.UseTransaction ?? false, options.WatchForChanges, token), options);
         }
 
         /// <summary>The options a context takes once it is open: its statement time limit.</summary>
@@ -695,7 +726,6 @@ namespace TFM.Nucleus.Data.Providers
         NotInitialized = 0,
         NotConfigured = 1,
         SchemaNotCurrent = 10,
-        DatabaseUnavailable = 20,
         DatabaseNonExistent = 21,
         Error = 90,
         Unspecified = 99,
