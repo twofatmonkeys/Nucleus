@@ -3,6 +3,24 @@
 What changed in behaviour, newest first, one section per piece of work. When upgrading, read down
 from the top until you reach a section you have already taken.
 
+## SQL Server: the indexes of a soft-deletable table carry the soft-delete flag
+
+- **Every index on a soft-deletable table is rebuilt at the first start after upgrading**, on SQL
+  Server only: each column index (`Indexed`, `Unique`, a child's parent, a key column) and each
+  `[TableIndex]` index is dropped and created again with `IsDeleted` as an included column. The
+  time and the locks are in proportion to the table. Tables that are not soft-deletable, and
+  PostgreSQL and SQLite, are untouched.
+- **A deployment with `ReadOnlySchema` does not start until those indexes are rebuilt.** Its log
+  names each index that is not current. Recreate each with `INCLUDE ([IsDeleted])` added, or start
+  once with the schema writable.
+- **What it buys:** an ordered or paged read of live rows through an index visits only the rows
+  it returns. A page 50,000 rows deep read 276 pages where it read 161,453, and a first page 152
+  where it read 305, for an index about 5% larger.
+- **An included column added by hand to a Nucleus-named index (`NCI_`, `UQ_`) now makes it stale**,
+  and the next start rebuilds it without the column. Put a hand-made index under a name of its own.
+- **TFM.Nucleus.Testing:** `SqlServerTestDatabase.DropColumnsSql` drops every index a column is
+  in, included columns too, before it drops the column.
+
 ## Parameters are numbered per command, so a repeated save reuses its plan
 
 - **No change in what a command does.** The parameters of each command are now named `p0`, `p1`

@@ -43,6 +43,10 @@ parameter of one of them, where a shorter list sends a parameter per value; see
 - A login that does not own the schema needs `EXECUTE` on each type
   (`GRANT EXECUTE ON TYPE::[dbo].[NucleusGuidList] TO [login]`).
 
+Every index Nucleus creates on a soft-deletable table includes the `IsDeleted` column, so a read
+of live rows through the index does not visit a row to find out whether it is deleted. An index
+without it is not current and is rebuilt at the next start.
+
 ## PostgreSQL
 
 `TFM.Nucleus.Data.PostgreSQL` runs the same entities and queries on PostgreSQL 16 or later.

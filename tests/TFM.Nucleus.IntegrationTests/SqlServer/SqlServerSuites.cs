@@ -55,6 +55,9 @@ namespace TFM.Nucleus.IntegrationTests.SqlServer
     {
         protected override string DropIndexSql(string table, string index) => $"DROP INDEX [{index}] ON [dbo].[{table}]";
 
+        // The entity is soft-deletable, and on SQL Server every index of such a table carries the flag.
+        protected override string ExpectedIndexColumns => "Batch,At,+Amount,+IsDeleted,+Name,+Notes";
+
         // FOR XML PATH rather than STRING_AGG, which the test database's compatibility level lacks.
         protected override string IndexColumnsSql(string table, string index) =>
             "SELECT STUFF((SELECT ',' + CASE WHEN ic.is_included_column = 1 THEN '+' ELSE '' END + c.name " +

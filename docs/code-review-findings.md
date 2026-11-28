@@ -574,14 +574,53 @@ Measured on a table of 100,000 rows of about 4 KB, 50 rows a page, logical reads
 - The join back costs a seek per row of the page, about 150 reads for 50 rows. That is the whole
   cost where the new shape does not help, and why a page in insertion order keeps the old shape:
   its window walks the clustered index, which is the rows.
-- **Open: a filter on a column outside the order's index gets nothing from this**, and the
-  soft-delete filter is one (`[IsDeleted] = 0` on every read of a soft-deletable type), because
-  SQL Server must visit each row to test it. An index that carried `IsDeleted` would let those
-  pages take the deep-page gain too. Not built; it changes every index of a soft-deletable table.
+- **A filter on a column outside the order's index gets nothing from this**, because SQL Server
+  must visit each row to test it. The soft-delete filter was one (`[IsDeleted] = 0` on every read
+  of a soft-deletable type) until the indexes of a soft-deletable table carried the flag; see
+  "SQL Server's indexes did not carry the soft-delete flag" below. Any other such filter still is.
 - A deep skip still costs in proportion to the skip. A listing that goes deep pages by key (see
   the guide's querying page).
 
 Cover: the four ordered and paged cases in `SqlServerGoldens.cs`, and `OrderAndPageIntegrationTests`.
+
+### SQL Server's indexes did not carry the soft-delete flag (November 2026)
+
+Every read of a soft-deletable type filters on `[IsDeleted] = 0`, and no index held the column, so
+a read through an index visited each row it passed to test the flag. An ordered page therefore
+cost a row visit for every row skipped, which is what key-first paging was meant to remove.
+
+On SQL Server every column index and `[TableIndex]` index of a soft-deletable table now includes
+`IsDeleted` (`ISchemaDialect.IndexesCarrySoftDeleteFlag`, `SchemaComparer.CarriedColumns`,
+`SqlServerSchemaDialect.ColumnIndexSql` and `TableIndexSql`). The schema check expects the flag on
+those indexes and on no others, so an existing index is dropped and created again at the first
+start, and the catalog reader now reads the included columns of a column index, which it left out.
+
+Measured on 100,000 rows of about 4 KB with 5% soft-deleted, an ordered page of 50, logical reads:
+
+| Index | Live rows, first page | Live rows, 50,000 deep | Every row, 50,000 deep | Index pages |
+|---|---|---|---|---|
+| the column alone (before) | 305 | 161,453 | 264 | 225 |
+| the column, `IsDeleted` included (now) | 152 | 276 | 270 | 237 |
+| filtered to live rows (not chosen) | 152 | 264 | 52,866 | 214 |
+
+- A filtered index was rejected: it serves live rows as well, and sends every `IncludeDeleted`
+  read to a scan of the table.
+- **Not done on PostgreSQL, where it was measured to gain nothing**: the same page took 109 ms
+  with the column included and 110 ms without, because PostgreSQL did not use the index for the
+  order at all. See the open finding below.
+- Not done on SQLite, whose indexes carry no included columns.
+
+**Open: no ordered read on PostgreSQL can use a column's index.** Nucleus orders NULL below every
+value on every engine, so PostgreSQL's renderer writes `NULLS FIRST` ascending and `NULLS LAST`
+descending. A column index is created with PostgreSQL's default order (`ASC NULLS LAST`), which
+read forwards or backwards gives the opposite placing of NULL, so the planner sorts instead. Seen
+on the measurement above (a sequential scan and an external sort of every row for a page of 50);
+not investigated further. Creating the index `NULLS FIRST` would let it serve both directions, and
+would rebuild every column index on PostgreSQL.
+
+Cover: `SoftDeleteIndexTests`, the `ddl.create.TestSoftWidget` and `TestSoftParent` goldens,
+`SqlServerTableIndexIntegrationTests` (the declared index carries the flag) and the schema-current
+checks of every SQL Server suite, which fail while any index is without it.
 
 ### A query could not order or page in the database, and Take was evaluated away (November 2026)
 

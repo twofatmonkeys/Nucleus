@@ -147,7 +147,13 @@ public sealed class SqlServerTestDatabase : NucleusTestDatabase
         "FROM sys.foreign_keys fk JOIN sys.foreign_key_columns fc ON fc.constraint_object_id = fk.object_id " +
         $"WHERE fk.parent_object_id = OBJECT_ID(N'dbo.{table}') AND COL_NAME(fc.parent_object_id, fc.parent_column_id) = N'{c}'; " +
         $"IF @fk{i} <> N'' EXEC (@fk{i}); " +
-        $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'NCI_{table}_{c}' AND object_id = OBJECT_ID(N'dbo.{table}')) DROP INDEX [NCI_{table}_{c}] ON [dbo].[{table}]; " +
+        // Every index the column is in, as a key or as a column the index carries: the soft-delete
+        // flag is carried by every index of its table.
+        $"DECLARE @ix{i} nvarchar(max); SET @ix{i} = N''; " +
+        $"SELECT @ix{i} = @ix{i} + N'DROP INDEX ' + QUOTENAME(ix.name) + N' ON [dbo].[{table}]; ' " +
+        "FROM sys.indexes ix JOIN sys.index_columns ic ON ic.object_id = ix.object_id AND ic.index_id = ix.index_id " +
+        $"WHERE ix.object_id = OBJECT_ID(N'dbo.{table}') AND ix.type = 2 AND ix.is_primary_key = 0 AND COL_NAME(ic.object_id, ic.column_id) = N'{c}'; " +
+        $"IF @ix{i} <> N'' EXEC (@ix{i}); " +
         $"IF OBJECT_ID(N'dbo.DF_{table}_{c}', N'D') IS NOT NULL ALTER TABLE [dbo].[{table}] DROP CONSTRAINT [DF_{table}_{c}]; " +
         $"ALTER TABLE [dbo].[{table}] DROP COLUMN [{c}]; "));
 

@@ -125,7 +125,11 @@ engine: there is no parallel write path, because parts on connections of their o
 commit as one. A read leaves the connection open, because closing it with the reader ended the
 transaction. A dialect whose indexes carry no
 included columns sets `ISchemaDialect.SupportsIncludedColumns` false: its `[TableIndex]` indexes
-are created and compared by their keys alone. I/O in the dialect interfaces takes an async flag and returns ValueTask,
+are created and compared by their keys alone. A dialect that sets
+`ISchemaDialect.IndexesCarrySoftDeleteFlag` (SQL Server, where it was measured to pay) includes
+`IsDeleted` in every column index and `[TableIndex]` index of a soft-deletable table, and
+`SchemaComparer.CarriedColumns` is what the check expects there, so an index without the flag, or
+with it on any other table, is rebuilt. I/O in the dialect interfaces takes an async flag and returns ValueTask,
 so one implementation serves the sync and async paths. A provider turns its engine's unique
 violation into `UniqueViolationException` (Abstractions) naming the entity and the column or the
 `[TableIndex]` (`IsIndex<T>`); `UniqueIndexResolver` (Data) maps the engine's index name back to
